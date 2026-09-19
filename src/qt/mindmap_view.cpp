@@ -45,12 +45,12 @@ public:
         p->setBrush(colors.color(QPalette::Button));
         p->drawRoundedRect(rect, 8, 8);
         if (hasChildren) {
-            const QRectF box = affordance();
+            const QPointF center = affordance().center();
             p->setPen(QPen(colors.color(QPalette::ButtonText), 1));
             p->setBrush(colors.color(QPalette::Base));
-            p->drawRoundedRect(box, 3, 3);
-            p->drawLine(box.center() - QPointF(4, 0), box.center() + QPointF(4, 0));
-            if (!expanded) p->drawLine(box.center() - QPointF(0, 4), box.center() + QPointF(0, 4));
+            p->drawEllipse(center, 6, 6);
+            p->drawLine(center - QPointF(3, 0), center + QPointF(3, 0));
+            if (!expanded) p->drawLine(center - QPointF(0, 3), center + QPointF(0, 3));
         }
     }
 };
