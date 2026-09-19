@@ -102,6 +102,169 @@ static void validation() {
 }
 
 
+static void mind_elixir() {
+    const auto supplied = Json::parse(R"({"nodeData":{"id":"53f7ebf31cde25df","topic":"VNote","root":true,"children":[{"topic":"haha","id":"53f7ee14ad5cfe73","direction":0},{"topic":"very ok","id":"53f814646ada783d","children":[{"topic":"haha","id":"54c54ce77c9fb334","style":{"color":"#2980b9"}},{"topic":"new node","id":"57fe23a342aa9934","children":[{"topic":"new node","id":"57fe23f7c15f111a","memo":"Very interesting question here is about the samkkdjfkdljfkjdf","hyperLink":"https://bing.com"},{"topic":"new node","id":"57fe25185cc996fe","children":[{"topic":"new node","id":"57fe25b07a7a6eef"},{"topic":"new node","id":"57fe263af1d4a0ce"}]}]}],"direction":1,"style":{"color":"#c0392c","background":"#f39c11"}},{"topic":"a very simple question","id":"54d500c5bf4fb1b3","direction":0}],"style":{"color":"#ecf0f1","background":"#3298db"}},"linkData":{},"direction":2})");
+    auto map = load(supplied);
+    auto exported = document(map);
+    CHECK(exported["schemaVersion"] == 1);
+    CHECK(exported["rootId"] == "53f7ebf31cde25df");
+    const auto ids = Json::parse(R"(["53f7ebf31cde25df","53f7ee14ad5cfe73","53f814646ada783d","54c54ce77c9fb334","57fe23a342aa9934","57fe23f7c15f111a","57fe25185cc996fe","57fe25b07a7a6eef","57fe263af1d4a0ce","54d500c5bf4fb1b3"])");
+    const auto children = Json::parse(R"([["53f7ee14ad5cfe73","53f814646ada783d","54d500c5bf4fb1b3"],[],["54c54ce77c9fb334","57fe23a342aa9934"],[],["57fe23f7c15f111a","57fe25185cc996fe"],[],["57fe25b07a7a6eef","57fe263af1d4a0ce"],[],[],[]])");
+    CHECK(exported["nodes"].size() == ids.size());
+    for (size_t i = 0; i < ids.size(); ++i) {
+        const auto &n = exported["nodes"][i];
+        CHECK(n["id"] == ids[i]);
+        CHECK(n["children"] == children[i]);
+        CHECK(!n.contains("memo") && !n.contains("direction") && !n.contains("root"));
+    }
+    CHECK(node(map, "53f7ebf31cde25df")["topic"] == "VNote");
+    CHECK(node(map, "53f7ebf31cde25df")["style"] == Json::parse(R"({"color":"#ecf0f1","background":"#3298db"})"));
+    CHECK(node(map, "53f814646ada783d")["style"] == Json::parse(R"({"color":"#c0392c","background":"#f39c11"})"));
+    CHECK(node(map, "54c54ce77c9fb334")["style"] == Json::parse(R"({"color":"#2980b9"})"));
+    CHECK(node(map, "57fe23f7c15f111a")["note"] == "Very interesting question here is about the samkkdjfkdljfkjdf");
+    CHECK(node(map, "57fe23f7c15f111a")["hyperLink"] == "https://bing.com");
+    CHECK(exported["crossLinks"] == Json::array());
+    CHECK(!exported.contains("nodeData") && !exported.contains("linkData") && !exported.contains("direction"));
+    auto copy = load(exported);
+    CHECK(document(copy) == exported);
+
+    const auto rich_input = Json::parse(R"({"nodeData":{"id":"r","topic":"根 🌍","root":[],"direction":{},
+      "children":[{"id":"a","topic":"Café 世界","memo":"Mémo 絵 🌍","expanded":false,
+        "tags":["x","y","x"],"icons":["star","flag","star"],"hyperLink":"opaque:世界",
+        "style":{"nested":{"list":[1,true,"é",{"direction":7}]}},
+        "note":false,"image":17,"parent":["ignored"],"direction":null,"metadata":{"extra":true},
+        "children":[{"id":"b","topic":"Hidden","note":"not memo",
+          "image":{"url":"memory:絵","width":10,"height":20},"children":[]}]},
+        {"id":"c","topic":"Last"}]},"direction":false,"metadata":[1,2],"extension":null,
+      "linkData":{
+        "l1":{"id":"l1","from":"a","to":"b","label":"related","delta1":{"x":1,"y":2},"delta2":{"x":3,"y":4},
+          "directed":false,"style":["ignored"],"icon":{},"topic":"ignored","extension":true},
+        "l2":{"id":"l2","from":"a","to":"b","label":"並列"},
+        "r":{"id":"r","from":"r","to":"r"}}})");
+    auto rich = load(rich_input);
+    const auto rich_doc = document(rich);
+    CHECK(rich_doc["rootId"] == "r" && rich_doc["schemaVersion"] == 1);
+    CHECK(rich_doc["nodes"].size() == 4);
+    CHECK(rich_doc["nodes"][0]["id"] == "r" && rich_doc["nodes"][1]["id"] == "a");
+    CHECK(rich_doc["nodes"][2]["id"] == "b" && rich_doc["nodes"][3]["id"] == "c");
+    CHECK(node(rich, "r")["topic"] == "根 🌍");
+    CHECK(node(rich, "r")["children"] == Json({"a","c"}));
+    CHECK(node(rich, "a") == Json::parse(R"({"id":"a","topic":"Café 世界","note":"Mémo 絵 🌍",
+      "expanded":false,"tags":["x","y","x"],"icons":["star","flag","star"],"hyperLink":"opaque:世界",
+      "style":{"nested":{"list":[1,true,"é",{"direction":7}]}},"image":null,"children":["b"]})"));
+    CHECK(node(rich, "b")["note"] == "" && node(rich, "b")["image"].is_null());
+    CHECK(node(rich, "b")["children"] == Json::array());
+    CHECK(rich_doc["crossLinks"].size() == 3);
+    CHECK(link(rich, "l1") == Json::parse(R"({"id":"l1","source":"a","target":"b","directed":true,"topic":"related","icon":"","style":{}})"));
+    CHECK(link(rich, "l2") == Json::parse(R"({"id":"l2","source":"a","target":"b","directed":true,"topic":"並列","icon":"","style":{}})"));
+    CHECK(link(rich, "r") == Json::parse(R"({"id":"r","source":"r","target":"r","directed":true,"topic":"","icon":"","style":{}})"));
+    for (const auto *key : {"nodeData", "linkData", "direction", "metadata", "extension"}) CHECK(!rich_doc.contains(key));
+    for (const auto &n : rich_doc["nodes"])
+        for (const auto *key : {"memo", "root", "direction", "parent", "metadata"}) CHECK(!n.contains(key));
+    auto rich_copy = load(rich_doc);
+    CHECK(document(rich_copy) == rich_doc);
+    for (const auto *record : {R"({"id":"new","memo":"foreign"})", R"({"id":"new","direction":0})"}) {
+        CHECK(m3_mindmap_insert_node(rich.get(), "r", M3_APPEND, record) == M3_ERR_SCHEMA);
+        CHECK(document(rich) == rich_doc);
+    }
+    CHECK(m3_mindmap_update_node(rich.get(), "a", R"({"memo":"foreign"})") == M3_ERR_SCHEMA);
+    CHECK(m3_mindmap_add_link(rich.get(), R"({"id":"new","from":"a","to":"b"})") == M3_ERR_SCHEMA);
+    CHECK(m3_mindmap_update_link(rich.get(), "l1", R"({"label":"foreign"})") == M3_ERR_SCHEMA);
+    CHECK(document(rich) == rich_doc);
+
+    auto minimal = load(Json::parse(R"({"nodeData":{"id":"r","topic":""}})"));
+    CHECK(document(minimal) == Json::parse(R"({"schemaVersion":1,"rootId":"r","nodes":[
+      {"id":"r","topic":"","note":"","hyperLink":"","expanded":true,"style":{},"tags":[],"icons":[],"image":null,"children":[]}],"crossLinks":[]})"));
+    constexpr size_t count = 4096;
+    std::string deep = "{\"nodeData\":";
+    for (size_t i = 0; i < count; ++i) {
+        deep += "{\"id\":\"n" + std::to_string(i) + "\",\"topic\":\"Node\"";
+        if (i + 1 < count) deep += ",\"children\":[";
+    }
+    deep += '}';
+    for (size_t i = 1; i < count; ++i) deep += "]}";
+    deep += '}';
+    M3Mindmap *raw = nullptr;
+    ok(m3_mindmap_from_json(deep.c_str(), &raw));
+    Map deep_map(raw, m3_mindmap_destroy);
+    const auto deep_doc = document(deep_map);
+    CHECK(deep_doc["rootId"] == "n0");
+    CHECK(deep_doc["nodes"].size() == count);
+    for (size_t i = 0; i < count; ++i) {
+        const auto &n = deep_doc["nodes"][i];
+        CHECK(n["id"] == "n" + std::to_string(i));
+        CHECK(n["topic"] == "Node");
+        CHECK(n["children"] == (i + 1 < count ? Json::array({"n" + std::to_string(i + 1)}) : Json::array()));
+    }
+}
+
+static void mind_elixir_validation() {
+    int failures = 0;
+    auto reject = [&](const std::string &text, M3Status expected, const char *label) {
+        M3Mindmap *p = reinterpret_cast<M3Mindmap *>(1);
+        auto status = m3_mindmap_from_json(text.c_str(), &p);
+        if (status != expected || p || !*m3_last_error()) {
+            std::cerr << label << ": expected " << expected << ", got " << status << '\n';
+            ++failures;
+        }
+        if (status == M3_OK) m3_mindmap_destroy(p);
+    };
+    const auto input = Json::parse(R"({"nodeData":{"id":"r","topic":"Root","children":[
+      {"id":"a","topic":"Child","children":[{"id":"b","topic":"Leaf"}]}]},
+      "linkData":{"l1":{"id":"l1","from":"r","to":"b","label":"Related"}}})");
+    auto bad = [&](auto change, const char *label) { auto j = input; change(j); reject(j.dump(), M3_ERR_SCHEMA, label); };
+    for (const auto *key : {"schemaVersion", "rootId", "nodes", "crossLinks"})
+        bad([&](Json &j) { j[key] = nullptr; }, key);
+    bad([](Json &j) { j["nodeData"] = nullptr; }, "null nodeData");
+    bad([](Json &j) { j["nodeData"] = Json::array(); }, "array nodeData");
+    bad([](Json &j) { j["nodeData"] = 1; }, "scalar nodeData");
+    bad([](Json &j) { j["nodeData"].erase("id"); }, "missing node ID");
+    bad([](Json &j) { j["nodeData"]["id"] = ""; }, "empty node ID");
+    bad([](Json &j) { j["nodeData"]["id"] = 1; }, "node ID type");
+    bad([](Json &j) { j["nodeData"].erase("topic"); }, "missing topic");
+    bad([](Json &j) { j["nodeData"]["topic"] = nullptr; }, "topic type");
+    bad([](Json &j) { j["nodeData"]["children"][0]["id"] = "r"; }, "reused root ID");
+    bad([](Json &j) { j["nodeData"]["children"][0]["children"][0]["id"] = "a"; }, "duplicate descendant ID");
+    bad([](Json &j) { j["nodeData"]["children"] = nullptr; }, "null children");
+    bad([](Json &j) { j["nodeData"]["children"] = 1; }, "scalar children");
+    bad([](Json &j) { j["nodeData"]["children"] = Json::object(); }, "object children");
+    bad([](Json &j) { j["nodeData"]["children"][0] = "a"; }, "nonobject child");
+    bad([](Json &j) { j["nodeData"]["children"][0].erase("topic"); }, "missing child topic");
+    bad([](Json &j) { j["nodeData"]["memo"] = nullptr; }, "memo type");
+    bad([](Json &j) { j["nodeData"]["hyperLink"] = 1; }, "hyperLink type");
+    bad([](Json &j) { j["nodeData"]["expanded"] = 0; }, "expanded type");
+    bad([](Json &j) { j["nodeData"]["style"] = Json::array(); }, "style type");
+    bad([](Json &j) { j["nodeData"]["tags"] = "x"; }, "tags type");
+    bad([](Json &j) { j["nodeData"]["tags"] = Json::array({1}); }, "tag type");
+    bad([](Json &j) { j["nodeData"]["icons"] = nullptr; }, "icons type");
+    bad([](Json &j) { j["nodeData"]["icons"] = Json::array({false}); }, "icon type");
+    bad([](Json &j) { j["linkData"] = nullptr; }, "null linkData");
+    bad([](Json &j) { j["linkData"] = Json::array(); }, "array linkData");
+    bad([](Json &j) { j["linkData"]["l1"] = 1; }, "nonobject link");
+    bad([](Json &j) { j["linkData"]["l1"].erase("id"); }, "missing link ID");
+    bad([](Json &j) { j["linkData"]["l1"]["id"] = ""; }, "empty link ID");
+    bad([](Json &j) { j["linkData"]["l1"]["id"] = 1; }, "link ID type");
+    bad([](Json &j) { j["linkData"]["l1"]["id"] = "l2"; }, "mismatched link ID");
+    bad([](Json &j) { j["linkData"][""] = j["linkData"]["l1"]; j["linkData"].erase("l1"); }, "empty link key");
+    bad([](Json &j) { j["linkData"]["l1"].erase("from"); }, "missing from");
+    bad([](Json &j) { j["linkData"]["l1"].erase("to"); }, "missing to");
+    bad([](Json &j) { j["linkData"]["l1"]["from"] = 1; }, "from type");
+    bad([](Json &j) { j["linkData"]["l1"]["to"] = nullptr; }, "to type");
+    bad([](Json &j) { j["linkData"]["l1"]["from"] = ""; }, "empty from");
+    bad([](Json &j) { j["linkData"]["l1"]["to"] = ""; }, "empty to");
+    bad([](Json &j) { j["linkData"]["l1"]["from"] = "missing"; }, "dangling from");
+    bad([](Json &j) { j["linkData"]["l1"]["to"] = "missing"; }, "dangling to");
+    bad([](Json &j) { j["linkData"]["l1"]["label"] = false; }, "label type");
+    reject(R"({"nodeData":)", M3_ERR_JSON, "malformed foreign JSON");
+    reject(R"({"nodeData":{"id":"r","id":"r","topic":""}})", M3_ERR_JSON, "duplicate member");
+    reject(R"({"nodeData":{"id":"r","topic":""},"linkData":{"x":{},"x":{}}})", M3_ERR_JSON, "duplicate link key");
+    reject(R"({"nodeData":{"id":"r","topic":""},"extension":{"x":1,"x":2}})", M3_ERR_JSON, "duplicate ignored member");
+    reject(std::string(R"({"nodeData":{"id":"r","topic":""},"extension":")") + char(0xff) + "\"}", M3_ERR_JSON, "ignored invalid UTF8");
+    bad([](Json &j) { j["extension"] = std::string("a\0b", 3); }, "ignored NUL string");
+    bad([](Json &j) { j["extension"][std::string("a\0b", 3)] = 1; }, "ignored NUL key");
+    CHECK(failures == 0);
+}
+
 static void edits() {
     auto map = load(fixture());
     char *old_node = nullptr, *old_doc = nullptr;
@@ -271,6 +434,8 @@ int main(int argc, char **argv) {
         const std::string name = argv[1];
         if (name == "roundtrip") roundtrip();
         else if (name == "validation") validation();
+        else if (name == "mind_elixir") mind_elixir();
+        else if (name == "mind_elixir_validation") mind_elixir_validation();
         else if (name == "edits") edits();
         else if (name == "atomicity") atomicity();
         else if (name == "links") links();

@@ -12,8 +12,9 @@ typedef struct M3Mindmap M3Mindmap;
  * valid output slots are initialized to NULL even on failure.
  * Independent handles may be used concurrently; synchronize a shared handle.
  * No exception crosses this API. Failed mutations leave the document unchanged.
- * JSON is schemaVersion 1, a flat ordered rooted tree plus crossLinks. Unknown
- * record keys and duplicate JSON members are rejected. Styles are opaque objects.
+ * Native JSON is schemaVersion 1, a flat ordered rooted tree plus crossLinks.
+ * Unknown native document/record keys and duplicate JSON members are rejected.
+ * Styles are opaque objects.
  * Node/link IDs are immutable, case-sensitive, separate namespaces.
  *
  * Document schema (all text is opaque; no URL fetching or Markdown processing):
@@ -30,7 +31,7 @@ typedef struct M3Mindmap M3Mindmap;
  * topic/icon default to "", style to {}. Endpoints must exist. Self-links,
  * parallel links with distinct IDs and cross-link cycles are permitted.
  * Endpoint order is preserved even for undirected links.
- * Styles permit arbitrary nested JSON; other records reject unknown keys.
+ * Styles permit arbitrary nested JSON; other native records reject unknown keys.
  * Decoded NUL characters in keys/values and invalid UTF-8 are not representable.
  * Export includes all fields, nodes in root-first child preorder, links in ID
  * byte order. Whitespace, object-key order and numeric spelling are not stable.
@@ -42,6 +43,19 @@ typedef struct M3Mindmap M3Mindmap;
  * insertion return ALREADY_EXISTS. Root removal/movement and moves into one's
  * own subtree return INVALID_OPERATION. See m3_last_error for diagnostics. */
 M3_API M3Status m3_mindmap_create(const char *root_id, const char *topic, M3Mindmap **out_map);
+/* Import accepts native documents or a compatible Mind Elixir v1.1.3 envelope
+ * detected by nodeData (no producer version marker is available). Mixing nodeData
+ * with schemaVersion/rootId/nodes/crossLinks is rejected; invalid foreign input
+ * never falls back to native decoding. Nested nodes require nonempty id and
+ * string topic; ordered children and IDs are preserved, including collapsed
+ * descendants. topic/hyperLink/expanded/style/tags/icons map to native fields;
+ * the memo extension maps to note. Optional ID-keyed linkData requires matching
+ * record IDs and existing from/to endpoints; label maps to topic, directed is
+ * true, and icon/style use native defaults. Unmapped foreign fields are ignored,
+ * including direction/root/parent, note/image, link delta1/delta2 and extensions;
+ * no source metadata or layout is retained. Parser restrictions still apply to
+ * ignored fields. Export always uses native schemaVersion 1. Node insertion,
+ * node patches and link mutations continue accepting only native records. */
 M3_API M3Status m3_mindmap_from_json(const char *json_utf8, M3Mindmap **out_map);
 M3_API M3Status m3_mindmap_to_json(const M3Mindmap *map, char **out_json);
 M3_API void m3_mindmap_destroy(M3Mindmap *map);

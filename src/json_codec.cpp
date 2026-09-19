@@ -33,14 +33,17 @@ Json parse(const char *text) {
     });
 }
 namespace {
-void apply_attributes(Attributes &a, const Json &j) {
+void apply_shared_attributes(Attributes &a, const Json &j) {
     if (j.contains("topic")) a.topic = j["topic"].get<std::string>();
-    if (j.contains("note")) a.note = j["note"].get<std::string>();
     if (j.contains("hyperLink")) a.hyperlink = j["hyperLink"].get<std::string>();
     if (j.contains("expanded")) a.expanded = j["expanded"].get<bool>();
     if (j.contains("style")) { schema(j["style"].is_object()); a.style = j["style"]; }
     if (j.contains("tags")) a.tags = j["tags"].get<std::vector<std::string>>();
     if (j.contains("icons")) a.icons = j["icons"].get<std::vector<std::string>>();
+}
+void apply_attributes(Attributes &a, const Json &j) {
+    apply_shared_attributes(a, j);
+    if (j.contains("note")) a.note = j["note"].get<std::string>();
     if (j.contains("image")) {
         const auto &i = j["image"];
         if (i.is_null()) a.image.reset();
@@ -59,6 +62,59 @@ void apply_link_fields(Link &l, const Json &j) {
     if (j.contains("topic")) l.topic = j["topic"].get<std::string>();
     if (j.contains("icon")) l.icon = j["icon"].get<std::string>();
     if (j.contains("style")) { schema(j["style"].is_object()); l.style = j["style"]; }
+}
+Model decode_mind_elixir(const Json &j) {
+    const auto &root = j.at("nodeData");
+    schema(root.is_object());
+    Model m;
+    struct Frame { const Json *value; Node *parent; };
+    std::vector<Frame> pending{{&root, nullptr}};
+    while (!pending.empty()) {
+        const auto frame = pending.back();
+        pending.pop_back();
+        const auto &value = *frame.value;
+        schema(value.is_object());
+        Node n;
+        n.id = identifier(value.at("id"));
+        schema(value.contains("topic") && value["topic"].is_string());
+        apply_shared_attributes(n.attrs, value);
+        if (value.contains("memo")) n.attrs.note = value["memo"].get<std::string>();
+        const auto children = value.find("children");
+        if (children != value.end()) {
+            schema(children->is_array());
+            n.children.reserve(children->size());
+        }
+        if (frame.parent) n.parent = frame.parent->id;
+        auto id = n.id;
+        auto inserted = m.nodes.emplace(std::move(id), std::move(n));
+        schema(inserted.second);
+        // References to unordered-map nodes survive rehash; iterators do not.
+        auto *stored = &inserted.first->second;
+        if (frame.parent) frame.parent->children.push_back(stored->id);
+        else m.root = stored->id;
+        if (children != value.end())
+            for (auto it = children->rbegin(); it != children->rend(); ++it)
+                pending.push_back({&*it, stored});
+    }
+    if (j.contains("linkData")) {
+        const auto &links = j["linkData"];
+        schema(links.is_object());
+        for (auto it = links.begin(); it != links.end(); ++it) {
+            const auto &value = it.value();
+            schema(value.is_object());
+            Link l;
+            l.id = identifier(value.at("id"));
+            schema(l.id == it.key());
+            l.source = identifier(value.at("from"));
+            l.target = identifier(value.at("to"));
+            schema(m.nodes.count(l.source) && m.nodes.count(l.target));
+            l.directed = true;
+            if (value.contains("label")) l.topic = value["label"].get<std::string>();
+            auto id = l.id;
+            schema(m.links.emplace(std::move(id), std::move(l)).second);
+        }
+    }
+    return m;
 }
 }
 Node decode_node(const Json &j) {
@@ -90,6 +146,11 @@ Link patch_link(const Link &original, const Json &patch) {
     return result;
 }
 Model decode_document(const Json &j) {
+    if (j.is_object() && j.contains("nodeData")) {
+        schema(!j.contains("schemaVersion") && !j.contains("rootId") &&
+            !j.contains("nodes") && !j.contains("crossLinks"));
+        return decode_mind_elixir(j);
+    }
     keys(j, {"schemaVersion", "rootId", "nodes", "crossLinks"});
     schema(j.at("schemaVersion").is_number_integer() && j["schemaVersion"] == 1);
     Model m;
