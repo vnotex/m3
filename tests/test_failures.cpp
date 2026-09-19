@@ -45,7 +45,31 @@ static void output_failures(const char *label, Call call, Free release, bool swe
     throw std::runtime_error(std::string(label) + ": allocation sweep did not reach success");
 }
 
+static void schema_failure_unwinding() {
+    // A schema exception destroys a nonempty parsed document while unwinding.
+    // The injector must leave cleanup allocations alone, not throw a second
+    // exception from the dependency's noexcept destructor.
+    constexpr const char *invalid = R"({"schemaVersion":1,"rootId":"r","nodes":[{"id":"r"}],"unknown":[]})";
+    for (size_t after = 0; after < 4096; ++after) {
+        M3Mindmap *out = reinterpret_cast<M3Mindmap *>(1);
+        FailAllocations failure(after);
+        const auto status = m3_mindmap_from_json(invalid,&out);
+        const bool diagnostic = *m3_last_error() != '\0';
+        const auto stats = failure.stop();
+        CHECK(out == nullptr && diagnostic);
+        if (stats.failures) {
+            CHECK(stats.failures == 1 && status == M3_ERR_OUT_OF_MEMORY);
+        } else {
+            CHECK(status == M3_ERR_SCHEMA);
+            std::cout << "schema rejection: cleanup survived unwinding\n";
+            return;
+        }
+    }
+    throw std::runtime_error("Schema rejection sweep did not finish");
+}
+
 static void outputs() {
+    schema_failure_unwinding();
     const std::string root_id(96,'r'), topic(192,'t');
     output_failures<M3Mindmap>("create", [&](M3Mindmap **out) {
         return m3_mindmap_create(root_id.c_str(),topic.c_str(),out);
@@ -111,7 +135,7 @@ static void mutation_failures(const char *label, const Json &input, Call call, b
             CHECK(document(map) == expected);
             if (!sweep) { std::cout << label << ": entry failure and atomic recovery passed\n"; return; }
         } else {
-            CHECK(status == M3_OK && !diagnostic && after > 0);
+            CHECK(status == M3_OK && !diagnostic);
             CHECK(document(map) == expected);
             std::cout << label << ": swept " << after << " atomic failures\n";
             return;
@@ -153,6 +177,9 @@ static void mutations() {
     },true);
     mutation_failures("link removal",input,[&](M3Mindmap *m) {
         return m3_mindmap_remove_link(m,long_link.c_str());
+    },true);
+    mutation_failures("short-ID link removal",input,[](M3Mindmap *m) {
+        return m3_mindmap_remove_link(m,"l4");
     },true);
     mutation_failures("insert",input,[](M3Mindmap *m) {
         return m3_mindmap_insert_node(m,"r",1,R"({"id":"new","topic":"Inserted"})");

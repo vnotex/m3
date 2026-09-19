@@ -1,5 +1,6 @@
 #include "failing_allocator.h"
 #include <cstdlib>
+#include <exception>
 #include <new>
 #ifdef _WIN32
 #include <malloc.h>
@@ -9,7 +10,7 @@ thread_local bool armed = false, persistent_failure = false;
 thread_local size_t budget = 0;
 thread_local M3AllocationStats stats{};
 void checkpoint() {
-    if (!armed) return;
+    if (!armed || std::uncaught_exceptions() != 0) return;
     ++stats.attempts;
     if (budget) { --budget; return; }
     ++stats.failures;
