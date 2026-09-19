@@ -54,13 +54,41 @@ public:
         }
     }
 };
+QRectF placeLabel(const QRectF &initial, const std::vector<QRectF> &occupied) {
+    auto collision = [&](const QRectF &candidate) {
+        return std::find_if(occupied.begin(), occupied.end(), [&](const QRectF &obstacle) {
+            return candidate.adjusted(-4, -4, 4, 4).intersects(obstacle);
+        });
+    };
+    if (collision(initial) == occupied.end()) return initial;
+    QRectF best;
+    qreal bestDistance = std::numeric_limits<qreal>::infinity();
+    // Try each cardinal direction. Movement is monotonic, so each encountered
+    // obstacle is passed permanently; choose the closest unobstructed position.
+    for (int direction = 0; direction < 4; ++direction) {
+        QRectF candidate = initial;
+        for (auto obstacle = collision(candidate); obstacle != occupied.end(); obstacle = collision(candidate)) {
+            switch (direction) {
+            case 0: candidate.moveBottom(obstacle->top() - 4); break;
+            case 1: candidate.moveTop(obstacle->bottom() + 4); break;
+            case 2: candidate.moveRight(obstacle->left() - 4); break;
+            case 3: candidate.moveLeft(obstacle->right() + 4); break;
+            }
+        }
+        const QPointF displacement = candidate.topLeft() - initial.topLeft();
+        const qreal distance = QPointF::dotProduct(displacement, displacement);
+        if (distance < bestDistance) { bestDistance = distance; best = candidate; }
+    }
+    return best;
+}
 class LinkItem final : public QGraphicsItem {
 public:
     QString id;
-    QPainterPath curve, hit;
+    QPainterPath curve, hit, leader;
     QPolygonF arrow;
     QPalette colors;
-    LinkItem(const LinkPresentation &link, QPainterPath path, const QFont &font, const QPalette &palette)
+    LinkItem(const LinkPresentation &link, QPainterPath path, const QFont &font, const QPalette &palette,
+             std::vector<QRectF> &occupied)
         : id(link.id), curve(std::move(path)), colors(palette) {
         setZValue(1);
         setFlag(ItemIsSelectable);
@@ -86,7 +114,19 @@ public:
             label->setDefaultTextColor(colors.color(QPalette::Text));
             label->setTextInteractionFlags(Qt::NoTextInteraction);
             const QSizeF size = label->boundingRect().size();
-            label->setPos(curve.pointAtPercent(0.5) - QPointF(size.width() / 2, size.height()));
+            const QPointF anchor = curve.pointAtPercent(0.5);
+            const QRectF preferred(anchor - QPointF(size.width() / 2, size.height()), size);
+            const QRectF placed = placeLabel(preferred, occupied);
+            label->setPos(placed.topLeft());
+            occupied.push_back(placed);
+            if (placed != preferred) {
+                // Retain the route's midpoint anchor without putting text under
+                // nodes or other labels. The leader shares the link's hit area.
+                leader.moveTo(anchor);
+                leader.lineTo(QPointF(std::clamp(anchor.x(), placed.left(), placed.right()),
+                                      std::clamp(anchor.y(), placed.top(), placed.bottom())));
+                hit = hit.united(stroker.createStroke(leader));
+            }
             QPainterPath textShape;
             textShape.addRect(label->mapRectToParent(label->boundingRect()));
             hit = hit.united(textShape);
@@ -99,6 +139,10 @@ public:
         p->setBrush(Qt::NoBrush);
         p->setPen(QPen(color, isSelected() ? 2 : 1, Qt::DashLine));
         p->drawPath(curve);
+        if (!leader.isEmpty()) {
+            p->setPen(QPen(color, 1, Qt::DotLine));
+            p->drawPath(leader);
+        }
         if (!arrow.isEmpty()) {
             p->setPen(Qt::NoPen); p->setBrush(color); p->drawPolygon(arrow);
         }
@@ -141,7 +185,12 @@ void MindMapView::prepare(NodePresentation &node) const {
 void MindMapView::install(Presentation presentation, bool fit) {
     auto replacement = std::make_unique<QGraphicsScene>();
     QHash<QString, QRectF> rectangles;
-    for (const auto &node : presentation.nodes) rectangles.insert(node.id, node.rectangle);
+    std::vector<QRectF> occupied;
+    occupied.reserve(presentation.nodes.size() + presentation.links.size());
+    for (const auto &node : presentation.nodes) {
+        rectangles.insert(node.id, node.rectangle);
+        occupied.push_back(node.rectangle.adjusted(-2, -2, 2, 2));
+    }
     for (const auto &edge : presentation.treeEdges) {
         const QRectF parent = rectangles.value(edge.source), child = rectangles.value(edge.target);
         const bool right = child.center().x() > parent.center().x();
@@ -179,7 +228,7 @@ void MindMapView::install(Presentation presentation, bool fit) {
                 path.moveTo(from);
                 path.quadTo((from + to) / 2 + normal * offset, to);
             }
-            replacement->addItem(new LinkItem(link, std::move(path), font(), palette()));
+            replacement->addItem(new LinkItem(link, std::move(path), font(), palette(), occupied));
         }
     }
     for (auto &node : presentation.nodes) replacement->addItem(new NodeItem(std::move(node), palette()));

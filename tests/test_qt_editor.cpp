@@ -838,7 +838,22 @@ static void render_case() {
         CHECK(editor.selectNode(QStringLiteral("c")));
         return rectangles;
     };
+    auto checkLinkLabels = [&](const std::vector<QRectF> &nodes) {
+        std::vector<QRectF> labels;
+        for (const auto &link : semantic.at("crossLinks")) {
+            const QString topic = qs(link.at("topic"));
+            if (topic.isEmpty()) continue;
+            const QRectF label = textItem(editor, topic)->sceneBoundingRect();
+            for (const auto &node : nodes) CHECK(!label.intersects(node));
+            for (const auto &other : labels) CHECK(!label.intersects(other));
+            labels.push_back(label);
+            clickLabel(editor, topic);
+            CHECK(editor.selectedLinkId() == qs(link.at("id")));
+        }
+        editor.clearSelection();
+    };
     auto nodes = checkNodes();
+    checkLinkLabels(nodes);
     CHECK(texts(editor, QStringLiteral("plain")).isEmpty());
     CHECK(!texts(editor, QStringLiteral("<i>plain link</i>")).isEmpty());
     CHECK(texts(editor, QStringLiteral("plain link")).isEmpty());
@@ -856,6 +871,7 @@ static void render_case() {
         CHECK(editor.setLayoutDirection(direction));
         CHECK(editor.layoutDirection() == direction);
         nodes = checkNodes();
+        checkLinkLabels(nodes);
         const qreal rootX = topicRect(editor, rootTopic).center().x();
         bool left = false, right = false;
         for (const QRectF &rectangle : {topicRect(editor, wrapped), topicRect(editor, QStringLiteral("<b>plain</b>")), emptyNodeRect(editor)}) {
@@ -921,7 +937,7 @@ static void render_case() {
     editor.setFont(font);
     pump();
     CHECK(topicRect(editor, wrapped).height() > oldHeight);
-    checkNodes();
+    checkLinkLabels(checkNodes());
     CHECK(exported(editor) == semantic && changed.isEmpty());
     assertFit(editor);
     const QByteArray screenshot = qgetenv("M3_QT_SCREENSHOT");
