@@ -32,7 +32,7 @@ public:
     QAction *addChild, *addSibling, *addSiblingBefore, *editSelection, *deleteSelection, *toggleExpanded, *move, *up, *down, *addLink;
     QAction *rootSelection, *clearSelectionAction;
     QList<QAction *> nodeNavigation;
-    enum class TopicOperation { Rename, Child, SiblingAfter, SiblingBefore };
+    enum class TopicOperation { Child, SiblingAfter, SiblingBefore };
     enum class Navigation { Parent, Child, PreviousSibling, NextSibling, Root };
     QList<QAction *> menuActions;
     QAction *action(const char *name, const QString &text, const QList<QKeySequence> &shortcuts, std::function<void()> command, bool showInToolbar = true) {
@@ -49,7 +49,13 @@ public:
             toolbar->addAction(result);
             menuActions.append(result);
         }
-        QObject::connect(result, &QAction::triggered, host, std::move(command));
+        QObject::connect(view, &MindMapView::topicEditingChanged, result, [result, shortcuts](bool editing) {
+            result->setShortcuts(editing ? QList<QKeySequence>{} : shortcuts);
+        });
+        QObject::connect(result, &QAction::triggered, host, [this, command = std::move(command)] {
+            view->finishTopicEdit(true);
+            command();
+        });
         return result;
     }
     static const NodeChoice *choice(const std::vector<NodeChoice> &nodes, const QString &id) {
@@ -87,10 +93,9 @@ public:
         const auto nodes = controller->choices();
         const auto *node = choice(nodes, id);
         if (!node) return;
-        const bool insert = operation != TopicOperation::Rename;
         QString parentId = id;
         int index = -1;
-        QString title = insert ? tr("Add child") : tr("Rename node");
+        QString title = tr("Add child");
         if ((operation == TopicOperation::SiblingAfter || operation == TopicOperation::SiblingBefore) && !node->parent.isEmpty()) {
             const auto *parent = choice(nodes, node->parent);
             if (!parent) return;
@@ -102,14 +107,11 @@ public:
         dialog.setWindowTitle(title);
         dialog.setLabelText(tr("Topic"));
         dialog.setOption(QInputDialog::UsePlainTextEditForTextInput);
-        dialog.setTextValue(insert ? QString() : node->topic);
+        dialog.setTextValue(QString());
         QShortcut accept(QKeySequence(), &dialog);
         accept.setKeys(config.shortcuts.acceptTopic);
         QObject::connect(&accept, &QShortcut::activated, &dialog, &QDialog::accept);
-        if (dialog.exec() == QDialog::Accepted) {
-            if (insert) controller->addNode(parentId, dialog.textValue(), index);
-            else controller->renameNode(id, dialog.textValue());
-        }
+        if (dialog.exec() == QDialog::Accepted) controller->addNode(parentId, dialog.textValue(), index);
     }
     void navigate(Navigation command) {
         const auto nodes = controller->choices();
@@ -210,7 +212,9 @@ public:
         addSibling = action("addSibling", tr("Add sibling"), config.shortcuts.addSibling, [this] { topicDialog(TopicOperation::SiblingAfter); });
         addSiblingBefore = action("addSiblingBefore", tr("Add sibling before"), config.shortcuts.addSiblingBefore, [this] { topicDialog(TopicOperation::SiblingBefore); });
         editSelection = action("editSelection", tr("Rename/Edit"), config.shortcuts.editSelection, [this] {
-            if (controller->selectedLinkId().isEmpty()) topicDialog(TopicOperation::Rename); else linkDialog(false);
+            if (controller->selectedLinkId().isEmpty())
+                view->beginTopicEdit(controller->selectedNodeId(), config.shortcuts.acceptTopic);
+            else linkDialog(false);
         });
         deleteSelection = action("deleteSelection", tr("Delete"), config.shortcuts.deleteSelection, [this] {
             const auto link = controller->selectedLinkId(), node = controller->selectedNodeId();
@@ -241,7 +245,9 @@ public:
         direction->setAccessibleName(tr("Layout direction"));
         toolbar->addWidget(direction);
         QObject::connect(direction, &QComboBox::currentIndexChanged, editor, [this] {
-            controller->setLayoutDirection(static_cast<LayoutDirection>(direction->currentData().toInt()));
+            const auto requested = static_cast<LayoutDirection>(direction->currentData().toInt());
+            view->finishTopicEdit(true);
+            controller->setLayoutDirection(requested);
             updateActions();
         });
         nodeNavigation = {
@@ -255,6 +261,7 @@ public:
         layout->addWidget(view, 1); layout->addWidget(error);
         view->setContextMenuPolicy(Qt::CustomContextMenu);
         QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this](const QPoint &point) {
+            view->finishTopicEdit(true);
             QMenu menu(host); menu.addActions(menuActions); menu.exec(view->mapToGlobal(point));
         });
         QObject::connect(controller, &MindMapController::documentChanged, editor, [this, editor] { updateActions(); emit editor->documentChanged(); });
@@ -271,6 +278,7 @@ public:
         QObject::connect(view, &MindMapView::expansionRequested, controller, &MindMapController::setExpanded);
         QObject::connect(view, &MindMapView::appearanceChanged, controller, &MindMapController::refreshAppearance);
         QObject::connect(view, &MindMapView::editRequested, editSelection, &QAction::trigger);
+        QObject::connect(view, &MindMapView::topicEditRequested, controller, &MindMapController::renameNode);
         controller->newDocument(QStringLiteral("Central topic"));
         updateActions();
     }
@@ -278,7 +286,10 @@ public:
 MindMapEditor::MindMapEditor(QWidget *parent) : MindMapEditor(EditorConfig{}, parent) {}
 MindMapEditor::MindMapEditor(const EditorConfig &config, QWidget *parent)
     : QWidget(parent), d(std::make_unique<Private>(this, config)) {}
-MindMapEditor::~MindMapEditor() = default;
+MindMapEditor::~MindMapEditor() {
+    // Disarm the input before QWidget teardown can send it a committing FocusOut.
+    delete d->view;
+}
 bool MindMapEditor::newDocument(const QString &topic) { return d->controller->newDocument(topic); }
 bool MindMapEditor::loadJson(const QByteArray &json) { return d->controller->loadJson(json); }
 QByteArray MindMapEditor::toJson() const { return d->controller->toJson(); }

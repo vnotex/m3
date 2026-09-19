@@ -1,5 +1,12 @@
 #include "mindmap_view.h"
+#include <QAction>
+#include <QApplication>
+#include <QFocusEvent>
 #include <QGraphicsItem>
+#include <QKeyEvent>
+#include <QMenu>
+#include <QPlainTextEdit>
+#include <QShortcut>
 #include <QGraphicsScene>
 #include <QGraphicsTextItem>
 #include <QMouseEvent>
@@ -22,13 +29,14 @@ public:
     bool expanded, hasChildren;
     QRectF rect;
     QPalette colors;
+    QGraphicsTextItem *label;
     NodeItem(NodePresentation node, const QPalette &palette)
         : id(node.id), expanded(node.expanded), hasChildren(node.hasChildren),
           rect(QPointF(), node.rectangle.size()), colors(palette) {
         setPos(node.rectangle.topLeft());
         setZValue(2);
         setFlag(ItemIsSelectable);
-        auto *label = new QGraphicsTextItem(this);
+        label = new QGraphicsTextItem(this);
         // setDocument borrows; QObject parenting makes the text item sole owner.
         node.text->setParent(label);
         label->setDocument(node.text.release());
@@ -68,11 +76,15 @@ QRectF placeLabel(const QRectF &initial, const std::vector<QRectF> &occupied) {
     for (int direction = 0; direction < 4; ++direction) {
         QRectF candidate = initial;
         for (auto obstacle = collision(candidate); obstacle != occupied.end(); obstacle = collision(candidate)) {
+            // Clear the boundary despite rounding through moveRight/Bottom and adjusted().
+            const qreal gap = 4 + 8 * std::numeric_limits<qreal>::epsilon() *
+                std::max({qreal(1), std::abs(obstacle->left()), std::abs(obstacle->right()),
+                          std::abs(obstacle->top()), std::abs(obstacle->bottom()), candidate.width(), candidate.height()});
             switch (direction) {
-            case 0: candidate.moveBottom(obstacle->top() - 4); break;
-            case 1: candidate.moveTop(obstacle->bottom() + 4); break;
-            case 2: candidate.moveRight(obstacle->left() - 4); break;
-            case 3: candidate.moveLeft(obstacle->right() + 4); break;
+            case 0: candidate.moveBottom(obstacle->top() - gap); break;
+            case 1: candidate.moveTop(obstacle->bottom() + gap); break;
+            case 2: candidate.moveRight(obstacle->left() - gap); break;
+            case 3: candidate.moveLeft(obstacle->right() + gap); break;
             }
         }
         const QPointF displacement = candidate.topLeft() - initial.topLeft();
@@ -166,6 +178,159 @@ MindMapView::MindMapView(QWidget *parent) : QGraphicsView(parent) {
     setFocusPolicy(Qt::StrongFocus);
     setBackgroundBrush(palette().brush(QPalette::Base));
 }
+MindMapView::~MindMapView() {
+    qApp->removeEventFilter(this);
+    if (topicEditor) {
+        disconnect(topicEditor, nullptr, this, nullptr);
+        for (auto *shortcut : topicEditor->findChildren<QShortcut *>())
+            disconnect(shortcut, nullptr, this, nullptr);
+    }
+    topicEditor.clear();
+    topicLabel.clear();
+}
+void MindMapView::beginTopicEdit(const QString &id, const QList<QKeySequence> &acceptShortcuts) {
+    if (id.isEmpty()) return;
+    if (topicEditor && editedId == id) { topicEditor->setFocus(); return; }
+    auto findNode = [&]() -> NodeItem * {
+        for (auto *item : scene()->items())
+            if (auto *node = dynamic_cast<NodeItem *>(item); node && node->id == id) return node;
+        return nullptr;
+    };
+    if (!findNode()) return;
+    finishTopicEdit(true);
+    // Committing can synchronously replace every scene item.
+    auto *node = findNode();
+    if (!node) return;
+    editedId = id;
+    topicLabel = node->label;
+    originalTopic = topicLabel->toPlainText();
+    auto *input = new QPlainTextEdit(viewport());
+    topicEditor = input;
+    input->setObjectName(QStringLiteral("topicEditor"));
+    input->setAccessibleName(tr("Topic"));
+    input->setFont(topicLabel->font());
+    input->setPalette(palette());
+    input->setPlainText(originalTopic);
+    input->setTabChangesFocus(false);
+    input->setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+    input->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(input, &QWidget::customContextMenuRequested, this, [input](const QPoint &point) {
+        // The standard menu must belong to the input for outside-event routing.
+        QPointer<QMenu> menu = input->createStandardContextMenu();
+        menu->setParent(input, menu->windowFlags());
+        menu->exec(input->viewport()->mapToGlobal(point));
+        if (menu) menu->deleteLater();
+    });
+    topicLabel->hide();
+    updateTopicEditorGeometry();
+    viewFocusPolicy = focusPolicy();
+    viewportFocusPolicy = viewport()->focusPolicy();
+    setFocusPolicy(Qt::NoFocus);
+    viewport()->setFocusPolicy(Qt::NoFocus);
+    auto *accept = new QShortcut(input);
+    accept->setKeys(acceptShortcuts);
+    accept->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(accept, &QShortcut::activated, this, [this] { finishTopicEdit(true, true); });
+    input->show();
+    input->setFocus(Qt::OtherFocusReason);
+    input->selectAll();
+    emit topicEditingChanged(true);
+    qApp->installEventFilter(this);
+}
+void MindMapView::finishTopicEdit(bool commit, bool restoreFocus) {
+    if (!topicEditor) return;
+    auto *input = topicEditor.data();
+    const QString id = editedId, original = originalTopic, draft = input->toPlainText();
+    topicEditor.clear();
+    editedId.clear();
+    originalTopic.clear();
+    qApp->removeEventFilter(this);
+    disconnect(input, nullptr, this, nullptr);
+    for (auto *shortcut : input->findChildren<QShortcut *>()) {
+        shortcut->setEnabled(false);
+        disconnect(shortcut, nullptr, this, nullptr);
+    }
+    setFocusPolicy(viewFocusPolicy);
+    viewport()->setFocusPolicy(viewportFocusPolicy);
+    if (topicLabel) topicLabel->show();
+    topicLabel.clear();
+    input->hide();
+    input->deleteLater();
+    emit topicEditingChanged(false);
+    if (commit && draft != original) emit topicEditRequested(id, draft);
+    if (restoreFocus) setFocus(Qt::OtherFocusReason);
+}
+void MindMapView::updateTopicEditorGeometry() {
+    if (!topicEditor || !topicLabel) return;
+    const QRect label = mapFromScene(topicLabel->sceneBoundingRect()).boundingRect();
+    const int margin = topicEditor->frameWidth() + int(std::ceil(topicEditor->document()->documentMargin()));
+    const int line = topicEditor->fontMetrics().lineSpacing();
+    const int width = std::min(viewport()->width(), std::max(120, label.width() + 2 * margin));
+    const int height = std::min(viewport()->height(), std::clamp(label.height() + 2 * margin,
+                                                               3 * line + 2 * margin, 8 * line + 2 * margin));
+    const int x = std::clamp(label.left() - margin, 0, viewport()->width() - width);
+    const int y = std::clamp(label.top() - margin, 0, viewport()->height() - height);
+    topicEditor->setGeometry(x, y, width, height);
+}
+bool MindMapView::eventFilter(QObject *watched, QEvent *event) {
+    if (!topicEditor) return false;
+    bool owned = false, inWindow = false;
+    for (auto *object = watched; object; object = object->parent()) {
+        if (object == topicEditor) { owned = true; break; }
+        if (auto *widget = qobject_cast<QWidget *>(object); widget && widget->window() == window())
+            inWindow = true;
+    }
+    if (owned) {
+        if (event->type() == QEvent::ShortcutOverride) {
+            auto *key = static_cast<QKeyEvent *>(event);
+            if (key->key() == Qt::Key_Escape) { key->accept(); return true; }
+            const auto *accept = topicEditor->findChild<QShortcut *>();
+            for (const auto &sequence : accept->keys()) {
+                if (!sequence.isEmpty() && sequence[0] == key->keyCombination()) {
+                    // Leave sequence recognition to Qt, not QPlainTextEdit.
+                    key->ignore();
+                    return true;
+                }
+            }
+        } else if (event->type() == QEvent::KeyPress && watched == topicEditor &&
+                   static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape) {
+            finishTopicEdit(false, true);
+            return true;
+        } else if (event->type() == QEvent::FocusOut && watched == topicEditor) {
+            if (static_cast<QFocusEvent *>(event)->reason() == Qt::PopupFocusReason) {
+                auto *popup = QApplication::activePopupWidget();
+                // Native IME popups need not have a QWidget; text menus are input-owned.
+                if (!popup) return false;
+                for (QObject *owner = popup; owner; owner = owner->parent())
+                    if (owner == topicEditor) return false;
+            }
+            finishTopicEdit(true);
+            return false;
+        }
+        return false;
+    }
+    if (!inWindow && event->type() == QEvent::Shortcut) {
+        // QAction shortcuts belong to associated widgets, even without a QObject parent.
+        if (auto *action = qobject_cast<QAction *>(watched))
+            for (auto *associated : action->associatedObjects())
+                for (auto *object = associated; object && !inWindow; object = object->parent())
+                    if (auto *widget = qobject_cast<QWidget *>(object); widget && widget->window() == window())
+                        inWindow = true;
+    }
+    if (!inWindow) return false;
+    if (((event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonDblClick) &&
+         watched != viewport()) || event->type() == QEvent::Shortcut ||
+        (event->type() == QEvent::Close && watched == window())) {
+        finishTopicEdit(true);
+        // The receiver's original action must still execute after the rename.
+        return false;
+    }
+    return false;
+}
+void MindMapView::scrollContentsBy(int dx, int dy) {
+    QGraphicsView::scrollContentsBy(dx, dy);
+    updateTopicEditorGeometry();
+}
 void MindMapView::prepare(NodePresentation &node) const {
     node.text = std::make_unique<QTextDocument>();
     node.text->setDocumentMargin(0);
@@ -231,9 +396,25 @@ void MindMapView::install(Presentation presentation, bool fit) {
             replacement->addItem(new LinkItem(link, std::move(path), font(), palette(), occupied));
         }
     }
-    for (auto &node : presentation.nodes) replacement->addItem(new NodeItem(std::move(node), palette()));
+    QGraphicsTextItem *replacementLabel = nullptr;
+    for (auto &node : presentation.nodes) {
+        auto *item = new NodeItem(std::move(node), palette());
+        replacement->addItem(item);
+        if (topicEditor && item->id == editedId) replacementLabel = item->label;
+    }
     replacement->setSceneRect(replacement->itemsBoundingRect().adjusted(-32, -32, 32, 32));
     const QPointF center = mapToScene(viewport()->rect().center());
+    if (topicEditor) {
+        if (fit || !replacementLabel || replacementLabel->toPlainText() != originalTopic) {
+            finishTopicEdit(false);
+        } else {
+            topicLabel.clear();
+            topicLabel = replacementLabel;
+            topicLabel->hide();
+            topicEditor->setFont(topicLabel->font());
+            topicEditor->setPalette(palette());
+        }
+    }
     auto *old = scene();
     replacement->setParent(this);
     setScene(replacement.release());
@@ -241,8 +422,10 @@ void MindMapView::install(Presentation presentation, bool fit) {
     preserveCenter(center);
     pendingFit = pendingFit || fit;
     if (pendingFit && isVisible()) fitContents();
+    updateTopicEditorGeometry();
 }
 void MindMapView::showError(const QString &message) {
+    finishTopicEdit(false);
     auto *replacement = new QGraphicsScene(this);
     auto *text = replacement->addText(tr("Drawing unavailable\n%1").arg(message), font());
     text->setDefaultTextColor(palette().color(QPalette::Text));
@@ -252,6 +435,7 @@ void MindMapView::showError(const QString &message) {
     fitContents();
 }
 void MindMapView::setSelection(const QString &node, const QString &link) {
+    if (topicEditor && (node != editedId || !link.isEmpty())) finishTopicEdit(false);
     for (auto *item : scene()->items()) {
         if (auto *n = dynamic_cast<NodeItem *>(item)) n->setSelected(n->id == node);
         else if (auto *l = dynamic_cast<LinkItem *>(item)) l->setSelected(l->id == link);
@@ -262,6 +446,7 @@ void MindMapView::fitContents() {
     pendingFit = false;
     setSceneRect(scene()->sceneRect());
     fitInView(scene()->sceneRect(), Qt::KeepAspectRatio);
+    updateTopicEditorGeometry();
 }
 void MindMapView::zoom(qreal factor) {
     pendingFit = false;
@@ -270,36 +455,48 @@ void MindMapView::zoom(qreal factor) {
     const qreal target = std::clamp(current * factor, qreal(0.1), qreal(4));
     scale(target / current, target / current);
     preserveCenter(center);
+    updateTopicEditorGeometry();
 }
 void MindMapView::resetZoom() {
     pendingFit = false;
     const QPointF center = mapToScene(viewport()->rect().center());
     resetTransform(); preserveCenter(center);
+    updateTopicEditorGeometry();
 }
 void MindMapView::pick(QMouseEvent *event, bool activate) {
+    enum class Target { Empty, Node, Link, Expansion };
+    Target target = Target::Empty;
+    QString id;
+    bool expanded = false;
     for (auto *item = itemAt(event->position().toPoint()); item; item = item->parentItem()) {
         if (auto *node = dynamic_cast<NodeItem *>(item)) {
-            const QString id = node->id;
-            const bool expanded = node->expanded;
+            id = node->id;
+            expanded = !node->expanded;
             const bool toggle = node->hasChildren && node->affordance().contains(node->mapFromScene(mapToScene(event->position().toPoint())));
-            if (toggle && !activate) emit expansionRequested(id, !expanded);
-            else { emit nodePicked(id); if (activate) emit editRequested(); }
-            return;
+            target = toggle && !activate ? Target::Expansion : Target::Node;
+            break;
         }
         if (auto *link = dynamic_cast<LinkItem *>(item)) {
-            const QString id = link->id;
-            emit linkPicked(id);
-            if (activate) emit editRequested();
-            return;
+            id = link->id;
+            target = Target::Link;
+            break;
         }
     }
-    emit emptyPicked();
+    // No scene pointers or old-coordinate hit tests survive the synchronous rename.
+    finishTopicEdit(true);
+    setFocus(Qt::MouseFocusReason);
+    switch (target) {
+    case Target::Node: emit nodePicked(id); if (activate) emit editRequested(); break;
+    case Target::Link: emit linkPicked(id); if (activate) emit editRequested(); break;
+    case Target::Expansion: emit expansionRequested(id, expanded); break;
+    case Target::Empty: emit emptyPicked(); break;
+    }
 }
 void MindMapView::mousePressEvent(QMouseEvent *event) {
     if (event->button() == Qt::MiddleButton) {
         panning = true; panPosition = event->position().toPoint(); setCursor(Qt::ClosedHandCursor); event->accept();
     } else if (event->button() == Qt::LeftButton || event->button() == Qt::RightButton) {
-        setFocus(); pick(event, false); event->accept();
+        pick(event, false); event->accept();
     } else QGraphicsView::mousePressEvent(event);
 }
 void MindMapView::mouseMoveEvent(QMouseEvent *event) {
@@ -325,6 +522,7 @@ void MindMapView::wheelEvent(QWheelEvent *event) {
         zoom(std::pow(1.2, event->angleDelta().y() / 120.0));
         const QPointF after = mapToScene(position);
         preserveCenter(mapToScene(viewport()->rect().center()) + before - after);
+        updateTopicEditorGeometry();
         event->accept();
     } else QGraphicsView::wheelEvent(event);
 }
@@ -340,6 +538,7 @@ void MindMapView::resizeEvent(QResizeEvent *event) {
     QGraphicsView::resizeEvent(event);
     if (pendingFit) fitContents();
     else if (event->oldSize().isValid()) preserveCenter(center);
+    updateTopicEditorGeometry();
 }
 void MindMapView::showEvent(QShowEvent *event) {
     QGraphicsView::showEvent(event);

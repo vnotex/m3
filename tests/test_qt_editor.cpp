@@ -6,6 +6,9 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QClipboard>
+#include <QCloseEvent>
+#include <QContextMenuEvent>
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -20,11 +23,13 @@
 #include <QGraphicsView>
 #include <QImage>
 #include <QInputDialog>
+#include <QInputMethodEvent>
 #include <QKeySequence>
 #include <QLineF>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPalette>
@@ -39,6 +44,9 @@
 #include <QTest>
 #include <QTextDocument>
 #include <QTimer>
+#include <QToolBar>
+#include <QToolButton>
+#include <QVBoxLayout>
 #include <QWheelEvent>
 #include <algorithm>
 #include <cmath>
@@ -157,6 +165,13 @@ static QPoint labelPoint(Editor &editor, const QString &topic) {
                                                       rect.top() + rect.height() * fy));
         if (view.viewport()->rect().contains(point) && belongsTo(view.itemAt(point), owner)) return point;
     }
+    // A crossing link can cover the sample points without covering the whole label.
+    const QRect visible = view.mapFromScene(rect).boundingRect().intersected(view.viewport()->rect());
+    for (int y = visible.top(); y <= visible.bottom(); ++y)
+        for (int x = visible.left(); x <= visible.right(); ++x) {
+            const QPoint point(x, y);
+            if (rect.contains(view.mapToScene(point)) && belongsTo(view.itemAt(point), owner)) return point;
+        }
     throw std::runtime_error("Label is not reachable by a viewport click: " + utf8(topic));
 }
 static void clickLabel(Editor &editor, const QString &topic, bool doubleClick = false) {
@@ -222,7 +237,7 @@ static void trigger(Editor &editor, const char *name) {
 }
 static QAction &textAction(QWidget &widget, const QStringList &labels) {
     for (auto *action : widget.findChildren<QAction *>()) {
-        QString text = action->text();
+        QString text = action->text().section(QLatin1Char('\t'), 0, 0);
         text.remove(QLatin1Char('&'));
         text = text.trimmed();
         if (text.endsWith(QStringLiteral("..."))) text.chop(3);
@@ -237,6 +252,20 @@ static void shortcut(Editor &editor, Qt::Key key, Qt::KeyboardModifiers modifier
     graphics(editor).setFocus(Qt::OtherFocusReason);
     pump();
     QTest::keyClick(graphics(editor).viewport(), key, modifiers);
+    pump();
+}
+static QPlainTextEdit *activeTopicInput(Editor &editor) {
+    for (auto *input : graphics(editor).viewport()->findChildren<QPlainTextEdit *>(QStringLiteral("topicEditor")))
+        if (input->isVisible()) return input;
+    return nullptr;
+}
+static QPlainTextEdit &topicInput(Editor &editor) {
+    auto *input = activeTopicInput(editor);
+    CHECK(input != nullptr && input->hasFocus());
+    return *input;
+}
+static void topicKey(Editor &editor, Qt::Key key, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+    QTest::keyClick(&topicInput(editor), key, modifiers);
     pump();
 }
 static void wheel(QGraphicsView &view, QPoint point, int delta, Qt::KeyboardModifiers modifiers) {
@@ -1093,6 +1122,346 @@ static void navigation_case() {
     CHECK(changed.size() == largeChanges);
 }
 
+static void inline_edit_case() {
+    {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+        showEditor(editor);
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        const Json original = exported(editor);
+        shortcut(editor, Qt::Key_F2);
+        const QString draft = QStringLiteral("A much longer parent topic that moves its child\nSecond line");
+        topicInput(editor).setPlainText(draft);
+        const QPoint target = labelPoint(editor, QStringLiteral("Delta"));
+        CHECK(!topicInput(editor).geometry().contains(target));
+        CHECK(exported(editor) == original && changed.isEmpty());
+        QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, target);
+        pump();
+        CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == utf8(draft));
+        CHECK(editor.selectedNodeId() == QStringLiteral("d") && changed.size() == 1);
+        CHECK((labelPoint(editor, QStringLiteral("Delta")) - target).manhattanLength() > 10);
+        const QRectF parent = topicRect(editor, draft);
+        const QPoint circle = graphics(editor).mapFromScene(QPointF(parent.right() - 15, parent.center().y()));
+        QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, circle);
+        pump();
+        CHECK(!record(exported(editor), "nodes", QStringLiteral("a")).at("expanded").get<bool>());
+        CHECK(activeTopicInput(editor) == nullptr && changed.size() == 2);
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        const Json unchanged = exported(editor);
+        shortcut(editor, Qt::Key_F2);
+        topicKey(editor, Qt::Key_Return, Qt::ControlModifier);
+        CHECK(exported(editor) == unchanged && changed.size() == 2);
+    }
+    {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        const Json original = exported(editor);
+        shortcut(editor, Qt::Key_F2);
+        auto &input = topicInput(editor);
+        QTest::keyClicks(&input, "ab");
+        QTest::keyClick(&input, Qt::Key_Left);
+        QTest::keyClick(&input, Qt::Key_Delete);
+        QTest::keyClick(&input, Qt::Key_Space);
+        QTest::keyClick(&input, Qt::Key_Return);
+        QTest::keyClick(&input, Qt::Key_Tab);
+        QTest::keyClicks(&input, "z");
+        QTest::keyClick(&input, Qt::Key_Up);
+        QTest::keyClick(&input, Qt::Key_Down);
+        CHECK(input.toPlainText() == QStringLiteral("a \n\tz"));
+        CHECK(exported(editor) == original && editor.selectedNodeId() == QStringLiteral("a") && changed.isEmpty());
+        QToolButton *zoomButton = nullptr;
+        for (auto *button : editor.findChildren<QToolButton *>())
+            if (button->defaultAction() == &editAction(editor, "zoomIn")) zoomButton = button;
+        CHECK(zoomButton != nullptr);
+        zoomButton->setFocusPolicy(Qt::NoFocus);
+        const qreal scale = graphics(editor).transform().m11();
+        QTest::mouseClick(zoomButton, Qt::LeftButton);
+        pump();
+        CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "a \n\tz");
+        CHECK(changed.size() == 1 && graphics(editor).transform().m11() > scale);
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Before layout"));
+        auto *layout = editor.findChild<QComboBox *>();
+        CHECK(layout != nullptr);
+        layout->setCurrentIndex(layout->findData(int(Editor::LayoutDirection::Left)));
+        pump();
+        CHECK(editor.layoutDirection() == Editor::LayoutDirection::Left);
+        CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "Before layout");
+        CHECK(changed.size() == 2);
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Before programmatic action"));
+        trigger(editor, "toggleExpanded");
+        CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "Before programmatic action");
+        CHECK(!record(exported(editor), "nodes", QStringLiteral("a")).at("expanded").get<bool>() && changed.size() == 4);
+        shortcut(editor, Qt::Key_Home);
+        CHECK(editor.selectedNodeId() == QStringLiteral("r"));
+    }
+    {
+        m3::qt::EditorConfig config;
+        config.shortcuts.acceptTopic = {QKeySequence(QStringLiteral("Return, Ctrl+S")), QKeySequence(Qt::ALT | Qt::Key_Return)};
+        config.shortcuts.toggleExpanded.clear();
+        config.shortcuts.selectRoot = {QKeySequence(Qt::CTRL | Qt::Key_H), QKeySequence(Qt::ALT | Qt::Key_H)};
+        Editor editor(config);
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Multi-key acceptance"));
+        topicKey(editor, Qt::Key_Return);
+        CHECK(changed.isEmpty());
+        topicKey(editor, Qt::Key_S, Qt::ControlModifier);
+        CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "Multi-key acceptance" && changed.size() == 1);
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Second acceptance binding"));
+        topicKey(editor, Qt::Key_Return, Qt::AltModifier);
+        CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "Second acceptance binding" && changed.size() == 2);
+        shortcut(editor, Qt::Key_Space);
+        CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded").get<bool>() && changed.size() == 2);
+        shortcut(editor, Qt::Key_H, Qt::AltModifier);
+        CHECK(editor.selectedNodeId() == QStringLiteral("r"));
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        shortcut(editor, Qt::Key_H, Qt::ControlModifier);
+        CHECK(editor.selectedNodeId() == QStringLiteral("r"));
+    }
+    {
+        m3::qt::EditorConfig config;
+        config.shortcuts.acceptTopic.clear();
+        Editor editor(config);
+        showEditor(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Click accepts without a binding"));
+        topicKey(editor, Qt::Key_Return, Qt::ControlModifier);
+        CHECK(changed.isEmpty());
+        const QString draft = topicInput(editor).toPlainText();
+        QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, blankPoint(graphics(editor)));
+        pump();
+        CHECK(record(exported(editor), "nodes", QStringLiteral("root")).at("topic") == utf8(draft));
+        CHECK(changed.size() == 1 && editor.selectedNodeId().isEmpty());
+    }
+    {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        const Json original = exported(editor);
+        shortcut(editor, Qt::Key_F2);
+        auto &input = topicInput(editor);
+        input.setPlainText(QStringLiteral("Retained draft"));
+        input.moveCursor(QTextCursor::End);
+        input.insertPlainText(QStringLiteral("!"));
+        auto cursor = input.textCursor();
+        cursor.setPosition(2);
+        cursor.setPosition(5, QTextCursor::KeepAnchor);
+        input.setTextCursor(cursor);
+        CHECK(!editor.loadJson(QByteArray("{invalid")));
+        CHECK(topicInput(editor).toPlainText() == QStringLiteral("Retained draft!"));
+        CHECK(exported(editor) == original && changed.isEmpty());
+        QFont font = editor.font(); font.setPointSize(font.pointSize() + 2);
+        editor.setFont(font);
+        CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Left));
+        CHECK(editor.renameNode(QStringLiteral("b"), QStringLiteral("Unrelated mutation")));
+        pump();
+        CHECK(topicInput(editor).toPlainText() == QStringLiteral("Retained draft!"));
+        CHECK(topicInput(editor).textCursor().position() == 5 && topicInput(editor).textCursor().anchor() == 2);
+        topicKey(editor, Qt::Key_Z, Qt::ControlModifier);
+        CHECK(topicInput(editor).toPlainText() == QStringLiteral("Retained draft"));
+        CHECK(changed.size() == 1 && editor.selectedNodeId() == QStringLiteral("a"));
+        CHECK(editor.renameNode(QStringLiteral("a"), QStringLiteral("Authoritative external rename")));
+        pump();
+        CHECK(activeTopicInput(editor) == nullptr && changed.size() == 2);
+        CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "Authoritative external rename");
+        CHECK(editor.newDocument());
+        changed.clear();
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Must not leak into reused root"));
+        CHECK(editor.newDocument());
+        pump();
+        CHECK(activeTopicInput(editor) == nullptr && changed.size() == 1);
+        const Json replacement = exported(editor);
+        CHECK(record(replacement, "nodes", QStringLiteral("root")).at("topic") == "Central topic");
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Must not leak into identical load"));
+        CHECK(editor.loadJson(encoded(replacement)));
+        pump();
+        CHECK(activeTopicInput(editor) == nullptr && changed.size() == 2 && exported(editor) == replacement);
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        changed.clear();
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Cancel on selection"));
+        CHECK(editor.selectNode(QStringLiteral("b")));
+        pump();
+        CHECK(activeTopicInput(editor) == nullptr && changed.isEmpty());
+        CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "Alpha");
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Cancel on link selection"));
+        CHECK(editor.selectLink(QStringLiteral("l1")));
+        pump();
+        CHECK(activeTopicInput(editor) == nullptr && changed.isEmpty());
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Cancel on deletion"));
+        CHECK(editor.removeNode(QStringLiteral("a")));
+        pump();
+        CHECK(activeTopicInput(editor) == nullptr && changed.size() == 1);
+        CHECK(!hasRecord(exported(editor), "nodes", QStringLiteral("a")));
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        CHECK(editor.selectNode(QStringLiteral("d")));
+        changed.clear();
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Cancel when hidden by collapse"));
+        CHECK(editor.setExpanded(QStringLiteral("a"), false));
+        pump();
+        CHECK(activeTopicInput(editor) == nullptr && changed.size() == 1);
+        CHECK(record(exported(editor), "nodes", QStringLiteral("d")).at("topic") == "Delta");
+    }
+    {
+        QWidget host;
+        QVBoxLayout layout(&host);
+        Editor first(&host), second(&host);
+        layout.addWidget(&first); layout.addWidget(&second);
+        CHECK(first.loadJson(encoded(editorFixture())));
+        CHECK(second.loadJson(encoded(editorFixture())));
+        host.resize(1100, 1000); host.show();
+        showEditor(first);
+        const Json secondOriginal = exported(second);
+        CHECK(first.selectNode(QStringLiteral("a")));
+        QSignalSpy firstChanges(&first, &Editor::documentChanged), secondChanges(&second, &Editor::documentChanged);
+        shortcut(first, Qt::Key_F2);
+        topicInput(first).setPlainText(QStringLiteral("Only first editor"));
+        clickLabel(second, QStringLiteral("Beta"));
+        CHECK(record(exported(first), "nodes", QStringLiteral("a")).at("topic") == "Only first editor");
+        CHECK(firstChanges.size() == 1 && exported(second) == secondOriginal && secondChanges.isEmpty());
+        CHECK(second.selectedNodeId() == QStringLiteral("b"));
+        shortcut(second, Qt::Key_F2);
+        topicInput(second).setPlainText(QStringLiteral("Canceled second draft"));
+        topicKey(second, Qt::Key_Escape);
+        CHECK(exported(second) == secondOriginal && secondChanges.isEmpty() && firstChanges.size() == 1);
+    }
+    {
+        int changes = 0;
+        auto editor = std::make_unique<Editor>();
+        showEditor(*editor);
+        QObject::connect(editor.get(), &Editor::documentChanged, qApp, [&] { ++changes; });
+        shortcut(*editor, Qt::Key_F2);
+        topicInput(*editor).setPlainText(QStringLiteral("Destruction is not acceptance"));
+        editor.reset();
+        pump();
+        CHECK(changes == 0);
+    }
+    {
+        class SnapshotHost final : public QWidget {
+        public:
+            std::function<void()> observeClose;
+        protected:
+            void closeEvent(QCloseEvent *event) override { observeClose(); event->ignore(); }
+        } host;
+        QVBoxLayout layout(&host);
+        Editor editor(&host);
+        layout.addWidget(&editor);
+        host.resize(1000, 700); host.show();
+        showEditor(editor);
+        QAction save; // Window association, not QObject parenting, owns its shortcut.
+        save.setShortcut(QKeySequence::Save);
+        save.setShortcutContext(Qt::WindowShortcut);
+        host.addAction(&save);
+        Json saved, closed;
+        QObject::connect(&save, &QAction::triggered, &host, [&] { saved = exported(editor); });
+        host.observeClose = [&] { closed = exported(editor); };
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Host save sees draft"));
+        topicKey(editor, Qt::Key_S, Qt::ControlModifier);
+        CHECK(record(saved, "nodes", QStringLiteral("root")).at("topic") == "Host save sees draft");
+        CHECK(changed.size() == 1);
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Host close sees draft"));
+        host.close();
+        pump();
+        CHECK(record(closed, "nodes", QStringLiteral("root")).at("topic") == "Host close sees draft");
+        CHECK(changed.size() == 2 && activeTopicInput(editor) == nullptr);
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Host popup sees draft"));
+        QMenu popup(&host);
+        auto *observe = popup.addAction(QStringLiteral("Observe saved topic"));
+        QObject::connect(observe, &QAction::triggered, &host, [&] { saved = exported(editor); });
+        popup.popup(host.mapToGlobal(QPoint(30, 30)));
+        pump();
+        CHECK(activeTopicInput(editor) == nullptr && changed.size() == 3);
+        popup.setActiveAction(observe);
+        QTest::keyClick(&popup, Qt::Key_Return);
+        pump();
+        CHECK(record(saved, "nodes", QStringLiteral("root")).at("topic") == "Host popup sees draft");
+    }
+    {
+        Editor editor;
+        showEditor(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), errors(&editor, &Editor::errorOccurred);
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).clear();
+        topicKey(editor, Qt::Key_Enter, Qt::ControlModifier);
+        CHECK(record(exported(editor), "nodes", QStringLiteral("root")).at("topic") == "" && changed.size() == 1);
+        const QString unicode = QString::fromUtf8(" café\t\n世界 🌍 ");
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(unicode);
+        topicKey(editor, Qt::Key_Return, Qt::ControlModifier);
+        CHECK(record(exported(editor), "nodes", QStringLiteral("root")).at("topic") == utf8(unicode) && changed.size() == 2);
+        const Json saved = exported(editor);
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Canceled"));
+        topicKey(editor, Qt::Key_Escape);
+        CHECK(exported(editor) == saved && changed.size() == 2 && editor.selectedNodeId() == QStringLiteral("root"));
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Invalid") + QChar(0) + QStringLiteral("topic"));
+        topicKey(editor, Qt::Key_Return, Qt::ControlModifier);
+        CHECK(exported(editor) == saved && changed.size() == 2 && errors.size() == 1);
+        CHECK(!editor.lastError().isEmpty() && activeTopicInput(editor) == nullptr);
+        shortcut(editor, Qt::Key_F2);
+        auto &input = topicInput(editor);
+        const QString pasted = QString::fromUtf8("Native paste 世界");
+        QApplication::clipboard()->setText(pasted);
+        std::exception_ptr menuFailure;
+        bool pastedFromMenu = false;
+        QTimer::singleShot(0, &editor, [&] {
+            QPointer<QMenu> menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+            try {
+                CHECK(menu != nullptr);
+                // Deliver popup exposure/activation before clicking its native action.
+                pump();
+                CHECK(activeTopicInput(editor) != nullptr && exported(editor) == saved);
+                auto &paste = textAction(*menu, {QStringLiteral("Paste")});
+                QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier, menu->actionGeometry(&paste).center());
+                pastedFromMenu = true;
+            } catch (...) { menuFailure = std::current_exception(); }
+            if (menu) menu->close();
+        });
+        const QPoint point = input.viewport()->rect().center();
+        QContextMenuEvent context(QContextMenuEvent::Mouse, point, input.viewport()->mapToGlobal(point));
+        QCoreApplication::sendEvent(input.viewport(), &context);
+        pump();
+        if (menuFailure) std::rethrow_exception(menuFailure);
+        CHECK(pastedFromMenu && topicInput(editor).toPlainText() == pasted);
+        CHECK(exported(editor) == saved && changed.size() == 2);
+        QInputMethodEvent preedit(QString::fromUtf8("未確定"), {});
+        QCoreApplication::sendEvent(&topicInput(editor), &preedit);
+        CHECK(exported(editor) == saved && changed.size() == 2);
+        QInputMethodEvent commit;
+        commit.setCommitString(QString::fromUtf8("文"));
+        QCoreApplication::sendEvent(&topicInput(editor), &commit);
+        topicKey(editor, Qt::Key_Return, Qt::ControlModifier);
+        CHECK(record(exported(editor), "nodes", QStringLiteral("root")).at("topic") == utf8(pasted + QString::fromUtf8("文")));
+        CHECK(changed.size() == 3);
+    }
+}
+
 static void configuration_case() {
     auto configured = [] {
         m3::qt::EditorConfig config;
@@ -1121,16 +1490,10 @@ static void configuration_case() {
     });
     const QString grandchild = editor.selectedNodeId();
     CHECK(record(exported(editor), "nodes", child).at("children") == Json({utf8(grandchild)}));
-    dialogs({[&](QDialog *dialog) {
-        auto *input = qobject_cast<QInputDialog *>(dialog);
-        CHECK(input != nullptr);
-        auto *text = input->findChild<QPlainTextEdit *>();
-        CHECK(text != nullptr);
-        input->activateWindow(); text->setFocus(); pump();
-        input->setTextValue(QStringLiteral("Rebound rename"));
-        QTest::keyClick(text, Qt::Key_Return, Qt::AltModifier);
-        CHECK(!dialog->isVisible());
-    }}, [&] { shortcut(editor, Qt::Key_R, Qt::ControlModifier); });
+    shortcut(editor, Qt::Key_R, Qt::ControlModifier);
+    topicInput(editor).setPlainText(QStringLiteral("Rebound rename"));
+    topicKey(editor, Qt::Key_Return, Qt::AltModifier);
+    CHECK(activeTopicInput(editor) == nullptr);
     CHECK(record(exported(editor), "nodes", grandchild).at("topic") == "Rebound rename");
     const Json renamed = exported(editor);
     dialogs({}, [&] { shortcut(editor, Qt::Key_F2); shortcut(editor, Qt::Key_Insert); });
@@ -1191,23 +1554,16 @@ static void shortcuts_case() {
     CHECK(changed.size() == 4);
     const Json inserted = exported(editor);
     const QString selected = editor.selectedNodeId();
-    dialogs({[&](QDialog *dialog) {
-        auto *input = qobject_cast<QInputDialog *>(dialog);
-        CHECK(input != nullptr);
-        auto *text = input->findChild<QPlainTextEdit *>();
-        CHECK(text != nullptr);
-        input->activateWindow(); text->setFocus(); pump();
-        CHECK(text->hasFocus());
-        text->selectAll();
-        QTest::keyClicks(text, "Typing");
-        QTest::keyClick(text, Qt::Key_Return);
-        QTest::keyClick(text, Qt::Key_Tab);
-        QTest::keyClicks(text, "inside dialog");
-        CHECK(input->textValue() == QStringLiteral("Typing\n\tinside dialog"));
-        CHECK(exported(editor) == inserted && changed.size() == 4);
-        QTest::keyClick(text, Qt::Key_Escape);
-        CHECK(!dialog->isVisible());
-    }}, [&] { shortcut(editor, Qt::Key_F2); });
+    shortcut(editor, Qt::Key_F2);
+    auto &text = topicInput(editor);
+    QTest::keyClicks(&text, "Typing");
+    QTest::keyClick(&text, Qt::Key_Return);
+    QTest::keyClick(&text, Qt::Key_Tab);
+    QTest::keyClicks(&text, "inside topic");
+    CHECK(text.toPlainText() == QStringLiteral("Typing\n\tinside topic"));
+    CHECK(exported(editor) == inserted && changed.size() == 4);
+    topicKey(editor, Qt::Key_Escape);
+    CHECK(activeTopicInput(editor) == nullptr);
     CHECK(exported(editor) == inserted && editor.selectedNodeId() == selected && changed.size() == 4);
     CHECK(editor.selectNode(QStringLiteral("a")));
     shortcut(editor, Qt::Key_Right);
@@ -1304,15 +1660,19 @@ static void controls_case() {
     const Json beforeCancel = exported(editor);
     dialogs({topicResponse(editor, QStringLiteral("Do not insert"), false)}, [&] { shortcut(editor, Qt::Key_Insert); });
     CHECK(exported(editor) == beforeCancel && editor.selectedNodeId() == added && changed.size() == 1);
-    dialogs({topicResponse(editor, QStringLiteral("Renamed\nfrom F2"))}, [&] { shortcut(editor, Qt::Key_F2); });
+    shortcut(editor, Qt::Key_F2);
+    topicInput(editor).setPlainText(QStringLiteral("Renamed\nfrom F2"));
+    topicKey(editor, Qt::Key_Return, Qt::ControlModifier);
     CHECK(record(exported(editor), "nodes", added).at("topic") == "Renamed\nfrom F2");
     CHECK(changed.size() == 2 && editor.selectedNodeId() == added);
     const Json renamed = exported(editor);
-    dialogs({topicResponse(editor, QStringLiteral("Canceled rename"), false)}, [&] { shortcut(editor, Qt::Key_F2); });
+    shortcut(editor, Qt::Key_F2);
+    topicInput(editor).setPlainText(QStringLiteral("Canceled rename"));
+    topicKey(editor, Qt::Key_Escape);
     CHECK(exported(editor) == renamed && changed.size() == 2);
-    dialogs({topicResponse(editor, QStringLiteral("Double click topic"))}, [&] {
-        clickLabel(editor, QStringLiteral("Renamed\nfrom F2"), true);
-    });
+    clickLabel(editor, QStringLiteral("Renamed\nfrom F2"), true);
+    topicInput(editor).setPlainText(QStringLiteral("Double click topic"));
+    topicKey(editor, Qt::Key_Enter, Qt::ControlModifier);
     CHECK(record(exported(editor), "nodes", added).at("topic") == "Double click topic");
     CHECK(changed.size() == 3);
 
@@ -1800,6 +2160,7 @@ int main(int argc, char **argv) {
         else if (name == "render") render_case();
         else if (name == "navigation") navigation_case();
         else if (name == "controls") controls_case();
+        else if (name == "inline_edit") inline_edit_case();
         else if (name == "configuration") configuration_case();
         else if (name == "shortcuts") shortcuts_case();
         else if (name == "lifetime") lifetime_case();

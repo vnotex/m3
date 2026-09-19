@@ -34,7 +34,8 @@ namespace m3::qt {
 // Replace a shortcut list to rebind it, or clear it to disable its keyboard binding
 // without removing the toolbar/menu command. Avoid assigning the same sequence to
 // multiple commands. Bindings are local to this widget; dialogs and the layout
-// picker keep their normal input keys. acceptTopic belongs to topic dialogs.
+// picker keep their normal input keys. acceptTopic saves inline node edits and
+// accepts topic-creation dialogs. Inline Escape cancels; clicking outside saves.
 // Example: config.shortcuts.addChild = {QKeySequence(QStringLiteral("Ctrl+J"))};
 //          MindMapEditor editor(config);
 struct EditorConfig {
@@ -44,7 +45,8 @@ struct EditorConfig {
         QList<QKeySequence> addSibling{QKeySequence(Qt::Key_Return), QKeySequence(Qt::Key_Enter)};
         QList<QKeySequence> addSiblingBefore{QKeySequence(Qt::SHIFT | Qt::Key_Return), QKeySequence(Qt::SHIFT | Qt::Key_Enter)};
         QList<QKeySequence> editSelection{QKeySequence(Qt::Key_F2)};
-        // Inside topic dialogs, Enter inserts a newline; Ctrl+Enter applies it.
+        // Inline and in topic-creation dialogs, Enter inserts a newline.
+        // These bindings accept the topic (Ctrl+Enter by default).
         QList<QKeySequence> acceptTopic{QKeySequence(Qt::CTRL | Qt::Key_Return), QKeySequence(Qt::CTRL | Qt::Key_Enter)};
         QList<QKeySequence> deleteSelection{QKeySequence(Qt::Key_Delete)};
         QList<QKeySequence> toggleExpanded{QKeySequence(Qt::Key_Space)};
