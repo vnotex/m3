@@ -2,6 +2,8 @@
 #define M3_QT_EDITOR_H
 #include <QByteArray>
 #include <QString>
+#include <QKeySequence>
+#include <QList>
 #include <QWidget>
 #include <memory>
 
@@ -28,12 +30,51 @@
 // Selection, layout direction, zoom/pan and fit never change persisted JSON.
 // Topics/labels are plain Unicode text. Embedded NULs are rejected.
 namespace m3::qt {
+// Widget policy, copied at construction; no Qt-specific configuration enters the core.
+// Replace a shortcut list to rebind it, or clear it to disable its keyboard binding
+// without removing the toolbar/menu command. Avoid assigning the same sequence to
+// multiple commands. Bindings are local to this widget; dialogs and the layout
+// picker keep their normal input keys. acceptTopic belongs to topic dialogs.
+// Example: config.shortcuts.addChild = {QKeySequence(QStringLiteral("Ctrl+J"))};
+//          MindMapEditor editor(config);
+struct EditorConfig {
+    struct Shortcuts {
+        QList<QKeySequence> addChild{QKeySequence(Qt::Key_Tab), QKeySequence(Qt::Key_Insert)};
+        // The root has no sibling: Enter/Shift+Enter append a child there.
+        QList<QKeySequence> addSibling{QKeySequence(Qt::Key_Return), QKeySequence(Qt::Key_Enter)};
+        QList<QKeySequence> addSiblingBefore{QKeySequence(Qt::SHIFT | Qt::Key_Return), QKeySequence(Qt::SHIFT | Qt::Key_Enter)};
+        QList<QKeySequence> editSelection{QKeySequence(Qt::Key_F2)};
+        // Inside topic dialogs, Enter inserts a newline; Ctrl+Enter applies it.
+        QList<QKeySequence> acceptTopic{QKeySequence(Qt::CTRL | Qt::Key_Return), QKeySequence(Qt::CTRL | Qt::Key_Enter)};
+        QList<QKeySequence> deleteSelection{QKeySequence(Qt::Key_Delete)};
+        QList<QKeySequence> toggleExpanded{QKeySequence(Qt::Key_Space)};
+        QList<QKeySequence> moveNode{QKeySequence(Qt::CTRL | Qt::Key_M)};
+        QList<QKeySequence> moveUp{QKeySequence(Qt::CTRL | Qt::Key_Up)};
+        QList<QKeySequence> moveDown{QKeySequence(Qt::CTRL | Qt::Key_Down)};
+        QList<QKeySequence> addLink{QKeySequence(Qt::CTRL | Qt::Key_L)};
+        // Logical tree navigation, independent of layout direction. A collapsed
+        // node has no selectable child; Space expands it before navigating.
+        QList<QKeySequence> selectParent{QKeySequence(Qt::Key_Left)};
+        QList<QKeySequence> selectChild{QKeySequence(Qt::Key_Right)};
+        QList<QKeySequence> previousSibling{QKeySequence(Qt::Key_Up)};
+        QList<QKeySequence> nextSibling{QKeySequence(Qt::Key_Down)};
+        QList<QKeySequence> selectRoot{QKeySequence(Qt::Key_Home)};
+        QList<QKeySequence> clearSelection{QKeySequence(Qt::Key_Escape)};
+        QList<QKeySequence> zoomIn{QKeySequence(QKeySequence::ZoomIn), QKeySequence(Qt::CTRL | Qt::Key_Equal)};
+        QList<QKeySequence> zoomOut{QKeySequence(QKeySequence::ZoomOut)};
+        QList<QKeySequence> resetZoom{QKeySequence(Qt::CTRL | Qt::Key_0)};
+        QList<QKeySequence> fit;
+    } shortcuts;
+    // UI policy only: the removeNode() API never prompts.
+    bool confirmSubtreeDeletion = true;
+};
 class M3_QT_API MindMapEditor : public QWidget {
     Q_OBJECT
 public:
     enum class LayoutDirection { Balanced, Right, Left };
     Q_ENUM(LayoutDirection)
     explicit MindMapEditor(QWidget *parent = nullptr);
+    explicit MindMapEditor(const EditorConfig &config, QWidget *parent = nullptr);
     ~MindMapEditor() override;
     bool newDocument(const QString &topic = QStringLiteral("Central topic"));
     bool loadJson(const QByteArray &json);

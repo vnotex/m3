@@ -12,7 +12,9 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QSignalBlocker>
+#include <QShortcut>
 #include <QSpinBox>
+#include <QStringList>
 #include <functional>
 #include <QToolBar>
 #include <QLabel>
@@ -21,21 +23,32 @@ namespace m3::qt {
 class MindMapEditor::Private {
 public:
     MindMapEditor *host;
+    const EditorConfig config;
     MindMapView *view;
     MindMapController *controller;
     QLabel *error;
     QToolBar *toolbar;
     QComboBox *direction;
-    QAction *addChild, *editSelection, *deleteSelection, *toggleExpanded, *move, *up, *down, *addLink;
+    QAction *addChild, *addSibling, *addSiblingBefore, *editSelection, *deleteSelection, *toggleExpanded, *move, *up, *down, *addLink;
+    QAction *rootSelection, *clearSelectionAction;
+    QList<QAction *> nodeNavigation;
+    enum class TopicOperation { Rename, Child, SiblingAfter, SiblingBefore };
+    enum class Navigation { Parent, Child, PreviousSibling, NextSibling, Root };
     QList<QAction *> menuActions;
-    QAction *action(const char *name, const QString &text, QKeySequence shortcut, std::function<void()> command) {
+    QAction *action(const char *name, const QString &text, const QList<QKeySequence> &shortcuts, std::function<void()> command, bool showInToolbar = true) {
         auto *result = new QAction(text, host);
         result->setObjectName(QString::fromLatin1(name));
-        result->setShortcut(shortcut);
+        result->setShortcuts(shortcuts);
+        result->setShortcutVisibleInContextMenu(true);
+        QStringList keys;
+        for (const auto &shortcut : shortcuts) keys.append(shortcut.toString(QKeySequence::NativeText));
+        result->setToolTip(keys.isEmpty() ? text : text + QStringLiteral(" (%1)").arg(keys.join(QStringLiteral(", "))));
         result->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-        host->addAction(result);
-        toolbar->addAction(result);
-        menuActions.append(result);
+        view->addAction(result);
+        if (showInToolbar) {
+            toolbar->addAction(result);
+            menuActions.append(result);
+        }
         QObject::connect(result, &QAction::triggered, host, std::move(command));
         return result;
     }
@@ -53,6 +66,10 @@ public:
         const bool hasLink = controller->selectedLinkId().isEmpty() == false;
         const bool movable = node && !node->parent.isEmpty();
         addChild->setEnabled(node); addLink->setEnabled(node);
+        addSibling->setEnabled(node); addSiblingBefore->setEnabled(node);
+        for (auto *action : nodeNavigation) action->setEnabled(node);
+        rootSelection->setEnabled(!nodes.empty());
+        clearSelectionAction->setEnabled(node || hasLink);
         editSelection->setEnabled(node || hasLink);
         deleteSelection->setEnabled(movable || hasLink);
         move->setEnabled(movable);
@@ -65,18 +82,52 @@ public:
         QSignalBlocker blocker(direction);
         direction->setCurrentIndex(direction->findData(int(controller->layoutDirection())));
     }
-    void topicDialog(bool insert) {
+    void topicDialog(TopicOperation operation) {
         const QString id = controller->selectedNodeId();
         const auto nodes = controller->choices();
         const auto *node = choice(nodes, id);
         if (!node) return;
-        bool accepted = false;
-        const auto topic = QInputDialog::getMultiLineText(host, insert ? tr("Add child") : tr("Rename node"),
-            tr("Topic"), insert ? QString() : node->topic, &accepted);
-        if (accepted) {
-            if (insert) controller->addNode(id, topic, -1);
-            else controller->renameNode(id, topic);
+        const bool insert = operation != TopicOperation::Rename;
+        QString parentId = id;
+        int index = -1;
+        QString title = insert ? tr("Add child") : tr("Rename node");
+        if ((operation == TopicOperation::SiblingAfter || operation == TopicOperation::SiblingBefore) && !node->parent.isEmpty()) {
+            const auto *parent = choice(nodes, node->parent);
+            if (!parent) return;
+            parentId = parent->id;
+            index = int(parent->children.indexOf(id)) + (operation == TopicOperation::SiblingAfter ? 1 : 0);
+            title = tr("Add sibling");
         }
+        QInputDialog dialog(host);
+        dialog.setWindowTitle(title);
+        dialog.setLabelText(tr("Topic"));
+        dialog.setOption(QInputDialog::UsePlainTextEditForTextInput);
+        dialog.setTextValue(insert ? QString() : node->topic);
+        QShortcut accept(QKeySequence(), &dialog);
+        accept.setKeys(config.shortcuts.acceptTopic);
+        QObject::connect(&accept, &QShortcut::activated, &dialog, &QDialog::accept);
+        if (dialog.exec() == QDialog::Accepted) {
+            if (insert) controller->addNode(parentId, dialog.textValue(), index);
+            else controller->renameNode(id, dialog.textValue());
+        }
+    }
+    void navigate(Navigation command) {
+        const auto nodes = controller->choices();
+        if (nodes.empty()) return;
+        if (command == Navigation::Root) { controller->selectNode(nodes.front().id); return; }
+        const auto *node = choice(nodes, controller->selectedNodeId());
+        if (!node) return;
+        QString target;
+        if (command == Navigation::Parent) target = node->parent;
+        else if (command == Navigation::Child) {
+            if (node->expanded && !node->children.isEmpty()) target = node->children.front();
+        } else {
+            const auto *parent = choice(nodes, node->parent);
+            if (!parent) return;
+            const auto index = parent->children.indexOf(node->id) + (command == Navigation::PreviousSibling ? -1 : 1);
+            if (index >= 0 && index < parent->children.size()) target = parent->children[index];
+        }
+        if (!target.isEmpty()) controller->selectNode(target);
     }
     void linkDialog(bool insert) {
         const auto nodes = controller->choices();
@@ -147,7 +198,7 @@ public:
         const auto *parent = node ? choice(nodes, node->parent) : nullptr;
         if (parent) controller->moveNode(node->id, parent->id, int(parent->children.indexOf(node->id)) + delta);
     }
-    explicit Private(MindMapEditor *editor) : host(editor) {
+    Private(MindMapEditor *editor, const EditorConfig &settings) : host(editor), config(settings) {
         auto *layout = new QVBoxLayout(editor);
         view = new MindMapView(editor);
         error = new QLabel(editor);
@@ -155,32 +206,34 @@ public:
         controller = new MindMapController(*view, editor);
         toolbar = new QToolBar(editor);
         layout->addWidget(toolbar);
-        addChild = action("addChild", tr("Add child"), QKeySequence(Qt::Key_Insert), [this] { topicDialog(true); });
-        editSelection = action("editSelection", tr("Rename/Edit"), QKeySequence(Qt::Key_F2), [this] {
-            if (controller->selectedLinkId().isEmpty()) topicDialog(false); else linkDialog(false);
+        addChild = action("addChild", tr("Add child"), config.shortcuts.addChild, [this] { topicDialog(TopicOperation::Child); });
+        addSibling = action("addSibling", tr("Add sibling"), config.shortcuts.addSibling, [this] { topicDialog(TopicOperation::SiblingAfter); });
+        addSiblingBefore = action("addSiblingBefore", tr("Add sibling before"), config.shortcuts.addSiblingBefore, [this] { topicDialog(TopicOperation::SiblingBefore); });
+        editSelection = action("editSelection", tr("Rename/Edit"), config.shortcuts.editSelection, [this] {
+            if (controller->selectedLinkId().isEmpty()) topicDialog(TopicOperation::Rename); else linkDialog(false);
         });
-        deleteSelection = action("deleteSelection", tr("Delete"), QKeySequence(Qt::Key_Delete), [this] {
+        deleteSelection = action("deleteSelection", tr("Delete"), config.shortcuts.deleteSelection, [this] {
             const auto link = controller->selectedLinkId(), node = controller->selectedNodeId();
             if (!link.isEmpty()) controller->removeLink(link);
-            else if (!node.isEmpty() && QMessageBox::question(host, tr("Delete subtree"),
-                tr("Delete this node and all its descendants?"), QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes)
+            else if (!node.isEmpty() && (!config.confirmSubtreeDeletion || QMessageBox::question(host, tr("Delete subtree"),
+                tr("Delete this node and all its descendants?"), QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes))
                 controller->removeNode(node);
         });
-        toggleExpanded = action("toggleExpanded", tr("Collapse"), QKeySequence(Qt::Key_Space), [this] {
+        toggleExpanded = action("toggleExpanded", tr("Expand/Collapse"), config.shortcuts.toggleExpanded, [this] {
             const auto nodes = controller->choices();
             const auto *node = choice(nodes, controller->selectedNodeId());
             if (node) controller->setExpanded(node->id, !node->expanded);
         });
-        move = action("moveNode", tr("Move..."), QKeySequence(Qt::CTRL | Qt::Key_M), [this] { moveDialog(); });
-        up = action("moveUp", tr("Move up"), QKeySequence(Qt::CTRL | Qt::Key_Up), [this] { reorder(-1); });
-        down = action("moveDown", tr("Move down"), QKeySequence(Qt::CTRL | Qt::Key_Down), [this] { reorder(1); });
-        addLink = action("addLink", tr("Add link"), QKeySequence(Qt::CTRL | Qt::Key_L), [this] { linkDialog(true); });
+        move = action("moveNode", tr("Move..."), config.shortcuts.moveNode, [this] { moveDialog(); });
+        up = action("moveUp", tr("Move up"), config.shortcuts.moveUp, [this] { reorder(-1); });
+        down = action("moveDown", tr("Move down"), config.shortcuts.moveDown, [this] { reorder(1); });
+        addLink = action("addLink", tr("Add link"), config.shortcuts.addLink, [this] { linkDialog(true); });
         toolbar = new QToolBar(editor);
         layout->addWidget(toolbar);
-        action("zoomIn", tr("Zoom +"), {}, [this] { view->zoom(1.2); });
-        action("zoomOut", tr("Zoom -"), {}, [this] { view->zoom(1 / 1.2); });
-        action("resetZoom", tr("100%"), {}, [this] { view->resetZoom(); });
-        action("fit", tr("Fit"), {}, [this] { view->fitContents(); });
+        action("zoomIn", tr("Zoom +"), config.shortcuts.zoomIn, [this] { view->zoom(1.2); });
+        action("zoomOut", tr("Zoom -"), config.shortcuts.zoomOut, [this] { view->zoom(1 / 1.2); });
+        action("resetZoom", tr("100%"), config.shortcuts.resetZoom, [this] { view->resetZoom(); });
+        action("fit", tr("Fit"), config.shortcuts.fit, [this] { view->fitContents(); });
         direction = new QComboBox(toolbar);
         direction->addItem(tr("Balanced"), int(LayoutDirection::Balanced));
         direction->addItem(tr("Right"), int(LayoutDirection::Right));
@@ -191,6 +244,14 @@ public:
             controller->setLayoutDirection(static_cast<LayoutDirection>(direction->currentData().toInt()));
             updateActions();
         });
+        nodeNavigation = {
+            action("selectParent", tr("Select parent"), config.shortcuts.selectParent, [this] { navigate(Navigation::Parent); }, false),
+            action("selectChild", tr("Select first child"), config.shortcuts.selectChild, [this] { navigate(Navigation::Child); }, false),
+            action("previousSibling", tr("Select previous sibling"), config.shortcuts.previousSibling, [this] { navigate(Navigation::PreviousSibling); }, false),
+            action("nextSibling", tr("Select next sibling"), config.shortcuts.nextSibling, [this] { navigate(Navigation::NextSibling); }, false)
+        };
+        rootSelection = action("selectRoot", tr("Select root"), config.shortcuts.selectRoot, [this] { navigate(Navigation::Root); }, false);
+        clearSelectionAction = action("clearSelection", tr("Clear selection"), config.shortcuts.clearSelection, [this] { controller->clearSelection(); }, false);
         layout->addWidget(view, 1); layout->addWidget(error);
         view->setContextMenuPolicy(Qt::CustomContextMenu);
         QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this](const QPoint &point) {
@@ -214,7 +275,9 @@ public:
         updateActions();
     }
 };
-MindMapEditor::MindMapEditor(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>(this)) {}
+MindMapEditor::MindMapEditor(QWidget *parent) : MindMapEditor(EditorConfig{}, parent) {}
+MindMapEditor::MindMapEditor(const EditorConfig &config, QWidget *parent)
+    : QWidget(parent), d(std::make_unique<Private>(this, config)) {}
 MindMapEditor::~MindMapEditor() = default;
 bool MindMapEditor::newDocument(const QString &topic) { return d->controller->newDocument(topic); }
 bool MindMapEditor::loadJson(const QByteArray &json) { return d->controller->loadJson(json); }

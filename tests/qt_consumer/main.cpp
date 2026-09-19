@@ -30,7 +30,10 @@ int main(int argc, char **argv) {
         qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
     }
     QApplication application(argc, argv);
-    m3::qt::MindMapEditor imported;
+    m3::qt::EditorConfig config;
+    config.shortcuts.addChild.clear();
+    config.confirmSubtreeDeletion = false;
+    m3::qt::MindMapEditor imported(config);
     const QJsonDocument independent = QJsonDocument::fromJson(imported.toJson());
     if (!check(independent.isObject(), "The independent editor did not initialize")) {
         return 1;
