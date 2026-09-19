@@ -48,3 +48,72 @@ jobs:
             & "./build/consumer/bin/m3_consumer"
           }
           exit $LASTEXITCODE
+
+  qt:
+    name: Qt / Windows / ${{ matrix.build_type }} / shared=${{ matrix.shared }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+        shared: ["ON", "OFF"]
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 2
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: 6.8.3
+          arch: win64_msvc2022_64
+          cache: true
+      - name: Select Qt platform plugins
+        run: |
+          Add-Content -Path $env:GITHUB_ENV -Value "QT_QPA_PLATFORM_PLUGIN_PATH=$env:QT_ROOT_DIR/plugins/platforms"
+          Add-Content -Path $env:GITHUB_ENV -Value "QT_QPA_FONTDIR=$env:WINDIR/Fonts"
+      - name: Configure Qt editor and demo
+        run: cmake -S . -B build/qt -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DM3_BUILD_SHARED=${{ matrix.shared }} -DM3_BUILD_QT=ON -DM3_BUILD_QT_DEMO=ON -DM3_BUILD_TESTS=ON
+      - name: Build Qt editor and demo
+        run: cmake --build build/qt --config ${{ matrix.build_type }}
+      - name: Test Qt editor and core
+        run: ctest --test-dir build/qt -C ${{ matrix.build_type }} --output-on-failure
+      - name: Install Qt editor and demo
+        run: cmake --install build/qt --config ${{ matrix.build_type }} --prefix build/install-qt
+      - name: Configure core consumer without Qt discovery
+        run: cmake -S tests/consumer -B build/core-consumer -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DM3_PACKAGE_PREFIX=build/install-qt -DCMAKE_DISABLE_FIND_PACKAGE_Qt6=TRUE
+      - name: Build core consumer
+        run: cmake --build build/core-consumer --config ${{ matrix.build_type }} --verbose
+      - name: Run core consumer
+        run: |
+          & "./build/core-consumer/bin/${{ matrix.build_type }}/m3_consumer.exe"
+          exit $LASTEXITCODE
+      - name: Configure Qt-only consumer
+        run: cmake -S tests/qt_consumer -B build/qt-consumer -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DM3_PACKAGE_PREFIX=build/install-qt
+      - name: Build Qt-only consumer
+        run: cmake --build build/qt-consumer --config ${{ matrix.build_type }} --verbose
+      - name: Run Qt-only consumer
+        run: |
+          & "./build/qt-consumer/bin/${{ matrix.build_type }}/m3_qt_consumer.exe"
+          exit $LASTEXITCODE
+      - name: Configure core-only package without Qt discovery
+        run: cmake -S . -B build/core-only -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DM3_BUILD_SHARED=${{ matrix.shared }} -DM3_BUILD_QT=OFF -DM3_BUILD_QT_DEMO=OFF -DM3_BUILD_TESTS=ON -DCMAKE_DISABLE_FIND_PACKAGE_Qt6=TRUE
+      - name: Build core-only package
+        run: cmake --build build/core-only --config ${{ matrix.build_type }}
+      - name: Test core-only package
+        run: ctest --test-dir build/core-only -C ${{ matrix.build_type }} --output-on-failure
+      - name: Install core-only package
+        run: cmake --install build/core-only --config ${{ matrix.build_type }} --prefix build/install-core-only
+      - name: Reject Qt component from core-only package
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          cmake -S tests/qt_consumer -B build/qt-consumer-unavailable -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DM3_PACKAGE_PREFIX=build/install-core-only
+          if ($LASTEXITCODE -eq 0) {
+            throw "The core-only package unexpectedly provided qt_editor"
+          }
+          exit 0

@@ -7,6 +7,11 @@ if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
 endif()
 option(M3_BUILD_SHARED "Build m3 as a shared library" ON)
 option(M3_BUILD_TESTS "Build m3 tests" ${_m3_top_level})
+option(M3_BUILD_QT "Build the Qt editor library" OFF)
+option(M3_BUILD_QT_DEMO "Build the Qt editor demo" ${M3_BUILD_QT})
+if(M3_BUILD_QT_DEMO AND NOT M3_BUILD_QT)
+    message(FATAL_ERROR "M3_BUILD_QT_DEMO requires M3_BUILD_QT")
+endif()
 if(M3_BUILD_SHARED)
     add_library(m3core SHARED src/api.cpp)
     target_compile_definitions(m3core PRIVATE M3_BUILD_DLL PUBLIC M3_SHARED)
@@ -41,8 +46,13 @@ install(TARGETS m3core EXPORT m3Targets
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-install(DIRECTORY include/m3 DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY include/m3 DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    PATTERN "qt" EXCLUDE)
 install(FILES LICENSE third_party/nlohmann/LICENSE.MIT DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/m3)
+if(M3_BUILD_QT)
+    find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
+    add_subdirectory(src/qt)
+endif()
 configure_package_config_file(cmake/m3Config.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/m3Config.cmake"
     INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/m3)
 write_basic_package_version_file("${CMAKE_CURRENT_BINARY_DIR}/m3ConfigVersion.cmake"

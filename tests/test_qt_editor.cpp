@@ -1,0 +1,1632 @@
+#include "test_support.h"
+#include "m3/qt/editor.h"
+#ifdef M3_QT_TEST_DEMO
+#include "qt_demo_window.h"
+#endif
+#include <QAction>
+#include <QApplication>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QDir>
+#include <QFile>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QFont>
+#include <QGraphicsItem>
+#include <QGraphicsScene>
+#include <QGraphicsTextItem>
+#include <QGraphicsView>
+#include <QImage>
+#include <QInputDialog>
+#include <QKeySequence>
+#include <QLineF>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QMouseEvent>
+#include <QPainter>
+#include <QPalette>
+#include <QPointer>
+#include <QPushButton>
+#include <QScrollBar>
+#include <QSignalSpy>
+#include <QSpinBox>
+#include <QStatusBar>
+#include <QTemporaryDir>
+#include <QTest>
+#include <QTextDocument>
+#include <QTimer>
+#include <QWheelEvent>
+#include <algorithm>
+#include <cmath>
+#include <exception>
+#include <functional>
+#include <set>
+#include <utility>
+#include <vector>
+
+using Editor = m3::qt::MindMapEditor;
+
+static QString qs(const Json &value) {
+    const auto &text = value.get_ref<const std::string &>();
+    return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
+}
+static std::string utf8(const QString &text) { return text.toUtf8().toStdString(); }
+static QByteArray encoded(const Json &value) { return QByteArray::fromStdString(value.dump()); }
+static Json exported(const Editor &editor) {
+    const QByteArray text = editor.toJson();
+    CHECK(!text.isEmpty());
+    return Json::parse(text.constData(), text.constData() + text.size());
+}
+static const Json &record(const Json &doc, const char *collection, const QString &id) {
+    const std::string key = utf8(id);
+    for (const auto &entry : doc.at(collection)) if (entry.at("id") == key) return entry;
+    throw std::runtime_error(std::string("Missing ") + collection + " record " + key);
+}
+static bool hasRecord(const Json &doc, const char *collection, const QString &id) {
+    const std::string key = utf8(id);
+    for (const auto &entry : doc.at(collection)) if (entry.at("id") == key) return true;
+    return false;
+}
+static void setTopic(Json &doc, const char *id, const QString &topic) {
+    for (auto &entry : doc.at("nodes")) if (entry.at("id") == id) {
+        entry["topic"] = utf8(topic);
+        return;
+    }
+    throw std::runtime_error(std::string("Missing fixture node ") + id);
+}
+static Json editorFixture() {
+    Json doc = fixture();
+    setTopic(doc, "a", QStringLiteral("Alpha"));
+    setTopic(doc, "b", QStringLiteral("Beta"));
+    setTopic(doc, "d", QStringLiteral("Delta"));
+    return doc;
+}
+static Json nativeDocument(const Json &input) { return document(load(input)); }
+static void pump() {
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCoreApplication::processEvents(QEventLoop::AllEvents);
+    QCoreApplication::processEvents(QEventLoop::AllEvents);
+}
+static QGraphicsView &graphics(Editor &editor) {
+    auto *view = editor.findChild<QGraphicsView *>();
+    CHECK(view != nullptr && view->scene() != nullptr);
+    return *view;
+}
+static void showEditor(Editor &editor, QSize size = QSize(1000, 700)) {
+    editor.resize(size);
+    editor.show();
+    editor.activateWindow();
+    pump();
+    graphics(editor).setFocus(Qt::OtherFocusReason);
+    pump();
+    CHECK(graphics(editor).viewport()->width() > 0);
+    CHECK(graphics(editor).viewport()->height() > 0);
+}
+static QList<QGraphicsTextItem *> texts(Editor &editor, const QString &text) {
+    QList<QGraphicsTextItem *> result;
+    for (auto *item : graphics(editor).scene()->items()) {
+        if (auto *label = dynamic_cast<QGraphicsTextItem *>(item)) {
+            if (label->isVisible() && label->toPlainText() == text) result.append(label);
+        }
+    }
+    return result;
+}
+static QGraphicsTextItem *textItem(Editor &editor, const QString &text) {
+    const auto matches = texts(editor, text);
+    CHECK(!matches.isEmpty());
+    return matches.front();
+}
+static QGraphicsItem *ownerItem(QGraphicsTextItem *text) {
+    QGraphicsItem *owner = text;
+    for (auto *item = static_cast<QGraphicsItem *>(text); item; item = item->parentItem()) {
+        owner = item;
+        if (item->flags().testFlag(QGraphicsItem::ItemIsSelectable)) return item;
+    }
+    return owner;
+}
+static QRectF topicRect(Editor &editor, const QString &topic) {
+    return ownerItem(textItem(editor, topic))->sceneBoundingRect();
+}
+static QRectF emptyNodeRect(Editor &editor) {
+    for (auto *text : texts(editor, QString())) {
+        auto *owner = ownerItem(text);
+        const QRectF rect = owner->sceneBoundingRect();
+        if (rect.width() >= 71.0 && rect.height() >= 35.0 &&
+            owner->contains(owner->mapFromScene(rect.center())) &&
+            rect.adjusted(-1, -1, 1, 1).contains(text->sceneBoundingRect())) return rect;
+    }
+    throw std::runtime_error("No selectable-sized empty topic node in scene");
+}
+static bool belongsTo(QGraphicsItem *item, const QGraphicsItem *owner) {
+    for (; item; item = item->parentItem()) if (item == owner) return true;
+    return false;
+}
+static QPoint labelPoint(Editor &editor, const QString &topic) {
+    auto &view = graphics(editor);
+    auto *text = textItem(editor, topic);
+    view.ensureVisible(text);
+    pump();
+    const QRectF rect = text->sceneBoundingRect();
+    auto *owner = ownerItem(text);
+    for (double fy : {0.5, 0.25, 0.75}) for (double fx : {0.5, 0.25, 0.75}) {
+        const QPoint point = view.mapFromScene(QPointF(rect.left() + rect.width() * fx,
+                                                      rect.top() + rect.height() * fy));
+        if (view.viewport()->rect().contains(point) && belongsTo(view.itemAt(point), owner)) return point;
+    }
+    throw std::runtime_error("Label is not reachable by a viewport click: " + utf8(topic));
+}
+static void clickLabel(Editor &editor, const QString &topic, bool doubleClick = false) {
+    const QPoint point = labelPoint(editor, topic);
+    if (doubleClick) QTest::mouseDClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, point);
+    else QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, point);
+    pump();
+}
+static QPoint blankPoint(QGraphicsView &view) {
+    for (int y = 12; y < view.viewport()->height() - 12; y += 11)
+        for (int x = 12; x < view.viewport()->width() - 12; x += 11)
+            if (!view.itemAt(QPoint(x, y))) return QPoint(x, y);
+    throw std::runtime_error("No blank viewport point");
+}
+static QRectF renderedBounds(Editor &editor) {
+    QRectF bounds;
+    bool first = true;
+    for (auto *item : graphics(editor).scene()->items()) if (item->isVisible()) {
+        const QRectF rect = item->sceneBoundingRect();
+        if (rect.isEmpty()) continue;
+        bounds = first ? rect : bounds.united(rect);
+        first = false;
+    }
+    CHECK(!first);
+    return bounds;
+}
+static void assertFit(Editor &editor) {
+    auto &view = graphics(editor);
+    editor.fitToContents();
+    pump();
+    const QRectF viewport(view.viewport()->rect());
+    const QRectF mapped = view.mapFromScene(renderedBounds(editor)).boundingRect();
+    CHECK(viewport.adjusted(-3, -3, 3, 3).contains(mapped));
+}
+static bool finiteRect(const QRectF &r) {
+    return std::isfinite(r.x()) && std::isfinite(r.y()) && std::isfinite(r.width()) &&
+           std::isfinite(r.height()) && r.width() > 0 && r.height() > 0;
+}
+static void rejectUnchanged(Editor &editor, const std::function<bool()> &operation) {
+    const Json before = exported(editor);
+    const QString nodeId = editor.selectedNodeId(), linkId = editor.selectedLinkId();
+    QSignalSpy changed(&editor, &Editor::documentChanged);
+    QSignalSpy selected(&editor, &Editor::selectionChanged);
+    QSignalSpy errors(&editor, &Editor::errorOccurred);
+    CHECK(!operation());
+    CHECK(!editor.lastError().isEmpty());
+    CHECK(!errors.isEmpty());
+    CHECK(errors.back().front().toString() == editor.lastError());
+    CHECK(exported(editor) == before);
+    CHECK(editor.selectedNodeId() == nodeId && editor.selectedLinkId() == linkId);
+    CHECK(changed.isEmpty() && selected.isEmpty());
+}
+static QAction &editAction(Editor &editor, const char *name) {
+    auto *action = editor.findChild<QAction *>(QString::fromLatin1(name));
+    CHECK(action != nullptr);
+    return *action;
+}
+static void trigger(Editor &editor, const char *name) {
+    auto &action = editAction(editor, name);
+    CHECK(action.isEnabled());
+    action.trigger();
+    pump();
+}
+static QAction &textAction(QWidget &widget, const QStringList &labels) {
+    for (auto *action : widget.findChildren<QAction *>()) {
+        QString text = action->text();
+        text.remove(QLatin1Char('&'));
+        text = text.trimmed();
+        if (text.endsWith(QStringLiteral("..."))) text.chop(3);
+        if (text.endsWith(QChar(0x2026))) text.chop(1);
+        for (const auto &label : labels)
+            if (text.compare(label, Qt::CaseInsensitive) == 0) return *action;
+    }
+    throw std::runtime_error("Missing visible action " + utf8(labels.join(QStringLiteral(" / "))));
+}
+static void shortcut(Editor &editor, Qt::Key key, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+    editor.activateWindow();
+    graphics(editor).setFocus(Qt::OtherFocusReason);
+    pump();
+    QTest::keyClick(graphics(editor).viewport(), key, modifiers);
+    pump();
+}
+static void wheel(QGraphicsView &view, QPoint point, int delta, Qt::KeyboardModifiers modifiers) {
+    QWheelEvent event(QPointF(point), QPointF(view.viewport()->mapToGlobal(point)), QPoint(),
+                      QPoint(0, delta), Qt::NoButton, modifiers, Qt::NoScrollPhase, false);
+    QCoreApplication::sendEvent(view.viewport(), &event);
+    pump();
+}
+static void dragMiddle(QGraphicsView &view, QPoint from, QPoint to) {
+    QTest::mousePress(view.viewport(), Qt::MiddleButton, Qt::NoModifier, from);
+    QMouseEvent move(QEvent::MouseMove, QPointF(to), QPointF(view.viewport()->mapToGlobal(to)),
+                     Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(view.viewport(), &move);
+    QTest::mouseRelease(view.viewport(), Qt::MiddleButton, Qt::NoModifier, to);
+    pump();
+}
+
+using DialogStep = std::function<void(QDialog *)>;
+static void dialogs(const std::vector<DialogStep> &steps, const std::function<void()> &operation) {
+    size_t next = 0;
+    std::exception_ptr failure;
+    QPointer<QDialog> last;
+    QTimer responder, watchdog;
+    responder.setInterval(0);
+    watchdog.setSingleShot(true);
+    QObject::connect(&watchdog, &QTimer::timeout, [&] {
+        failure = std::make_exception_ptr(std::runtime_error("Dialog response timed out"));
+        if (auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget())) dialog->reject();
+    });
+    QObject::connect(&responder, &QTimer::timeout, [&] {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        if (!dialog) return;
+        if (failure) { dialog->reject(); return; }
+        if (dialog == last) return;
+        last = dialog;
+        try {
+            // A host may report a real I/O error with an acknowledgment box or
+            // a status message. Neither is a Save/Discard/Cancel decision.
+            if (auto *box = qobject_cast<QMessageBox *>(dialog)) {
+                if ((box->icon() == QMessageBox::Warning || box->icon() == QMessageBox::Critical) &&
+                    !(box->standardButtons() & (QMessageBox::Save | QMessageBox::Discard |
+                                                QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel))) {
+                    box->accept();
+                    return;
+                }
+            }
+            CHECK(next < steps.size());
+            const auto response = steps[next++];
+            response(dialog);
+        } catch (...) {
+            failure = std::current_exception();
+            dialog->reject();
+        }
+    });
+    // Queued responders run inside the real modal event loop; no timing sleeps.
+    QTimer::singleShot(0, &responder, [&] { responder.start(); });
+    watchdog.start(5000);
+    operation();
+    pump();
+    responder.stop();
+    watchdog.stop();
+    if (failure) std::rethrow_exception(failure);
+    CHECK(next == steps.size());
+}
+static DialogStep topicResponse(Editor &editor, const QString &topic, bool accept = true) {
+    return [&editor, topic, accept](QDialog *dialog) {
+        auto *input = qobject_cast<QInputDialog *>(dialog);
+        CHECK(input != nullptr);
+        bool parented = false;
+        for (auto *parent = input->parentWidget(); parent; parent = parent->parentWidget())
+            parented = parented || parent == &editor;
+        CHECK(parented);
+        input->setTextValue(topic);
+        if (accept) input->accept(); else input->reject();
+    };
+}
+#ifdef M3_QT_TEST_DEMO
+static DialogStep messageResponse(QMessageBox::StandardButton button) {
+    return [button](QDialog *dialog) {
+        auto *box = qobject_cast<QMessageBox *>(dialog);
+        CHECK(box != nullptr && box->button(button) != nullptr);
+        box->button(button)->click();
+    };
+}
+#endif
+static DialogStep deleteResponse(bool accept) {
+    return [accept](QDialog *dialog) {
+        auto *box = qobject_cast<QMessageBox *>(dialog);
+        CHECK(box != nullptr);
+        const auto choices = accept
+            ? std::vector<QMessageBox::StandardButton>{QMessageBox::Yes, QMessageBox::Ok, QMessageBox::Discard}
+            : std::vector<QMessageBox::StandardButton>{QMessageBox::Cancel, QMessageBox::No};
+        for (auto choice : choices) if (auto *button = box->button(choice)) { button->click(); return; }
+        throw std::runtime_error("Deletion confirmation has no suitable response");
+    };
+}
+static void chooseId(QComboBox &picker, const QString &id) {
+    const QString suffix = QStringLiteral("[") + id + QStringLiteral("]");
+    for (int i = 0; i < picker.count(); ++i) if (picker.itemText(i).endsWith(suffix)) {
+        picker.setCurrentIndex(i);
+        return;
+    }
+    throw std::runtime_error("Missing picker ID " + utf8(id));
+}
+static QStringList pickerIds(const QComboBox &picker) {
+    QStringList result;
+    for (int i = 0; i < picker.count(); ++i) {
+        const QString label = picker.itemText(i);
+        const qsizetype start = label.lastIndexOf(QLatin1Char('['));
+        CHECK(start >= 0 && label.endsWith(QLatin1Char(']')));
+        result.append(label.mid(start + 1, label.size() - start - 2));
+    }
+    return result;
+}
+static QStringList preorderIds(const Json &doc) {
+    QStringList ids;
+    for (const auto &entry : doc.at("nodes")) ids.append(qs(entry.at("id")));
+    return ids;
+}
+#ifdef M3_QT_TEST_DEMO
+static DialogStep fileResponse(const QString &path, bool accept) {
+    return [path, accept](QDialog *dialog) {
+        auto *file = qobject_cast<QFileDialog *>(dialog);
+        CHECK(file != nullptr);
+        if (!accept) { file->reject(); return; }
+        file->selectFile(path);
+        // QFileDialog's override is protected; invoke the public QDialog API.
+        static_cast<QDialog *>(file)->accept();
+    };
+}
+#endif
+static QImage paintScene(Editor &editor, const QRectF &source) {
+    const QSize size(std::max(1, static_cast<int>(std::ceil(source.width()))),
+                     std::max(1, static_cast<int>(std::ceil(source.height()))));
+    QImage image(size, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::white);
+    QPainter painter(&image);
+    painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
+    graphics(editor).scene()->render(&painter, QRectF(QPointF(), QSizeF(size)), source, Qt::IgnoreAspectRatio);
+    painter.end();
+    return image;
+}
+static QPoint imagePoint(const QImage &image, const QRectF &source, const QPointF &point) {
+    return QPoint(static_cast<int>((point.x() - source.left()) * image.width() / source.width()),
+                  static_cast<int>((point.y() - source.top()) * image.height() / source.height()));
+}
+static bool ink(QRgb pixel) { return qRed(pixel) < 225 || qGreen(pixel) < 225 || qBlue(pixel) < 225; }
+static int paintedPixels(const QImage &image, QRect region) {
+    region = region.intersected(image.rect());
+    int count = 0;
+    for (int y = region.top(); y <= region.bottom(); ++y)
+        for (int x = region.left(); x <= region.right(); ++x) if (ink(image.pixel(x, y))) ++count;
+    return count;
+}
+static QPoint curvePoint(Editor &editor, const QString &label, const std::vector<QRectF> &nodes,
+                         bool outsidePaint = false) {
+    auto &view = graphics(editor);
+    auto *owner = ownerItem(textItem(editor, label));
+    view.ensureVisible(owner);
+    pump();
+    const QRect scan = view.mapFromScene(owner->sceneBoundingRect()).boundingRect()
+                         .intersected(view.viewport()->rect().adjusted(3, 3, -3, -3));
+    const QImage image = outsidePaint ? view.viewport()->grab().toImage().convertToFormat(QImage::Format_RGB32) : QImage();
+    const qreal ratio = outsidePaint ? image.devicePixelRatio() : 1.0;
+    std::vector<QRectF> labels;
+    for (auto *item : view.scene()->items()) if (dynamic_cast<QGraphicsTextItem *>(item))
+        labels.push_back(item->sceneBoundingRect().adjusted(-4, -4, 4, 4));
+    for (int y = scan.top(); y <= scan.bottom(); ++y) for (int x = scan.left(); x <= scan.right(); ++x) {
+        const QPoint point(x, y);
+        const QPointF scenePoint = view.mapToScene(point);
+        if (!belongsTo(view.itemAt(point), owner)) continue;
+        bool obstructed = false;
+        for (const auto &rect : nodes) if (rect.adjusted(-5, -5, 5, 5).contains(scenePoint)) obstructed = true;
+        for (const auto &rect : labels) if (rect.contains(scenePoint)) obstructed = true;
+        if (obstructed) continue;
+        if (outsidePaint) {
+            bool clear = true;
+            for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) {
+                const QPoint sample(qRound((x + dx) * ratio), qRound((y + dy) * ratio));
+                if (!image.rect().contains(sample) || ink(image.pixel(sample))) clear = false;
+            }
+            if (!clear) continue;
+        }
+        return point;
+    }
+    throw std::runtime_error("No independently reachable curve point for " + utf8(label));
+}
+#ifdef M3_QT_TEST_DEMO
+static Editor &embedded(DemoWindow &window) {
+    auto *editor = qobject_cast<Editor *>(window.centralWidget());
+    CHECK(editor != nullptr);
+    return *editor;
+}
+static void writeFile(const QString &path, const QByteArray &bytes) {
+    QFile file(path);
+    CHECK(file.open(QIODevice::WriteOnly));
+    CHECK(file.write(bytes) == bytes.size());
+    CHECK(file.flush());
+    file.close();
+}
+static QByteArray readFile(const QString &path) {
+    QFile file(path);
+    CHECK(file.open(QIODevice::ReadOnly));
+    const QByteArray bytes = file.readAll();
+    CHECK(file.error() == QFileDevice::NoError);
+    return bytes;
+}
+static Json fileDocument(const QString &path) {
+    const QByteArray bytes = readFile(path);
+    return Json::parse(bytes.constData(), bytes.constData() + bytes.size());
+}
+static bool sameFile(const QString &a, const QString &b) {
+    return QFileInfo(a).absoluteFilePath() == QFileInfo(b).absoluteFilePath();
+}
+static QAction &hostAction(DemoWindow &window, QKeySequence::StandardKey key) {
+    const QKeySequence wanted(key);
+    for (auto *action : window.findChildren<QAction *>()) if (action->shortcuts().contains(wanted)) return *action;
+    if (key == QKeySequence::Open) return textAction(window, {QStringLiteral("Open")});
+    if (key == QKeySequence::SaveAs) return textAction(window, {QStringLiteral("Save As")});
+    if (key == QKeySequence::Save) return textAction(window, {QStringLiteral("Save")});
+    if (key == QKeySequence::New) return textAction(window, {QStringLiteral("New")});
+    throw std::runtime_error("Missing host file action");
+}
+static void showDemo(DemoWindow &window) {
+    window.resize(1000, 700);
+    window.show();
+    window.activateWindow();
+    pump();
+}
+#endif
+
+static void document_case() {
+    Editor editor;
+    const Json initial = exported(editor);
+    CHECK(initial.at("rootId") == "root");
+    CHECK(record(initial, "nodes", QStringLiteral("root")).at("topic") == "Central topic");
+    CHECK(editor.selectedNodeId() == QStringLiteral("root") && editor.selectedLinkId().isEmpty());
+
+    const Json input = editorFixture();
+    const Json expected = nativeDocument(input);
+    QSignalSpy changed(&editor, &Editor::documentChanged);
+    QSignalSpy selected(&editor, &Editor::selectionChanged);
+    CHECK(editor.loadJson(encoded(input)));
+    CHECK(changed.size() == 1);
+    CHECK(exported(editor) == expected);
+    CHECK(editor.selectedNodeId() == QStringLiteral("r") && editor.selectedLinkId().isEmpty());
+    CHECK(selected.size() == 1);
+    CHECK(selected.back().at(0).toString() == QStringLiteral("r"));
+    CHECK(selected.back().at(1).toString().isEmpty());
+    Editor second;
+    CHECK(second.loadJson(editor.toJson()));
+    CHECK(exported(second) == expected);
+    CHECK(record(exported(second), "nodes", QStringLiteral("r")).at("tags") == Json({"x", "y", "x"}));
+    CHECK(record(exported(second), "nodes", QStringLiteral("r")).at("children") == Json({"a", "b", "c"}));
+
+    CHECK(editor.selectNode(QStringLiteral("d")));
+    CHECK(selected.size() == 2);
+    CHECK(editor.selectNode(QStringLiteral("d")));
+    CHECK(selected.size() == 2);
+    CHECK(changed.size() == 1);
+    std::vector<QByteArray> invalid{
+        QByteArray("{"),
+        QByteArray(R"({"schemaVersion":1,"rootId":"r","nodes":[{"id":"r","topic":"first","topic":"second"}]})"),
+        QByteArray(R"({"schemaVersion":1,"rootId":"r","nodes":[]})"),
+        QByteArray()
+    };
+    QByteArray nul = encoded(input);
+    nul.insert(7, '\0');
+    invalid.push_back(nul);
+    for (const auto &bytes : invalid) rejectUnchanged(editor, [&] { return editor.loadJson(bytes); });
+    CHECK(changed.size() == 1 && selected.size() == 2);
+    CHECK(exported(second) == expected);
+    rejectUnchanged(editor, [&] { return editor.selectNode(QStringLiteral("missing")); });
+    rejectUnchanged(editor, [&] { return editor.selectLink(QStringLiteral("missing")); });
+
+    const Json foreign = Json::parse(R"({"nodeData":{"id":"foreign-root","topic":"Mind Elixir 世界","children":[{"id":"foreign-child","topic":"Child","memo":"Preserve foreign memo"}]},"linkData":{"foreign-link":{"id":"foreign-link","from":"foreign-child","to":"foreign-root","label":"Foreign label"}}})");
+    CHECK(editor.loadJson(encoded(foreign)));
+    CHECK(changed.size() == 2);
+    CHECK(editor.lastError().isEmpty());
+    CHECK(exported(editor) == nativeDocument(foreign));
+    CHECK(exported(editor).at("schemaVersion") == 1 && !exported(editor).contains("nodeData"));
+    CHECK(editor.selectedNodeId() == QStringLiteral("foreign-root"));
+    CHECK(record(exported(editor), "nodes", QStringLiteral("foreign-child")).at("note") == "Preserve foreign memo");
+    CHECK(editor.selectLink(QStringLiteral("foreign-link")));
+    CHECK(editor.selectedNodeId().isEmpty() && editor.selectedLinkId() == QStringLiteral("foreign-link"));
+    const auto selectionCount = selected.size();
+    CHECK(editor.selectLink(QStringLiteral("foreign-link")));
+    CHECK(selected.size() == selectionCount);
+    editor.clearSelection();
+    CHECK(editor.selectedNodeId().isEmpty() && editor.selectedLinkId().isEmpty());
+    CHECK(selected.size() == selectionCount + 1);
+    editor.clearSelection();
+    CHECK(selected.size() == selectionCount + 1 && changed.size() == 2);
+
+    CHECK(editor.newDocument(QString::fromUtf8("新規\nCafé")));
+    CHECK(changed.size() == 3);
+    CHECK(exported(editor).at("rootId") == "root");
+    CHECK(record(exported(editor), "nodes", QStringLiteral("root")).at("topic") == utf8(QString::fromUtf8("新規\nCafé")));
+    CHECK(editor.selectedNodeId() == QStringLiteral("root") && editor.selectedLinkId().isEmpty());
+    QString badTopic = QStringLiteral("before");
+    badTopic.append(QChar(0));
+    badTopic.append(QStringLiteral("after"));
+    rejectUnchanged(editor, [&] { return editor.newDocument(badTopic); });
+    CHECK(editor.newDocument(QString()));
+    CHECK(record(exported(editor), "nodes", QStringLiteral("root")).at("topic") == "");
+    CHECK(changed.size() == 4);
+}
+
+static void tree_edits_case() {
+    Json input = editorFixture();
+    for (auto &entry : input.at("nodes")) if (entry.at("id") == "a") {
+        entry["note"] = "Do not overwrite";
+        entry["style"] = Json::parse(R"({"custom":{"nested":[true,3,"世界"]}})");
+        entry["icons"] = Json({"bookmark"});
+    }
+    Editor editor;
+    CHECK(editor.loadJson(encoded(input)));
+    const Json original = exported(editor);
+    QSignalSpy changed(&editor, &Editor::documentChanged);
+    const QString added = editor.addNode(QStringLiteral("a"), QString::fromUtf8("Added\nκόσμος"));
+    CHECK(!added.isEmpty() && !hasRecord(original, "nodes", added));
+    CHECK(changed.size() == 1);
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("children") == Json({"d", utf8(added)}));
+    CHECK(record(exported(editor), "nodes", added).at("topic") == utf8(QString::fromUtf8("Added\nκόσμος")));
+    CHECK(editor.selectedNodeId() == added && editor.selectedLinkId().isEmpty());
+    CHECK(editor.renameNode(QStringLiteral("a"), QStringLiteral("Alpha renamed")));
+    CHECK(changed.size() == 2 && editor.selectedNodeId() == added);
+    Json expectedA = record(original, "nodes", QStringLiteral("a"));
+    expectedA["children"] = Json({"d", utf8(added)});
+    expectedA["topic"] = "Alpha renamed";
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")) == expectedA);
+    CHECK(record(exported(editor), "nodes", QStringLiteral("r")) == record(original, "nodes", QStringLiteral("r")));
+
+    rejectUnchanged(editor, [&] { return editor.removeNode(QStringLiteral("r")); });
+    rejectUnchanged(editor, [&] { return editor.moveNode(QStringLiteral("r"), QStringLiteral("a")); });
+    rejectUnchanged(editor, [&] { return editor.moveNode(QStringLiteral("a"), QStringLiteral("d")); });
+    rejectUnchanged(editor, [&] { return editor.moveNode(QStringLiteral("d"), QStringLiteral("b"), 1); });
+    rejectUnchanged(editor, [&] { return editor.moveNode(QStringLiteral("c"), QStringLiteral("r"), -2); });
+    rejectUnchanged(editor, [&] { return !editor.addNode(QStringLiteral("a"), QStringLiteral("Invalid index"), 99).isEmpty(); });
+    rejectUnchanged(editor, [&] { return !editor.addNode(QStringLiteral("a"), QStringLiteral("Negative index"), -2).isEmpty(); });
+    rejectUnchanged(editor, [&] { return !editor.addNode(QStringLiteral("absent"), QStringLiteral("Missing parent")).isEmpty(); });
+    QString nul = QStringLiteral("Alpha");
+    nul.append(QChar(0));
+    nul.append(QStringLiteral("suffix"));
+    rejectUnchanged(editor, [&] { return editor.renameNode(QStringLiteral("a"), nul); });
+    rejectUnchanged(editor, [&] { return !editor.addNode(QStringLiteral("a"), nul).isEmpty(); });
+    rejectUnchanged(editor, [&] { return editor.removeNode(nul); });
+    CHECK(changed.size() == 2);
+
+    CHECK(editor.selectNode(QStringLiteral("d")));
+    CHECK(editor.moveNode(QStringLiteral("d"), QStringLiteral("b")));
+    CHECK(changed.size() == 3 && editor.selectedNodeId() == QStringLiteral("d"));
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("children") == Json({utf8(added)}));
+    CHECK(record(exported(editor), "nodes", QStringLiteral("b")).at("children") == Json({"d"}));
+    CHECK(editor.moveNode(QStringLiteral("c"), QStringLiteral("r"), 0));
+    CHECK(changed.size() == 4);
+    CHECK(record(exported(editor), "nodes", QStringLiteral("r")).at("children") == Json({"c", "a", "b"}));
+    CHECK(editor.removeNode(QStringLiteral("b")));
+    CHECK(changed.size() == 5);
+    const Json after = exported(editor);
+    CHECK(!hasRecord(after, "nodes", QStringLiteral("b")) && !hasRecord(after, "nodes", QStringLiteral("d")));
+    CHECK(hasRecord(after, "nodes", added));
+    CHECK(record(after, "nodes", QStringLiteral("r")).at("children") == Json({"c", "a"}));
+    CHECK(after.at("crossLinks").size() == 1 && after.at("crossLinks").front().at("id") == "l3");
+    CHECK(editor.selectedNodeId() == QStringLiteral("r") && editor.selectedLinkId().isEmpty());
+    CHECK(editor.lastError().isEmpty());
+}
+
+static void collapse_case() {
+    Editor editor;
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    const Json original = exported(editor);
+    QSignalSpy changed(&editor, &Editor::documentChanged);
+    QSignalSpy selected(&editor, &Editor::selectionChanged);
+    CHECK(editor.selectNode(QStringLiteral("d")));
+    CHECK(editor.setExpanded(QStringLiteral("a"), false));
+    CHECK(changed.size() == 1 && selected.size() == 2);
+    CHECK(editor.selectedNodeId() == QStringLiteral("a") && editor.selectedLinkId().isEmpty());
+    CHECK(selected.back().at(0).toString() == QStringLiteral("a"));
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == false);
+    CHECK(record(exported(editor), "nodes", QStringLiteral("d")) == record(original, "nodes", QStringLiteral("d")));
+    CHECK(exported(editor).at("crossLinks") == original.at("crossLinks"));
+    rejectUnchanged(editor, [&] { return editor.selectNode(QStringLiteral("d")); });
+    rejectUnchanged(editor, [&] { return editor.selectLink(QStringLiteral("l2")); });
+    CHECK(editor.setExpanded(QStringLiteral("a"), true));
+    CHECK(changed.size() == 2 && selected.size() == 2);
+    CHECK(exported(editor) == original);
+    CHECK(editor.selectLink(QStringLiteral("l2")));
+    CHECK(editor.setExpanded(QStringLiteral("a"), false));
+    CHECK(changed.size() == 3);
+    CHECK(editor.selectedNodeId().isEmpty() && editor.selectedLinkId().isEmpty());
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    CHECK(editor.moveNode(QStringLiteral("b"), QStringLiteral("a")));
+    CHECK(changed.size() == 4);
+    rejectUnchanged(editor, [&] { return editor.selectNode(QStringLiteral("b")); });
+    const QString hidden = editor.addNode(QStringLiteral("a"), QStringLiteral("Hidden insertion"));
+    CHECK(!hidden.isEmpty() && changed.size() == 5);
+    CHECK(editor.selectedNodeId() == QStringLiteral("a"));
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("children") == Json({"d", "b", utf8(hidden)}));
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == false);
+    rejectUnchanged(editor, [&] { return editor.selectNode(hidden); });
+    CHECK(editor.setExpanded(QStringLiteral("a"), true));
+    CHECK(changed.size() == 6);
+    CHECK(editor.selectNode(hidden));
+    CHECK(editor.selectNode(QStringLiteral("b")));
+    CHECK(editor.selectLink(QStringLiteral("l2")));
+    CHECK(editor.selectNode(QStringLiteral("d")));
+    CHECK(editor.setExpanded(QStringLiteral("r"), false));
+    CHECK(changed.size() == 7);
+    CHECK(editor.selectedNodeId() == QStringLiteral("r"));
+    for (const QString &id : {QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c"), QStringLiteral("d"), hidden})
+        rejectUnchanged(editor, [&] { return editor.selectNode(id); });
+    const Json collapsed = exported(editor);
+    for (const auto &entry : collapsed.at("crossLinks")) {
+        const QString id = qs(entry.at("id"));
+        rejectUnchanged(editor, [&] { return editor.selectLink(id); });
+    }
+    CHECK(hasRecord(exported(editor), "nodes", hidden));
+    CHECK(exported(editor).at("crossLinks") == original.at("crossLinks"));
+    CHECK(editor.setExpanded(QStringLiteral("r"), true));
+    CHECK(changed.size() == 8 && editor.selectNode(hidden));
+    rejectUnchanged(editor, [&] { return editor.setExpanded(QStringLiteral("absent"), false); });
+}
+
+static void graph_edits_case() {
+    Editor editor;
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    const Json original = exported(editor);
+    QSignalSpy changed(&editor, &Editor::documentChanged);
+    const QString first = editor.addLink(QStringLiteral("a"), QStringLiteral("b"), false, QStringLiteral("Parallel one"));
+    const QString second = editor.addLink(QStringLiteral("a"), QStringLiteral("b"), true, QStringLiteral("Parallel two"));
+    const QString self = editor.addLink(QStringLiteral("a"), QStringLiteral("a"), true, QStringLiteral("Self directed"));
+    CHECK(!first.isEmpty() && !second.isEmpty() && !self.isEmpty());
+    CHECK(first != second && first != self && second != self);
+    CHECK(changed.size() == 3);
+    CHECK(editor.selectedNodeId().isEmpty() && editor.selectedLinkId() == self);
+    CHECK(record(exported(editor), "crossLinks", first).at("source") == "a");
+    CHECK(record(exported(editor), "crossLinks", first).at("target") == "b");
+    CHECK(record(exported(editor), "crossLinks", first).at("directed") == false);
+    CHECK(record(exported(editor), "crossLinks", second).at("directed") == true);
+    CHECK(record(exported(editor), "crossLinks", self).at("source") == "a");
+    CHECK(record(exported(editor), "crossLinks", self).at("target") == "a");
+
+    CHECK(editor.selectLink(QStringLiteral("l1")));
+    CHECK(editor.updateLink(QStringLiteral("l1"), QStringLiteral("b"), QStringLiteral("a"), false, QStringLiteral("Edited reverse")));
+    CHECK(changed.size() == 4 && editor.selectedLinkId() == QStringLiteral("l1"));
+    Json expected = record(original, "crossLinks", QStringLiteral("l1"));
+    expected["source"] = "b";
+    expected["target"] = "a";
+    expected["directed"] = false;
+    expected["topic"] = "Edited reverse";
+    CHECK(record(exported(editor), "crossLinks", QStringLiteral("l1")) == expected);
+    CHECK(exported(editor).at("nodes") == original.at("nodes"));
+    rejectUnchanged(editor, [&] { return !editor.addLink(QStringLiteral("absent"), QStringLiteral("b"), true).isEmpty(); });
+    rejectUnchanged(editor, [&] { return editor.updateLink(QStringLiteral("l1"), QStringLiteral("a"), QStringLiteral("absent"), true, QString()); });
+    rejectUnchanged(editor, [&] { return editor.updateLink(QStringLiteral("absent"), QStringLiteral("a"), QStringLiteral("b"), true, QString()); });
+    rejectUnchanged(editor, [&] { return editor.removeLink(QStringLiteral("absent")); });
+    QString nul = QStringLiteral("bad");
+    nul.append(QChar(0));
+    rejectUnchanged(editor, [&] { return !editor.addLink(QStringLiteral("a"), QStringLiteral("b"), false, nul).isEmpty(); });
+    rejectUnchanged(editor, [&] { return editor.updateLink(first, nul, QStringLiteral("b"), true, QString()); });
+    CHECK(changed.size() == 4);
+
+    QSignalSpy selected(&editor, &Editor::selectionChanged);
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    CHECK(editor.selectedLinkId().isEmpty());
+    CHECK(editor.selectLink(first));
+    CHECK(editor.selectedNodeId().isEmpty() && editor.selectedLinkId() == first);
+    CHECK(selected.size() == 2);
+    CHECK(editor.selectLink(first) && selected.size() == 2);
+    CHECK(editor.removeLink(first));
+    CHECK(changed.size() == 5 && selected.size() == 3);
+    CHECK(editor.selectedNodeId().isEmpty() && editor.selectedLinkId().isEmpty());
+    CHECK(!hasRecord(exported(editor), "crossLinks", first));
+    CHECK(hasRecord(exported(editor), "crossLinks", second) && hasRecord(exported(editor), "crossLinks", self));
+    CHECK(record(exported(editor), "crossLinks", QStringLiteral("l1")) == expected);
+    CHECK(editor.selectLink(QStringLiteral("l2")));
+    CHECK(editor.setExpanded(QStringLiteral("a"), false));
+    CHECK(changed.size() == 6);
+    CHECK(editor.selectedLinkId().isEmpty() && editor.selectedNodeId().isEmpty());
+    CHECK(hasRecord(exported(editor), "crossLinks", QStringLiteral("l2")));
+    rejectUnchanged(editor, [&] { return editor.selectLink(QStringLiteral("l2")); });
+    CHECK(editor.setExpanded(QStringLiteral("a"), true));
+    CHECK(editor.selectLink(QStringLiteral("l2")));
+    CHECK(editor.updateLink(QStringLiteral("l2"), QStringLiteral("c"), QStringLiteral("d"), true, QString()));
+    CHECK(changed.size() == 8);
+    Json expectedOther = record(original, "crossLinks", QStringLiteral("l2"));
+    expectedOther["source"] = "c";
+    expectedOther["target"] = "d";
+    expectedOther["directed"] = true;
+    expectedOther["topic"] = "";
+    CHECK(record(exported(editor), "crossLinks", QStringLiteral("l2")) == expectedOther);
+    CHECK(editor.removeLink(QStringLiteral("l2")) && changed.size() == 9);
+    CHECK(editor.selectedLinkId().isEmpty());
+}
+
+static void lifetime_case() {
+    Editor survivor;
+    CHECK(survivor.newDocument(QStringLiteral("Independent survivor")));
+    const Json untouched = exported(survivor);
+    QSignalSpy survivorChanges(&survivor, &Editor::documentChanged);
+    QByteArray retained;
+    Json retainedDocument;
+    for (int iteration = 0; iteration < 24; ++iteration) {
+        auto parent = std::make_unique<QWidget>();
+        auto *editor = new Editor(parent.get());
+        QPointer<Editor> observer(editor);
+        CHECK(editor->loadJson(encoded(editorFixture())));
+        const QString id = editor->addNode(QStringLiteral("a"), QStringLiteral("Owned %1").arg(iteration));
+        CHECK(!id.isEmpty());
+        CHECK(editor->selectedNodeId() == id);
+        retained = editor->toJson();
+        retainedDocument = exported(*editor);
+        CHECK(editor->newDocument(QStringLiteral("Replacement")));
+        CHECK(editor->loadJson(retained));
+        CHECK(exported(*editor) == retainedDocument);
+        CHECK(editor->selectNode(QStringLiteral("d")));
+        CHECK(editor->removeNode(QStringLiteral("a")));
+        CHECK(editor->selectedNodeId() == QStringLiteral("r"));
+        CHECK(!hasRecord(exported(*editor), "nodes", id));
+        CHECK(editor->loadJson(retained));
+        // Initial fit/refresh callbacks may already be queued when the owner dies.
+        parent->resize(600, 400);
+        editor->resize(600, 400);
+        parent->show();
+        editor->show();
+        parent.reset();
+        CHECK(observer.isNull());
+        pump();
+        CHECK(exported(survivor) == untouched && survivorChanges.isEmpty());
+    }
+    CHECK(!retained.isEmpty());
+    CHECK(survivor.loadJson(retained));
+    CHECK(exported(survivor) == retainedDocument);
+    CHECK(survivorChanges.size() == 1);
+    const Json snapshot = exported(survivor);
+    {
+        Editor other;
+        CHECK(other.loadJson(retained));
+        CHECK(other.renameNode(QStringLiteral("r"), QStringLiteral("Other editor only")));
+        CHECK(other.removeNode(QStringLiteral("a")));
+        CHECK(exported(survivor) == snapshot && survivorChanges.size() == 1);
+    }
+    CHECK(survivor.renameNode(QStringLiteral("r"), QStringLiteral("Still alive")));
+    CHECK(survivorChanges.size() == 2);
+    Editor restored;
+    CHECK(restored.loadJson(retained));
+    CHECK(exported(restored) == retainedDocument);
+}
+
+static void render_case() {
+    Json input = editorFixture();
+    const QString wrapped = QString::fromUtf8("Long Unicode 世界 — café naïve Καλημέρα repeated words wrap without clipping\nSecond line: 日本語 and <angle brackets> stay plain");
+    setTopic(input, "a", wrapped);
+    setTopic(input, "b", QStringLiteral("<b>plain</b>"));
+    for (auto &link : input.at("crossLinks")) {
+        if (link.at("id") == "l2") link["topic"] = "<i>plain link</i>";
+        if (link.at("id") == "l3") { link["topic"] = "Self loop"; link["directed"] = true; }
+        if (link.at("id") == "l4") { link["source"] = "a"; link["target"] = "b"; link["topic"] = "Parallel route"; }
+    }
+    Editor editor;
+    QFont font(QStringLiteral("Arial"));
+    font.setPixelSize(15);
+    editor.setFont(font);
+    QPalette palette;
+    palette.setColor(QPalette::Window, Qt::white);
+    palette.setColor(QPalette::Base, Qt::white);
+    palette.setColor(QPalette::WindowText, QColor(24, 28, 36));
+    palette.setColor(QPalette::Text, QColor(24, 28, 36));
+    palette.setColor(QPalette::Button, QColor(234, 240, 248));
+    palette.setColor(QPalette::ButtonText, QColor(24, 28, 36));
+    palette.setColor(QPalette::Highlight, QColor(30, 95, 210));
+    palette.setColor(QPalette::HighlightedText, Qt::white);
+    palette.setColor(QPalette::Mid, QColor(100, 110, 125));
+    palette.setColor(QPalette::Dark, QColor(55, 65, 80));
+    editor.setPalette(palette);
+    CHECK(editor.loadJson(encoded(input)));
+    showEditor(editor);
+    const Json semantic = exported(editor);
+    const QString rootTopic = qs(record(semantic, "nodes", QStringLiteral("r")).at("topic"));
+    auto checkNodes = [&] {
+        std::vector<QRectF> rectangles;
+        for (const QString &topic : {rootTopic, wrapped, QStringLiteral("<b>plain</b>"), QStringLiteral("Delta")}) {
+            auto *text = textItem(editor, topic);
+            const QRectF rectangle = ownerItem(text)->sceneBoundingRect();
+            CHECK(finiteRect(rectangle) && rectangle.width() >= 71 && rectangle.height() >= 35);
+            CHECK(rectangle.adjusted(-1, -1, 1, 1).contains(text->sceneBoundingRect()));
+            CHECK(text->toPlainText() == topic);
+            CHECK(text->document()->size().width() <= 242);
+            CHECK(text->sceneBoundingRect().height() + 12 <= rectangle.height());
+            rectangles.push_back(rectangle);
+        }
+        rectangles.push_back(emptyNodeRect(editor));
+        for (size_t i = 0; i < rectangles.size(); ++i) {
+            CHECK(finiteRect(rectangles[i]));
+            for (size_t j = i + 1; j < rectangles.size(); ++j)
+                CHECK(!rectangles[i].adjusted(1, 1, -1, -1).intersects(rectangles[j].adjusted(1, 1, -1, -1)));
+        }
+        CHECK(textItem(editor, rootTopic)->font().bold());
+        CHECK(editor.selectNode(QStringLiteral("c")));
+        return rectangles;
+    };
+    auto nodes = checkNodes();
+    CHECK(texts(editor, QStringLiteral("plain")).isEmpty());
+    CHECK(!texts(editor, QStringLiteral("<i>plain link</i>")).isEmpty());
+    CHECK(texts(editor, QStringLiteral("plain link")).isEmpty());
+    CHECK(!texts(editor, QStringLiteral("<b>plain</b>")).isEmpty());
+    CHECK(topicRect(editor, wrapped).height() > topicRect(editor, QStringLiteral("<b>plain</b>")).height());
+    const QRectF initialVisible = graphics(editor).mapFromScene(renderedBounds(editor)).boundingRect();
+    CHECK(QRectF(graphics(editor).viewport()->rect()).adjusted(-3, -3, 3, 3).contains(initialVisible));
+    const QRectF sceneBounds = graphics(editor).scene()->sceneRect();
+    const QRectF contentBounds = renderedBounds(editor);
+    CHECK(sceneBounds.left() <= contentBounds.left() - 31 && sceneBounds.right() >= contentBounds.right() + 31);
+    CHECK(sceneBounds.top() <= contentBounds.top() - 31 && sceneBounds.bottom() >= contentBounds.bottom() + 31);
+
+    QSignalSpy changed(&editor, &Editor::documentChanged);
+    for (auto direction : {Editor::LayoutDirection::Balanced, Editor::LayoutDirection::Left, Editor::LayoutDirection::Right}) {
+        CHECK(editor.setLayoutDirection(direction));
+        CHECK(editor.layoutDirection() == direction);
+        nodes = checkNodes();
+        const qreal rootX = topicRect(editor, rootTopic).center().x();
+        bool left = false, right = false;
+        for (const QRectF &rectangle : {topicRect(editor, wrapped), topicRect(editor, QStringLiteral("<b>plain</b>")), emptyNodeRect(editor)}) {
+            left = left || rectangle.center().x() < rootX;
+            right = right || rectangle.center().x() > rootX;
+            if (direction == Editor::LayoutDirection::Left) CHECK(rectangle.right() < topicRect(editor, rootTopic).left());
+            if (direction == Editor::LayoutDirection::Right) CHECK(rectangle.left() > topicRect(editor, rootTopic).right());
+        }
+        if (direction == Editor::LayoutDirection::Balanced) CHECK(left && right);
+        CHECK(exported(editor) == semantic && changed.isEmpty());
+        assertFit(editor);
+    }
+    const auto directionBefore = editor.layoutDirection();
+    const QRectF rootBefore = topicRect(editor, rootTopic);
+    rejectUnchanged(editor, [&] { return editor.setLayoutDirection(static_cast<Editor::LayoutDirection>(91)); });
+    CHECK(editor.layoutDirection() == directionBefore && topicRect(editor, rootTopic) == rootBefore);
+    CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Balanced));
+    editor.clearSelection();
+    assertFit(editor);
+    nodes = checkNodes();
+    editor.clearSelection();
+    const QRectF source = renderedBounds(editor).adjusted(-2, -2, 2, 2);
+    const QImage image = paintScene(editor, source);
+    for (const auto &rectangle : nodes) {
+        const QRect region(imagePoint(image, source, rectangle.topLeft()), imagePoint(image, source, rectangle.bottomRight()));
+        CHECK(paintedPixels(image, region) > 20);
+    }
+    int graphInk = 0;
+    for (int y = 0; y < image.height(); ++y) for (int x = 0; x < image.width(); ++x) {
+        if (!ink(image.pixel(x, y))) continue;
+        const QPointF point(source.left() + (x + 0.5) * source.width() / image.width(),
+                            source.top() + (y + 0.5) * source.height() / image.height());
+        bool inNode = false;
+        for (const auto &rectangle : nodes) if (rectangle.adjusted(-3, -3, 3, 3).contains(point)) inNode = true;
+        if (!inNode) ++graphInk;
+    }
+    CHECK(graphInk > 80);
+    const auto *self = ownerItem(textItem(editor, QStringLiteral("Self loop")));
+    CHECK(self->sceneBoundingRect().top() < topicRect(editor, wrapped).top());
+    CHECK(self->sceneBoundingRect().right() > topicRect(editor, wrapped).right());
+    const QPoint routeOne = curvePoint(editor, QStringLiteral("Related"), nodes);
+    QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, routeOne);
+    CHECK(editor.selectedLinkId() == QStringLiteral("l1"));
+    const QPoint routeTwo = curvePoint(editor, QStringLiteral("Parallel route"), nodes);
+    QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, routeTwo);
+    CHECK(editor.selectedLinkId() == QStringLiteral("l4"));
+    editor.clearSelection();
+
+    const QImage unselected = paintScene(editor, source);
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    CHECK(paintScene(editor, source) != unselected);
+    editor.clearSelection();
+    const QImage oldPalette = paintScene(editor, source);
+    QPalette changedPalette = palette;
+    changedPalette.setColor(QPalette::WindowText, QColor(160, 15, 30));
+    changedPalette.setColor(QPalette::Text, QColor(160, 15, 30));
+    changedPalette.setColor(QPalette::ButtonText, QColor(160, 15, 30));
+    editor.setPalette(changedPalette);
+    pump();
+    CHECK(paintScene(editor, source) != oldPalette);
+    const qreal oldHeight = topicRect(editor, wrapped).height();
+    font.setPixelSize(23);
+    editor.setFont(font);
+    pump();
+    CHECK(topicRect(editor, wrapped).height() > oldHeight);
+    checkNodes();
+    CHECK(exported(editor) == semantic && changed.isEmpty());
+    assertFit(editor);
+    const QByteArray screenshot = qgetenv("M3_QT_SCREENSHOT");
+    if (!screenshot.isEmpty()) CHECK(editor.grab().save(QString::fromLocal8Bit(screenshot)));
+
+    // A directed endpoint must add painted arrow geometry, not merely retain
+    // the directed boolean in the document. Compare only a loose endpoint area.
+    Editor arrowEditor;
+    arrowEditor.setFont(font);
+    arrowEditor.setPalette(palette);
+    CHECK(arrowEditor.loadJson(QByteArray(R"({"schemaVersion":1,"rootId":"r","nodes":[{"id":"r","topic":"Arrow root","children":["n"]},{"id":"n","topic":"Arrow target"}],"crossLinks":[]})")));
+    CHECK(arrowEditor.setLayoutDirection(Editor::LayoutDirection::Right));
+    showEditor(arrowEditor);
+    arrowEditor.clearSelection();
+    const QRectF parent = topicRect(arrowEditor, QStringLiteral("Arrow root"));
+    const QRectF child = topicRect(arrowEditor, QStringLiteral("Arrow target"));
+    const QRectF treeSource = renderedBounds(arrowEditor).adjusted(-4, -4, 4, 4);
+    const QImage treeImage = paintScene(arrowEditor, treeSource);
+    const QPoint treeMidpoint = imagePoint(treeImage, treeSource,
+        QPointF((parent.right() + child.left()) / 2, parent.center().y()));
+    CHECK(paintedPixels(treeImage, QRect(treeMidpoint - QPoint(4, 4), QSize(9, 9))) > 2);
+    const QString arrowId = arrowEditor.addLink(QStringLiteral("r"), QStringLiteral("n"), false, QStringLiteral("Arrow label"));
+    CHECK(!arrowId.isEmpty());
+    arrowEditor.clearSelection();
+    const QRectF arrowSource = renderedBounds(arrowEditor).adjusted(-32, -32, 32, 32);
+    const QImage undirected = paintScene(arrowEditor, arrowSource);
+    const QRectF target = topicRect(arrowEditor, QStringLiteral("Arrow target"));
+    CHECK(arrowEditor.updateLink(arrowId, QStringLiteral("r"), QStringLiteral("n"), true, QStringLiteral("Arrow label")));
+    const QImage directed = paintScene(arrowEditor, arrowSource);
+    const QPoint endpoint = imagePoint(directed, arrowSource, QPointF(target.left(), target.center().y()));
+    int arrowDifference = 0;
+    const QRect endpointRegion = QRect(endpoint - QPoint(18, 18), QSize(37, 37)).intersected(directed.rect());
+    for (int y = endpointRegion.top(); y <= endpointRegion.bottom(); ++y)
+        for (int x = endpointRegion.left(); x <= endpointRegion.right(); ++x)
+            if (directed.pixel(x, y) != undirected.pixel(x, y)) ++arrowDifference;
+    CHECK(arrowDifference > 5);
+}
+
+static void navigation_case() {
+    Json input = editorFixture();
+    for (int i = 0; i < 10; ++i) {
+        const std::string id = "scroll-" + std::to_string(i);
+        input["nodes"].push_back({{"id", id}, {"topic", "Scroll branch " + std::to_string(i)}});
+        input["nodes"][0]["children"].push_back(id);
+    }
+    Editor editor;
+    QPalette palette = editor.palette();
+    palette.setColor(QPalette::Base, Qt::white);
+    palette.setColor(QPalette::Window, Qt::white);
+    editor.setPalette(palette);
+    CHECK(editor.loadJson(encoded(input)));
+    showEditor(editor);
+    QSignalSpy changed(&editor, &Editor::documentChanged);
+    QSignalSpy selected(&editor, &Editor::selectionChanged);
+    const Json original = exported(editor);
+    auto &view = graphics(editor);
+    clickLabel(editor, QStringLiteral("Alpha"));
+    CHECK(editor.selectedNodeId() == QStringLiteral("a") && editor.selectedLinkId().isEmpty());
+    clickLabel(editor, QStringLiteral("Related"));
+    CHECK(editor.selectedNodeId().isEmpty() && editor.selectedLinkId() == QStringLiteral("l1"));
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, blankPoint(view));
+    pump();
+    CHECK(editor.selectedNodeId().isEmpty() && editor.selectedLinkId().isEmpty());
+    CHECK(selected.size() == 3 && changed.isEmpty());
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, blankPoint(view));
+    CHECK(selected.size() == 3);
+
+    auto &reset = textAction(editor, {QStringLiteral("100%"), QStringLiteral("Reset zoom")});
+    auto &zoomIn = textAction(editor, {QStringLiteral("Zoom +"), QStringLiteral("Zoom in"), QStringLiteral("+")});
+    auto &zoomOut = textAction(editor, {QStringLiteral("Zoom -"), QStringLiteral("Zoom −"), QStringLiteral("Zoom out"), QStringLiteral("-")});
+    auto &fit = textAction(editor, {QStringLiteral("Fit"), QStringLiteral("Fit to contents")});
+    reset.trigger();
+    pump();
+    CHECK(std::abs(view.transform().m11() - 1.0) < 1e-6);
+    zoomIn.trigger();
+    CHECK(std::abs(view.transform().m11() - 1.2) < 1e-6);
+    zoomOut.trigger();
+    CHECK(std::abs(view.transform().m11() - 1.0) < 1e-6);
+    for (int i = 0; i < 4; ++i) zoomIn.trigger();
+    pump();
+    const QPoint cursor(view.viewport()->width() * 3 / 5, view.viewport()->height() * 2 / 5);
+    const QPointF anchor = view.mapToScene(cursor);
+    const qreal scale = view.transform().m11();
+    wheel(view, cursor, 120, Qt::ControlModifier);
+    CHECK(std::abs(view.transform().m11() - scale * 1.2) < 1e-6);
+    CHECK(QLineF(anchor, view.mapToScene(cursor)).length() < 3.0);
+    wheel(view, cursor, -120, Qt::ControlModifier);
+    CHECK(std::abs(view.transform().m11() - scale) < 1e-6);
+    wheel(view, cursor, 120 * 50, Qt::ControlModifier);
+    CHECK(std::abs(view.transform().m11() - 4.0) < 1e-6);
+    const QPointF beforePan = view.mapToScene(view.viewport()->rect().center());
+    const QPoint center = view.viewport()->rect().center();
+    dragMiddle(view, center, center + QPoint(65, 42));
+    CHECK(QLineF(beforePan, view.mapToScene(center)).length() > 5);
+    CHECK(std::abs(view.transform().m11() - 4.0) < 1e-6);
+    CHECK(view.verticalScrollBar()->maximum() > view.verticalScrollBar()->minimum());
+    view.verticalScrollBar()->setValue((view.verticalScrollBar()->minimum() + view.verticalScrollBar()->maximum()) / 2);
+    const int beforeScroll = view.verticalScrollBar()->value();
+    wheel(view, center, -120, Qt::NoModifier);
+    CHECK(view.verticalScrollBar()->value() != beforeScroll);
+    CHECK(std::abs(view.transform().m11() - 4.0) < 1e-6);
+    wheel(view, center, -120 * 50, Qt::ControlModifier);
+    CHECK(std::abs(view.transform().m11() - 0.1) < 1e-6);
+    reset.trigger();
+    pump();
+    std::vector<QRectF> nodes;
+    for (const auto &entry : original.at("nodes")) {
+        const QString topic = qs(entry.at("topic"));
+        nodes.push_back(topic.isEmpty() ? emptyNodeRect(editor) : topicRect(editor, topic));
+    }
+    editor.clearSelection();
+    const QPoint wideHit = curvePoint(editor, QStringLiteral("Other"), nodes, true);
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, wideHit);
+    pump();
+    CHECK(editor.selectedLinkId() == QStringLiteral("l2"));
+    CHECK(exported(editor) == original && changed.isEmpty());
+
+    zoomIn.trigger();
+    zoomIn.trigger();
+    pump();
+    const qreal editScale = view.transform().m11();
+    const QPointF editCenter = view.mapToScene(view.viewport()->rect().center());
+    CHECK(editor.renameNode(QStringLiteral("a"), QStringLiteral("Alpha renamed without fitting")));
+    CHECK(changed.size() == 1);
+    CHECK(std::abs(view.transform().m11() - editScale) < 1e-6);
+    CHECK(QLineF(editCenter, view.mapToScene(view.viewport()->rect().center())).length() < 3.0);
+    editor.resize(1120, 760);
+    pump();
+    CHECK(std::abs(view.transform().m11() - editScale) < 1e-6);
+    CHECK(QLineF(editCenter, view.mapToScene(view.viewport()->rect().center())).length() < 4.0);
+    fit.trigger();
+    pump();
+    const QRectF viewport(view.viewport()->rect());
+    CHECK(viewport.adjusted(-3, -3, 3, 3).contains(view.mapFromScene(renderedBounds(editor)).boundingRect()));
+    CHECK(changed.size() == 1);
+
+    Json large{{"schemaVersion", 1}, {"rootId", "large"},
+               {"nodes", Json::array({{{"id", "large"}, {"topic", "Large root"}, {"children", Json::array()}}})},
+               {"crossLinks", Json::array()}};
+    for (int i = 0; i < 180; ++i) {
+        const std::string id = "large-" + std::to_string(i);
+        large["nodes"][0]["children"].push_back(id);
+        large["nodes"].push_back({{"id", id}, {"topic", "Tall map branch " + std::to_string(i)}});
+    }
+    CHECK(editor.loadJson(encoded(large)));
+    CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+    assertFit(editor);
+    CHECK(view.transform().m11() < 0.1);
+    const auto largeChanges = changed.size();
+    wheel(view, view.viewport()->rect().center(), 120, Qt::ControlModifier);
+    CHECK(std::abs(view.transform().m11() - 0.1) < 1e-6);
+    CHECK(changed.size() == largeChanges);
+}
+
+static void controls_case() {
+    Editor editor;
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    showEditor(editor);
+    QSignalSpy changed(&editor, &Editor::documentChanged);
+    QComboBox *layout = nullptr;
+    for (auto *picker : editor.findChildren<QComboBox *>())
+        if (picker->findText(QStringLiteral("Balanced")) >= 0 &&
+            picker->findText(QStringLiteral("Right")) >= 0 && picker->findText(QStringLiteral("Left")) >= 0) layout = picker;
+    CHECK(layout != nullptr);
+    const Json beforeLayout = exported(editor);
+    const QString rootTopic = qs(record(beforeLayout, "nodes", QStringLiteral("r")).at("topic"));
+    layout->setCurrentIndex(layout->findText(QStringLiteral("Left")));
+    CHECK(editor.layoutDirection() == Editor::LayoutDirection::Left);
+    CHECK(topicRect(editor, QStringLiteral("Alpha")).center().x() < topicRect(editor, rootTopic).center().x());
+    layout->setCurrentIndex(layout->findText(QStringLiteral("Right")));
+    CHECK(editor.layoutDirection() == Editor::LayoutDirection::Right);
+    CHECK(topicRect(editor, QStringLiteral("Alpha")).center().x() > topicRect(editor, rootTopic).center().x());
+    layout->setCurrentIndex(layout->findText(QStringLiteral("Balanced")));
+    CHECK(editor.layoutDirection() == Editor::LayoutDirection::Balanced);
+    CHECK(exported(editor) == beforeLayout && changed.isEmpty());
+    CHECK(editor.selectNode(QStringLiteral("r")));
+    CHECK(editAction(editor, "addChild").isEnabled());
+    CHECK(editAction(editor, "editSelection").isEnabled());
+    CHECK(editAction(editor, "toggleExpanded").isEnabled());
+    CHECK(editAction(editor, "addLink").isEnabled());
+    CHECK(!editAction(editor, "deleteSelection").isEnabled());
+    CHECK(!editAction(editor, "moveNode").isEnabled());
+    CHECK(!editAction(editor, "moveUp").isEnabled());
+    CHECK(!editAction(editor, "moveDown").isEnabled());
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    CHECK(editAction(editor, "deleteSelection").isEnabled());
+    CHECK(editAction(editor, "moveNode").isEnabled());
+    CHECK(!editAction(editor, "moveUp").isEnabled() && editAction(editor, "moveDown").isEnabled());
+    dialogs({topicResponse(editor, QString::fromUtf8("UI child\n世界"))}, [&] { shortcut(editor, Qt::Key_Insert); });
+    CHECK(changed.size() == 1);
+    CHECK(!editAction(editor, "toggleExpanded").isEnabled());
+    const QString added = editor.selectedNodeId();
+    CHECK(!added.isEmpty() && added != QStringLiteral("a"));
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("children") == Json({"d", utf8(added)}));
+    CHECK(record(exported(editor), "nodes", added).at("topic") == utf8(QString::fromUtf8("UI child\n世界")));
+    CHECK(!texts(editor, QString::fromUtf8("UI child\n世界")).isEmpty());
+    const Json beforeCancel = exported(editor);
+    dialogs({topicResponse(editor, QStringLiteral("Do not insert"), false)}, [&] { shortcut(editor, Qt::Key_Insert); });
+    CHECK(exported(editor) == beforeCancel && editor.selectedNodeId() == added && changed.size() == 1);
+    dialogs({topicResponse(editor, QStringLiteral("Renamed\nfrom F2"))}, [&] { shortcut(editor, Qt::Key_F2); });
+    CHECK(record(exported(editor), "nodes", added).at("topic") == "Renamed\nfrom F2");
+    CHECK(changed.size() == 2 && editor.selectedNodeId() == added);
+    const Json renamed = exported(editor);
+    dialogs({topicResponse(editor, QStringLiteral("Canceled rename"), false)}, [&] { shortcut(editor, Qt::Key_F2); });
+    CHECK(exported(editor) == renamed && changed.size() == 2);
+    dialogs({topicResponse(editor, QStringLiteral("Double click topic"))}, [&] {
+        clickLabel(editor, QStringLiteral("Renamed\nfrom F2"), true);
+    });
+    CHECK(record(exported(editor), "nodes", added).at("topic") == "Double click topic");
+    CHECK(changed.size() == 3);
+
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    shortcut(editor, Qt::Key_Space);
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == false);
+    CHECK(texts(editor, QStringLiteral("Double click topic")).isEmpty());
+    CHECK(texts(editor, QStringLiteral("Delta")).isEmpty());
+    shortcut(editor, Qt::Key_Space);
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == true);
+    CHECK(!texts(editor, QStringLiteral("Double click topic")).isEmpty());
+    CHECK(changed.size() == 5);
+
+    CHECK(editor.selectNode(QStringLiteral("d")));
+    dialogs({[&](QDialog *dialog) {
+        auto *parent = dialog->findChild<QComboBox *>(QStringLiteral("newParent"));
+        auto *index = dialog->findChild<QSpinBox *>(QStringLiteral("insertIndex"));
+        CHECK(parent != nullptr && index != nullptr);
+        CHECK(!pickerIds(*parent).contains(QStringLiteral("d")));
+        chooseId(*parent, QStringLiteral("b"));
+        CHECK(index->minimum() == 0 && index->maximum() == 0);
+        index->setValue(0);
+        dialog->accept();
+    }}, [&] { shortcut(editor, Qt::Key_M, Qt::ControlModifier); });
+    CHECK(record(exported(editor), "nodes", QStringLiteral("b")).at("children") == Json({"d"}));
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("children") == Json({utf8(added)}));
+    CHECK(editor.selectedNodeId() == QStringLiteral("d") && changed.size() == 6);
+    CHECK(editor.selectNode(QStringLiteral("c")));
+    dialogs({[&](QDialog *dialog) {
+        auto *parent = dialog->findChild<QComboBox *>(QStringLiteral("newParent"));
+        auto *index = dialog->findChild<QSpinBox *>(QStringLiteral("insertIndex"));
+        CHECK(parent != nullptr && index != nullptr);
+        chooseId(*parent, QStringLiteral("r"));
+        CHECK(index->maximum() == 2); // The source was removed before insertion.
+        index->setValue(0);
+        dialog->accept();
+    }}, [&] { trigger(editor, "moveNode"); });
+    CHECK(record(exported(editor), "nodes", QStringLiteral("r")).at("children") == Json({"c", "a", "b"}));
+    CHECK(!editAction(editor, "moveUp").isEnabled() && editAction(editor, "moveDown").isEnabled());
+    shortcut(editor, Qt::Key_Down, Qt::ControlModifier);
+    CHECK(record(exported(editor), "nodes", QStringLiteral("r")).at("children") == Json({"a", "c", "b"}));
+    shortcut(editor, Qt::Key_Down, Qt::ControlModifier);
+    CHECK(record(exported(editor), "nodes", QStringLiteral("r")).at("children") == Json({"a", "b", "c"}));
+    CHECK(!editAction(editor, "moveDown").isEnabled());
+    const auto atBoundary = changed.size();
+    shortcut(editor, Qt::Key_Down, Qt::ControlModifier);
+    CHECK(changed.size() == atBoundary);
+    shortcut(editor, Qt::Key_Up, Qt::ControlModifier);
+    CHECK(record(exported(editor), "nodes", QStringLiteral("r")).at("children") == Json({"a", "c", "b"}));
+    CHECK(editor.selectedNodeId() == QStringLiteral("c"));
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    const Json beforeMoveCancel = exported(editor);
+    const auto moveCount = changed.size();
+    dialogs({[&](QDialog *dialog) {
+        auto *parent = dialog->findChild<QComboBox *>(QStringLiteral("newParent"));
+        auto *index = dialog->findChild<QSpinBox *>(QStringLiteral("insertIndex"));
+        CHECK(parent != nullptr && index != nullptr);
+        QStringList eligible = preorderIds(beforeMoveCancel);
+        eligible.removeAll(QStringLiteral("a"));
+        eligible.removeAll(added);
+        CHECK(pickerIds(*parent) == eligible);
+        CHECK(!pickerIds(*parent).contains(QStringLiteral("a")) && !pickerIds(*parent).contains(added));
+        dialog->reject();
+    }}, [&] { trigger(editor, "moveNode"); });
+    CHECK(exported(editor) == beforeMoveCancel && changed.size() == moveCount);
+
+    shortcut(editor, Qt::Key_Space); // Keep a hidden endpoint in the picker.
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == false);
+    CHECK(editor.selectNode(QStringLiteral("b")));
+    const Json beforeLink = exported(editor);
+    dialogs({[&](QDialog *dialog) {
+        auto *source = dialog->findChild<QComboBox *>(QStringLiteral("sourceNode"));
+        auto *target = dialog->findChild<QComboBox *>(QStringLiteral("targetNode"));
+        auto *topic = dialog->findChild<QLineEdit *>(QStringLiteral("linkTopic"));
+        auto *directed = dialog->findChild<QCheckBox *>(QStringLiteral("directed"));
+        CHECK(source != nullptr && target != nullptr && topic != nullptr && directed != nullptr);
+        CHECK(pickerIds(*source) == preorderIds(beforeLink) && pickerIds(*target) == preorderIds(beforeLink));
+        CHECK(source->currentText().endsWith(QStringLiteral("[b]")));
+        CHECK(pickerIds(*target).contains(added));
+        chooseId(*source, QStringLiteral("b"));
+        chooseId(*target, QStringLiteral("b"));
+        topic->setText(QStringLiteral("UI self link"));
+        directed->setChecked(true);
+        dialog->accept();
+    }}, [&] { shortcut(editor, Qt::Key_L, Qt::ControlModifier); });
+    const QString uiLink = editor.selectedLinkId();
+    CHECK(!uiLink.isEmpty() && !hasRecord(beforeLink, "crossLinks", uiLink));
+    CHECK(editor.selectedNodeId().isEmpty());
+    CHECK(record(exported(editor), "crossLinks", uiLink).at("source") == "b");
+    CHECK(record(exported(editor), "crossLinks", uiLink).at("target") == "b");
+    CHECK(record(exported(editor), "crossLinks", uiLink).at("directed") == true);
+    const Json beforeLinkCancel = exported(editor);
+    const auto linkCount = changed.size();
+    dialogs({[&](QDialog *dialog) {
+        auto *topic = dialog->findChild<QLineEdit *>(QStringLiteral("linkTopic"));
+        CHECK(topic != nullptr && topic->text() == QStringLiteral("UI self link"));
+        topic->setText(QStringLiteral("Canceled link"));
+        dialog->reject();
+    }}, [&] { shortcut(editor, Qt::Key_F2); });
+    CHECK(exported(editor) == beforeLinkCancel && changed.size() == linkCount);
+    dialogs({[&](QDialog *dialog) {
+        auto *source = dialog->findChild<QComboBox *>(QStringLiteral("sourceNode"));
+        auto *target = dialog->findChild<QComboBox *>(QStringLiteral("targetNode"));
+        auto *topic = dialog->findChild<QLineEdit *>(QStringLiteral("linkTopic"));
+        auto *directed = dialog->findChild<QCheckBox *>(QStringLiteral("directed"));
+        CHECK(source != nullptr && target != nullptr && topic != nullptr && directed != nullptr);
+        CHECK(source->currentText().endsWith(QStringLiteral("[b]")) && target->currentText().endsWith(QStringLiteral("[b]")));
+        CHECK(topic->text() == QStringLiteral("UI self link") && directed->isChecked());
+        chooseId(*target, added);
+        topic->setText(QStringLiteral("UI hidden endpoint"));
+        directed->setChecked(false);
+        dialog->accept();
+    }}, [&] { clickLabel(editor, QStringLiteral("UI self link"), true); });
+    CHECK(record(exported(editor), "crossLinks", uiLink).at("target") == utf8(added));
+    CHECK(record(exported(editor), "crossLinks", uiLink).at("topic") == "UI hidden endpoint");
+    CHECK(record(exported(editor), "crossLinks", uiLink).at("directed") == false);
+    CHECK(editor.selectedLinkId().isEmpty() && editor.selectedNodeId().isEmpty());
+    CHECK(texts(editor, QStringLiteral("UI hidden endpoint")).isEmpty());
+    CHECK(!editAction(editor, "editSelection").isEnabled() && !editAction(editor, "deleteSelection").isEnabled());
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    shortcut(editor, Qt::Key_Space);
+    CHECK(!texts(editor, QStringLiteral("UI hidden endpoint")).isEmpty());
+    CHECK(editor.selectLink(uiLink));
+    shortcut(editor, Qt::Key_Delete);
+    CHECK(!hasRecord(exported(editor), "crossLinks", uiLink));
+    CHECK(editor.selectedLinkId().isEmpty());
+    CHECK(editor.selectNode(added));
+    const Json beforeDeleteCancel = exported(editor);
+    const auto deleteCount = changed.size();
+    dialogs({deleteResponse(false)}, [&] { shortcut(editor, Qt::Key_Delete); });
+    CHECK(exported(editor) == beforeDeleteCancel && changed.size() == deleteCount && editor.selectedNodeId() == added);
+    dialogs({deleteResponse(true)}, [&] { trigger(editor, "deleteSelection"); });
+    CHECK(!hasRecord(exported(editor), "nodes", added));
+    CHECK(editor.selectedNodeId() == QStringLiteral("a") && changed.size() == deleteCount + 1);
+
+    Editor other;
+    CHECK(other.loadJson(encoded(editorFixture())));
+    showEditor(other, QSize(720, 500));
+    const Json otherBefore = exported(other);
+    QSignalSpy otherChanges(&other, &Editor::documentChanged);
+    CHECK(editor.selectNode(QStringLiteral("b")));
+    dialogs({topicResponse(editor, QStringLiteral("Only the focused editor"))}, [&] { shortcut(editor, Qt::Key_Insert); });
+    CHECK(record(exported(editor), "nodes", editor.selectedNodeId()).at("topic") == "Only the focused editor");
+    CHECK(exported(other) == otherBefore && otherChanges.isEmpty());
+    CHECK(other.selectedNodeId() == QStringLiteral("r"));
+
+    Editor collapsed;
+    CHECK(collapsed.loadJson(encoded(editorFixture())));
+    showEditor(collapsed);
+    CHECK(collapsed.selectNode(QStringLiteral("a")));
+    trigger(collapsed, "toggleExpanded");
+    QSignalSpy collapsedChanges(&collapsed, &Editor::documentChanged);
+    dialogs({topicResponse(collapsed, QStringLiteral("Added while collapsed"))}, [&] {
+        shortcut(collapsed, Qt::Key_Insert);
+    });
+    const Json collapsedDoc = exported(collapsed);
+    const QString hiddenChild = qs(record(collapsedDoc, "nodes", QStringLiteral("a")).at("children").back());
+    CHECK(record(collapsedDoc, "nodes", hiddenChild).at("topic") == "Added while collapsed");
+    CHECK(record(collapsedDoc, "nodes", QStringLiteral("a")).at("expanded") == false);
+    CHECK(collapsed.selectedNodeId() == QStringLiteral("a") && collapsedChanges.size() == 1);
+    CHECK(texts(collapsed, QStringLiteral("Added while collapsed")).isEmpty());
+    trigger(collapsed, "toggleExpanded");
+    CHECK(!texts(collapsed, QStringLiteral("Added while collapsed")).isEmpty());
+    const QRectF affordance = topicRect(collapsed, QStringLiteral("Alpha"));
+    for (qreal x : {affordance.right() - 9, affordance.left() + 9}) {
+        if (!record(exported(collapsed), "nodes", QStringLiteral("a")).at("expanded").get<bool>()) break;
+        const QPoint point = graphics(collapsed).mapFromScene(QPointF(x, affordance.center().y()));
+        QTest::mouseClick(graphics(collapsed).viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        pump();
+    }
+    CHECK(record(exported(collapsed), "nodes", QStringLiteral("a")).at("expanded") == false);
+    CHECK(texts(collapsed, QStringLiteral("Added while collapsed")).isEmpty());
+    rejectUnchanged(collapsed, [&] { return collapsed.removeNode(QStringLiteral("r")); });
+    const QString shownError = collapsed.lastError();
+    bool errorVisible = false;
+    for (auto *label : collapsed.findChildren<QLabel *>())
+        if (label->isVisible() && label->text().contains(shownError)) errorVisible = true;
+    CHECK(errorVisible && QApplication::activeModalWidget() == nullptr);
+    CHECK(collapsed.renameNode(QStringLiteral("r"), QStringLiteral("Recovered after failure")));
+    CHECK(collapsed.lastError().isEmpty());
+    for (auto *label : collapsed.findChildren<QLabel *>())
+        CHECK(!label->isVisible() || !label->text().contains(shownError));
+}
+
+#ifdef M3_QT_TEST_DEMO
+static void demo_files_case() {
+    QTemporaryDir directory;
+    CHECK(directory.isValid());
+    const QString inputPath = directory.filePath(QStringLiteral("input.json"));
+    const QString savedPath = directory.filePath(QStringLiteral("saved.json"));
+    const QString malformedPath = directory.filePath(QStringLiteral("malformed.json"));
+    const QString unrelatedPath = directory.filePath(QStringLiteral("unrelated.txt"));
+    const Json fixtureDoc = nativeDocument(editorFixture());
+    writeFile(inputPath, encoded(editorFixture()));
+    writeFile(malformedPath, QByteArray("{not valid JSON"));
+    const QByteArray sentinel("Keep this unrelated file exactly as it is.\n");
+    writeFile(unrelatedPath, sentinel);
+    DemoWindow window;
+    showDemo(window);
+    auto &editor = embedded(window);
+    const Json sample = Json::parse(R"({"schemaVersion":1,"rootId":"r","nodes":[{"id":"r","topic":"M3 Qt editor","children":["a","b","c"]},{"id":"a","topic":"Planning 世界","children":["d"],"note":"Preserve this note","style":{"custom":{"weight":2}}},{"id":"b","topic":"Implementation"},{"id":"c","topic":""},{"id":"d","topic":"Tests & verification"}],"crossLinks":[{"id":"l1","source":"a","target":"b","directed":true,"topic":"Depends on"},{"id":"l2","source":"d","target":"c","directed":false,"topic":"Related"},{"id":"l3","source":"a","target":"a","directed":true,"topic":"Review"},{"id":"l4","source":"a","target":"b","directed":true,"topic":"Feedback"}]})");
+    CHECK(exported(editor) == nativeDocument(sample));
+    CHECK(!window.isWindowModified() && window.currentFilePath().isEmpty());
+    CHECK(window.windowTitle().startsWith(QStringLiteral("M3 Qt editor demo")));
+    CHECK(window.windowTitle().contains(QStringLiteral("Untitled")));
+    CHECK(!texts(editor, QString::fromUtf8("Planning 世界")).isEmpty());
+    CHECK(!texts(editor, QStringLiteral("Review")).isEmpty());
+    CHECK(QRectF(graphics(editor).viewport()->rect()).adjusted(-3, -3, 3, 3)
+              .contains(graphics(editor).mapFromScene(renderedBounds(editor)).boundingRect()));
+    CHECK(window.openFile(inputPath));
+    CHECK(sameFile(window.currentFilePath(), inputPath));
+    CHECK(exported(editor) == fixtureDoc && !window.isWindowModified());
+    CHECK(window.windowTitle().contains(QFileInfo(inputPath).fileName()));
+    CHECK(!texts(editor, QStringLiteral("Alpha")).isEmpty());
+    CHECK(editor.renameNode(QStringLiteral("a"), QString::fromUtf8("Saved 世界\nSecond line")));
+    CHECK(window.isWindowModified());
+    const Json savedDoc = exported(editor);
+    CHECK(window.saveFile(savedPath));
+    CHECK(!window.isWindowModified() && sameFile(window.currentFilePath(), savedPath));
+    CHECK(fileDocument(savedPath) == savedDoc);
+    CHECK(readFile(inputPath) == encoded(editorFixture()));
+    CHECK(record(fileDocument(savedPath), "nodes", QStringLiteral("r")).at("style") ==
+          record(fixtureDoc, "nodes", QStringLiteral("r")).at("style"));
+    CHECK(record(fileDocument(savedPath), "crossLinks", QStringLiteral("l1")) ==
+          record(fixtureDoc, "crossLinks", QStringLiteral("l1")));
+    DemoWindow reopened;
+    CHECK(reopened.openFile(savedPath));
+    showDemo(reopened);
+    CHECK(exported(embedded(reopened)) == savedDoc && !reopened.isWindowModified());
+    CHECK(sameFile(reopened.currentFilePath(), savedPath));
+    CHECK(!texts(embedded(reopened), QString::fromUtf8("Saved 世界\nSecond line")).isEmpty());
+    CHECK(editor.renameNode(QStringLiteral("d"), QStringLiteral("Unsaved live edit")));
+    CHECK(window.isWindowModified());
+    const Json live = exported(editor);
+    const QString filename = window.currentFilePath();
+    const QByteArray goodFile = readFile(savedPath);
+    for (const QString &badPath : {directory.filePath(QStringLiteral("missing.json")), malformedPath}) {
+        bool result = true;
+        dialogs({messageResponse(QMessageBox::Discard)}, [&] { result = window.openFile(badPath); });
+        CHECK(!result);
+        CHECK(exported(editor) == live && window.currentFilePath() == filename && window.isWindowModified());
+        CHECK(!texts(editor, QStringLiteral("Unsaved live edit")).isEmpty());
+        CHECK(readFile(savedPath) == goodFile);
+    }
+    bool result = true;
+    dialogs({}, [&] { result = window.saveFile(directory.path()); });
+    CHECK(!result);
+    CHECK(exported(editor) == live && window.currentFilePath() == filename && window.isWindowModified());
+    CHECK(readFile(savedPath) == goodFile && readFile(unrelatedPath) == sentinel);
+    dialogs({}, [&] { result = window.saveFile(QString()); });
+    CHECK(!result && exported(editor) == live && window.currentFilePath() == filename && window.isWindowModified());
+    const Json beforeEmpty = exported(embedded(reopened));
+    const QString reopenedName = reopened.currentFilePath();
+    dialogs({}, [&] { result = reopened.openFile(QString()); });
+    CHECK(!result && exported(embedded(reopened)) == beforeEmpty && reopened.currentFilePath() == reopenedName);
+    CHECK(!reopened.isWindowModified());
+    CHECK(readFile(unrelatedPath) == sentinel);
+}
+#endif
+
+#ifdef M3_QT_TEST_DEMO
+static void demo_prompts_case() {
+    QTemporaryDir directory;
+    CHECK(directory.isValid());
+    const QString inputPath = directory.filePath(QStringLiteral("original.json"));
+    const QString targetPath = directory.filePath(QStringLiteral("target.json"));
+    const QString promptedPath = directory.filePath(QStringLiteral("prompt-save.json"));
+    const Json initial = nativeDocument(editorFixture());
+    Json target = editorFixture();
+    setTopic(target, "r", QStringLiteral("Target document"));
+    writeFile(inputPath, encoded(initial));
+    writeFile(targetPath, encoded(target));
+    DemoWindow window;
+    CHECK(window.openFile(inputPath));
+    showDemo(window);
+    auto &editor = embedded(window);
+    CHECK(editor.renameNode(QStringLiteral("a"), QStringLiteral("Pending cancel")));
+    const Json pending = exported(editor);
+    const QString oldPath = window.currentFilePath();
+    bool result = true;
+    dialogs({messageResponse(QMessageBox::Cancel)}, [&] { result = window.newFile(); });
+    CHECK(!result && exported(editor) == pending && window.currentFilePath() == oldPath && window.isWindowModified());
+    dialogs({messageResponse(QMessageBox::Cancel)}, [&] { result = window.openFile(targetPath); });
+    CHECK(!result && exported(editor) == pending && window.currentFilePath() == oldPath && window.isWindowModified());
+    dialogs({messageResponse(QMessageBox::Cancel)}, [&] { result = window.close(); });
+    CHECK(!result && window.isVisible());
+    CHECK(exported(editor) == pending && window.currentFilePath() == oldPath && window.isWindowModified());
+    CHECK(fileDocument(inputPath) == initial);
+    dialogs({messageResponse(QMessageBox::Discard)}, [&] { result = window.newFile(); });
+    CHECK(result && !window.isWindowModified() && window.currentFilePath().isEmpty());
+    CHECK(exported(editor).at("rootId") == "root");
+    CHECK(record(exported(editor), "nodes", QStringLiteral("root")).at("topic") == "Central topic");
+    CHECK(fileDocument(inputPath) == initial);
+
+    CHECK(editor.renameNode(QStringLiteral("root"), QStringLiteral("Discard before open")));
+    dialogs({messageResponse(QMessageBox::Discard)}, [&] { result = window.openFile(inputPath); });
+    CHECK(result && exported(editor) == initial && sameFile(window.currentFilePath(), inputPath));
+    CHECK(!window.isWindowModified());
+    CHECK(editor.renameNode(QStringLiteral("a"), QStringLiteral("Save before new")));
+    const Json saveBeforeNew = exported(editor);
+    dialogs({messageResponse(QMessageBox::Save)}, [&] { result = window.newFile(); });
+    CHECK(result && !window.isWindowModified() && window.currentFilePath().isEmpty());
+    CHECK(fileDocument(inputPath) == saveBeforeNew);
+    CHECK(exported(editor).at("rootId") == "root");
+
+    CHECK(editor.renameNode(QStringLiteral("root"), QStringLiteral("Save dialog cancellation")));
+    const Json beforeFileCancel = exported(editor);
+    dialogs({messageResponse(QMessageBox::Save), fileResponse(QString(), false)}, [&] { result = window.newFile(); });
+    CHECK(!result && exported(editor) == beforeFileCancel && window.currentFilePath().isEmpty() && window.isWindowModified());
+    CHECK(!QFileInfo::exists(promptedPath));
+    dialogs({fileResponse(QString(), false)}, [&] { hostAction(window, QKeySequence::Open).trigger(); });
+    CHECK(exported(editor) == beforeFileCancel && window.currentFilePath().isEmpty() && window.isWindowModified());
+    dialogs({fileResponse(QString(), false)}, [&] { hostAction(window, QKeySequence::SaveAs).trigger(); });
+    CHECK(exported(editor) == beforeFileCancel && window.currentFilePath().isEmpty() && window.isWindowModified());
+    dialogs({messageResponse(QMessageBox::Save), fileResponse(promptedPath, true)}, [&] { result = window.openFile(targetPath); });
+    CHECK(result);
+    CHECK(fileDocument(promptedPath) == beforeFileCancel);
+    CHECK(exported(editor) == nativeDocument(target));
+    CHECK(sameFile(window.currentFilePath(), targetPath) && !window.isWindowModified());
+
+    // Replace the current path with a directory: Save is a real QSaveFile
+    // failure, without depending on permission bits or a chooser accepting an
+    // invalid filename. The failed pending save must abort each transition.
+    const QString blockedPath = directory.filePath(QStringLiteral("blocked.json"));
+    CHECK(window.saveFile(blockedPath));
+    CHECK(editor.renameNode(QStringLiteral("a"), QStringLiteral("Cannot save this yet")));
+    const Json blockedDoc = exported(editor);
+    const QString blockedName = window.currentFilePath();
+    CHECK(QFile::remove(blockedPath));
+    CHECK(QDir().mkdir(blockedPath));
+    dialogs({messageResponse(QMessageBox::Save)}, [&] { result = window.newFile(); });
+    CHECK(!result && exported(editor) == blockedDoc && window.currentFilePath() == blockedName && window.isWindowModified());
+    dialogs({messageResponse(QMessageBox::Save)}, [&] { result = window.openFile(inputPath); });
+    CHECK(!result && exported(editor) == blockedDoc && window.currentFilePath() == blockedName && window.isWindowModified());
+    dialogs({messageResponse(QMessageBox::Save)}, [&] { result = window.close(); });
+    CHECK(!result && window.isVisible());
+    CHECK(exported(editor) == blockedDoc && window.currentFilePath() == blockedName && window.isWindowModified());
+    CHECK(fileDocument(inputPath) == saveBeforeNew && readFile(targetPath) == encoded(target));
+
+    const QString closingPath = directory.filePath(QStringLiteral("closing.json"));
+    CHECK(window.saveFile(closingPath));
+    CHECK(!window.isWindowModified());
+    CHECK(editor.renameNode(QStringLiteral("d"), QStringLiteral("Persist before close")));
+    const Json beforeClose = exported(editor);
+    dialogs({messageResponse(QMessageBox::Save)}, [&] { result = window.close(); });
+    CHECK(result && !window.isVisible());
+    CHECK(fileDocument(closingPath) == beforeClose && !window.isWindowModified());
+
+    DemoWindow discarded;
+    CHECK(discarded.openFile(inputPath));
+    showDemo(discarded);
+    CHECK(embedded(discarded).renameNode(QStringLiteral("a"), QStringLiteral("Discard before close")));
+    dialogs({messageResponse(QMessageBox::Discard)}, [&] { result = discarded.close(); });
+    CHECK(result && !discarded.isVisible());
+    CHECK(fileDocument(inputPath) == saveBeforeNew);
+}
+#endif
+
+static void tree_edits_scene() {
+    Editor editor;
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+    showEditor(editor);
+    CHECK(!texts(editor, QStringLiteral("Alpha")).isEmpty());
+    CHECK(!texts(editor, QStringLiteral("Beta")).isEmpty());
+    CHECK(!texts(editor, QStringLiteral("Delta")).isEmpty());
+    const QString added = editor.addNode(QStringLiteral("a"), QStringLiteral("Added visible\n世界"));
+    CHECK(!added.isEmpty());
+    CHECK(!texts(editor, QStringLiteral("Added visible\n世界")).isEmpty());
+    CHECK(topicRect(editor, QStringLiteral("Added visible\n世界")).center().x() > topicRect(editor, QStringLiteral("Alpha")).center().x());
+    CHECK(editor.renameNode(QStringLiteral("a"), QStringLiteral("Renamed visible")));
+    CHECK(texts(editor, QStringLiteral("Alpha")).isEmpty());
+    CHECK(!texts(editor, QStringLiteral("Renamed visible")).isEmpty());
+    const QRectF deltaBefore = topicRect(editor, QStringLiteral("Delta"));
+    CHECK(editor.moveNode(QStringLiteral("d"), QStringLiteral("b")));
+    CHECK(!texts(editor, QStringLiteral("Delta")).isEmpty());
+    CHECK(topicRect(editor, QStringLiteral("Delta")).center().x() > topicRect(editor, QStringLiteral("Beta")).center().x());
+    CHECK(topicRect(editor, QStringLiteral("Delta")).center() != deltaBefore.center());
+    CHECK(editor.moveNode(QStringLiteral("c"), QStringLiteral("r"), 0));
+    CHECK(emptyNodeRect(editor).center().y() < topicRect(editor, QStringLiteral("Renamed visible")).center().y());
+    CHECK(topicRect(editor, QStringLiteral("Renamed visible")).center().y() < topicRect(editor, QStringLiteral("Beta")).center().y());
+    CHECK(editor.selectNode(QStringLiteral("d")));
+    CHECK(editor.removeNode(QStringLiteral("b")));
+    CHECK(texts(editor, QStringLiteral("Beta")).isEmpty() && texts(editor, QStringLiteral("Delta")).isEmpty());
+    CHECK(texts(editor, QStringLiteral("Related")).isEmpty() && texts(editor, QStringLiteral("Other")).isEmpty());
+    CHECK(!texts(editor, QStringLiteral("Added visible\n世界")).isEmpty());
+    CHECK(editor.selectedNodeId() == QStringLiteral("r"));
+    CHECK(editor.selectNode(QStringLiteral("c")));
+    CHECK(finiteRect(emptyNodeRect(editor)));
+}
+
+static void collapse_scene() {
+    Editor editor;
+    const Json input = editorFixture();
+    CHECK(editor.loadJson(encoded(input)));
+    showEditor(editor);
+    CHECK(!texts(editor, QStringLiteral("Delta")).isEmpty() && !texts(editor, QStringLiteral("Other")).isEmpty());
+    clickLabel(editor, QStringLiteral("Delta"));
+    CHECK(editor.selectedNodeId() == QStringLiteral("d"));
+    CHECK(editor.setExpanded(QStringLiteral("a"), false));
+    CHECK(texts(editor, QStringLiteral("Delta")).isEmpty() && texts(editor, QStringLiteral("Other")).isEmpty());
+    CHECK(!texts(editor, QStringLiteral("Alpha")).isEmpty() && !texts(editor, QStringLiteral("Related")).isEmpty());
+    CHECK(editor.selectedNodeId() == QStringLiteral("a"));
+    CHECK(editor.moveNode(QStringLiteral("b"), QStringLiteral("a")));
+    const QString inserted = editor.addNode(QStringLiteral("a"), QStringLiteral("Hidden child"));
+    CHECK(!inserted.isEmpty());
+    CHECK(texts(editor, QStringLiteral("Hidden child")).isEmpty());
+    CHECK(texts(editor, QStringLiteral("Beta")).isEmpty() && texts(editor, QStringLiteral("Related")).isEmpty());
+    CHECK(editor.setExpanded(QStringLiteral("a"), true));
+    CHECK(!texts(editor, QStringLiteral("Delta")).isEmpty() && !texts(editor, QStringLiteral("Other")).isEmpty());
+    CHECK(!texts(editor, QStringLiteral("Beta")).isEmpty() && !texts(editor, QStringLiteral("Related")).isEmpty());
+    CHECK(!texts(editor, QStringLiteral("Hidden child")).isEmpty());
+    CHECK(editor.selectNode(inserted));
+    CHECK(editor.setExpanded(QStringLiteral("r"), false));
+    CHECK(editor.selectedNodeId() == QStringLiteral("r"));
+    for (const QString &topic : {QStringLiteral("Alpha"), QStringLiteral("Beta"), QStringLiteral("Delta"),
+                                 QStringLiteral("Hidden child"), QStringLiteral("Related"), QStringLiteral("Other")})
+        CHECK(texts(editor, topic).isEmpty());
+    CHECK(texts(editor, QString()).isEmpty());
+    CHECK(!texts(editor, qs(record(nativeDocument(input), "nodes", QStringLiteral("r")).at("topic"))).isEmpty());
+    CHECK(editor.setExpanded(QStringLiteral("r"), true));
+    CHECK(!texts(editor, QStringLiteral("Hidden child")).isEmpty());
+    CHECK(editor.selectNode(inserted));
+}
+
+static void graph_edits_scene() {
+    Editor editor;
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    showEditor(editor);
+    const QString first = editor.addLink(QStringLiteral("a"), QStringLiteral("b"), true, QStringLiteral("Route one"));
+    const QString second = editor.addLink(QStringLiteral("a"), QStringLiteral("b"), false, QStringLiteral("Route two"));
+    const QString self = editor.addLink(QStringLiteral("a"), QStringLiteral("a"), true, QStringLiteral("Self route"));
+    CHECK(!first.isEmpty() && !second.isEmpty() && !self.isEmpty());
+    editor.fitToContents();
+    pump();
+    const std::vector<QRectF> nodes{
+        topicRect(editor, qs(record(exported(editor), "nodes", QStringLiteral("r")).at("topic"))),
+        topicRect(editor, QStringLiteral("Alpha")), topicRect(editor, QStringLiteral("Beta")),
+        topicRect(editor, QStringLiteral("Delta")), emptyNodeRect(editor)
+    };
+    for (const auto &route : std::vector<std::pair<QString, QString>>{
+             {QStringLiteral("Route one"), first}, {QStringLiteral("Route two"), second},
+             {QStringLiteral("Self route"), self}}) {
+        clickLabel(editor, route.first);
+        CHECK(editor.selectedNodeId().isEmpty() && editor.selectedLinkId() == route.second);
+        editor.clearSelection();
+        const QPoint point = curvePoint(editor, route.first, nodes);
+        QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        pump();
+        CHECK(editor.selectedLinkId() == route.second);
+    }
+    const QRectF alpha = topicRect(editor, QStringLiteral("Alpha"));
+    const QRectF selfBounds = ownerItem(textItem(editor, QStringLiteral("Self route")))->sceneBoundingRect();
+    CHECK(selfBounds.top() < alpha.top() && selfBounds.right() > alpha.right());
+    CHECK(editor.selectLink(first));
+    CHECK(editor.updateLink(first, QStringLiteral("c"), QStringLiteral("d"), false, QStringLiteral("Changed route")));
+    CHECK(texts(editor, QStringLiteral("Route one")).isEmpty());
+    clickLabel(editor, QStringLiteral("Changed route"));
+    CHECK(editor.selectedLinkId() == first);
+    CHECK(editor.removeLink(first));
+    CHECK(editor.selectedLinkId().isEmpty());
+    CHECK(texts(editor, QStringLiteral("Changed route")).isEmpty());
+    clickLabel(editor, QStringLiteral("Route two"));
+    CHECK(editor.selectedLinkId() == second);
+    clickLabel(editor, QStringLiteral("Self route"));
+    CHECK(editor.selectedLinkId() == self);
+    CHECK(editor.selectLink(QStringLiteral("l2")));
+    CHECK(editor.setExpanded(QStringLiteral("a"), false));
+    CHECK(editor.selectedLinkId().isEmpty());
+    CHECK(texts(editor, QStringLiteral("Other")).isEmpty());
+}
+
+int main(int argc, char **argv) {
+    try {
+        if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) qputenv("QT_QPA_PLATFORM", QByteArray("offscreen"));
+        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+        QApplication application(argc, argv);
+        QApplication::setQuitOnLastWindowClosed(false);
+        CHECK(argc == 2);
+        const std::string name = argv[1];
+        if (name == "document") document_case();
+        else if (name == "tree_edits") { tree_edits_case(); tree_edits_scene(); }
+        else if (name == "collapse") { collapse_case(); collapse_scene(); }
+        else if (name == "graph_edits") { graph_edits_case(); graph_edits_scene(); }
+        else if (name == "render") render_case();
+        else if (name == "navigation") navigation_case();
+        else if (name == "controls") controls_case();
+        else if (name == "lifetime") lifetime_case();
+#ifdef M3_QT_TEST_DEMO
+        else if (name == "demo_files") demo_files_case();
+        else if (name == "demo_prompts") demo_prompts_case();
+#endif
+        else throw std::runtime_error("Unknown Qt test case: " + name);
+        std::cout << name << " passed\n";
+        return 0;
+    } catch (const std::exception &error) {
+        std::cerr << error.what() << '\n';
+        return 1;
+    }
+}
