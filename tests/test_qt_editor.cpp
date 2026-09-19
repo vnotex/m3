@@ -22,7 +22,6 @@
 #include <QGraphicsTextItem>
 #include <QGraphicsView>
 #include <QImage>
-#include <QInputDialog>
 #include <QInputMethodEvent>
 #include <QKeySequence>
 #include <QLineF>
@@ -329,18 +328,6 @@ static void dialogs(const std::vector<DialogStep> &steps, const std::function<vo
     watchdog.stop();
     if (failure) std::rethrow_exception(failure);
     CHECK(next == steps.size());
-}
-static DialogStep topicResponse(Editor &editor, const QString &topic, bool accept = true) {
-    return [&editor, topic, accept](QDialog *dialog) {
-        auto *input = qobject_cast<QInputDialog *>(dialog);
-        CHECK(input != nullptr);
-        bool parented = false;
-        for (auto *parent = input->parentWidget(); parent; parent = parent->parentWidget())
-            parented = parented || parent == &editor;
-        CHECK(parented);
-        input->setTextValue(topic);
-        if (accept) input->accept(); else input->reject();
-    };
 }
 #ifdef M3_QT_TEST_DEMO
 static DialogStep messageResponse(QMessageBox::StandardButton button) {
@@ -1167,7 +1154,7 @@ static void inline_edit_case() {
         QTest::keyClick(&input, Qt::Key_Left);
         QTest::keyClick(&input, Qt::Key_Delete);
         QTest::keyClick(&input, Qt::Key_Space);
-        QTest::keyClick(&input, Qt::Key_Return);
+        QTest::keyClick(&input, Qt::Key_Return, Qt::ShiftModifier);
         QTest::keyClick(&input, Qt::Key_Tab);
         QTest::keyClicks(&input, "z");
         QTest::keyClick(&input, Qt::Key_Up);
@@ -1478,16 +1465,18 @@ static void configuration_case() {
     showEditor(editor);
     QSignalSpy changed(&editor, &Editor::documentChanged);
     const Json before = exported(editor);
-    dialogs({topicResponse(editor, QStringLiteral("Custom shortcut"))}, [&] {
-        shortcut(editor, Qt::Key_J, Qt::ControlModifier);
-    });
+    shortcut(editor, Qt::Key_J, Qt::ControlModifier);
     const QString child = editor.selectedNodeId();
+    CHECK(record(exported(editor), "nodes", child).at("topic") == "" && changed.size() == 1);
+    CHECK(QApplication::activeModalWidget() == nullptr);
+    topicInput(editor).setPlainText(QStringLiteral("Custom shortcut"));
+    topicKey(editor, Qt::Key_Return, Qt::AltModifier);
     CHECK(record(exported(editor), "nodes", child).at("topic") == "Custom shortcut");
     CHECK(record(exported(editor), "nodes", QStringLiteral("r")).at("children").back() == utf8(child));
-    CHECK(changed.size() == 1);
-    dialogs({topicResponse(editor, QStringLiteral("Second binding"))}, [&] {
-        shortcut(editor, Qt::Key_J, Qt::ControlModifier | Qt::AltModifier);
-    });
+    CHECK(changed.size() == 2);
+    shortcut(editor, Qt::Key_J, Qt::ControlModifier | Qt::AltModifier);
+    topicInput(editor).setPlainText(QStringLiteral("Second binding"));
+    topicKey(editor, Qt::Key_Return, Qt::AltModifier);
     const QString grandchild = editor.selectedNodeId();
     CHECK(record(exported(editor), "nodes", child).at("children") == Json({utf8(grandchild)}));
     shortcut(editor, Qt::Key_R, Qt::ControlModifier);
@@ -1497,30 +1486,32 @@ static void configuration_case() {
     CHECK(record(exported(editor), "nodes", grandchild).at("topic") == "Rebound rename");
     const Json renamed = exported(editor);
     dialogs({}, [&] { shortcut(editor, Qt::Key_F2); shortcut(editor, Qt::Key_Insert); });
-    CHECK(exported(editor) == renamed && changed.size() == 3);
+    CHECK(exported(editor) == renamed && changed.size() == 5);
     CHECK(editor.selectNode(QStringLiteral("a")));
     shortcut(editor, Qt::Key_Space);
     CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == true);
-    CHECK(changed.size() == 3);
+    CHECK(changed.size() == 5);
     trigger(editor, "toggleExpanded");
     CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == false);
-    CHECK(changed.size() == 4);
+    CHECK(changed.size() == 6);
     CHECK(editor.selectNode(child));
     dialogs({}, [&] { shortcut(editor, Qt::Key_D, Qt::ControlModifier); });
     CHECK(!hasRecord(exported(editor), "nodes", child) && !hasRecord(exported(editor), "nodes", grandchild));
-    CHECK(editor.selectedNodeId() == QStringLiteral("r") && changed.size() == 5);
+    CHECK(editor.selectedNodeId() == QStringLiteral("r") && changed.size() == 7);
     // Deletion confirmation policy never permits removing the root.
     const Json retained = exported(editor);
     dialogs({}, [&] { shortcut(editor, Qt::Key_D, Qt::ControlModifier); });
-    CHECK(exported(editor) == retained && changed.size() == 5);
+    CHECK(exported(editor) == retained && changed.size() == 7);
     Editor independent;
     CHECK(independent.loadJson(encoded(editorFixture())));
     showEditor(independent);
     dialogs({}, [&] { shortcut(independent, Qt::Key_J, Qt::ControlModifier); });
     CHECK(exported(independent) == before);
-    dialogs({topicResponse(independent, QStringLiteral("Default binding"))}, [&] { shortcut(independent, Qt::Key_Insert); });
+    shortcut(independent, Qt::Key_Insert);
+    topicInput(independent).setPlainText(QStringLiteral("Default binding"));
+    topicKey(independent, Qt::Key_Return);
     CHECK(record(exported(independent), "nodes", independent.selectedNodeId()).at("topic") == "Default binding");
-    CHECK(exported(editor) == retained && changed.size() == 5);
+    CHECK(exported(editor) == retained && changed.size() == 7);
 }
 
 static void shortcuts_case() {
@@ -1528,43 +1519,50 @@ static void shortcuts_case() {
     CHECK(editor.loadJson(encoded(editorFixture())));
     showEditor(editor);
     QSignalSpy changed(&editor, &Editor::documentChanged);
-    dialogs({[&](QDialog *dialog) {
-        auto *input = qobject_cast<QInputDialog *>(dialog);
-        CHECK(input != nullptr);
-        auto *text = input->findChild<QPlainTextEdit *>();
-        CHECK(text != nullptr);
-        input->activateWindow(); text->setFocus(); pump();
-        input->setTextValue(QStringLiteral("Tab child"));
-        QTest::keyClick(text, Qt::Key_Return, Qt::ControlModifier);
-        CHECK(!dialog->isVisible());
-    }}, [&] { shortcut(editor, Qt::Key_Tab); });
+    shortcut(editor, Qt::Key_Tab);
+    CHECK(QApplication::activeModalWidget() == nullptr);
+    CHECK(record(exported(editor), "nodes", editor.selectedNodeId()).at("topic") == "" && changed.size() == 1);
+    auto &createdInput = topicInput(editor);
+    QTest::keyClicks(&createdInput, "Tab child");
+    QTest::keyClick(&createdInput, Qt::Key_Enter, Qt::ShiftModifier | Qt::KeypadModifier);
+    QTest::keyClicks(&createdInput, "Second line");
+    CHECK(changed.size() == 1 && createdInput.toPlainText() == QStringLiteral("Tab child\nSecond line"));
+    topicKey(editor, Qt::Key_Return);
+    CHECK(activeTopicInput(editor) == nullptr && changed.size() == 2);
     const QString child = editor.selectedNodeId();
     CHECK(record(exported(editor), "nodes", QStringLiteral("r")).at("children") == Json({"a", "b", "c", utf8(child)}));
-    dialogs({topicResponse(editor, QStringLiteral("Following sibling"))}, [&] { shortcut(editor, Qt::Key_Return); });
+    CHECK(record(exported(editor), "nodes", child).at("topic") == "Tab child\nSecond line");
+    shortcut(editor, Qt::Key_Return);
+    topicInput(editor).setPlainText(QStringLiteral("Following sibling"));
+    topicKey(editor, Qt::Key_Return, Qt::ControlModifier);
     const QString after = editor.selectedNodeId();
     CHECK(record(exported(editor), "nodes", QStringLiteral("r")).at("children") == Json({"a", "b", "c", utf8(child), utf8(after)}));
-    dialogs({topicResponse(editor, QStringLiteral("Preceding sibling"))}, [&] { shortcut(editor, Qt::Key_Return, Qt::ShiftModifier); });
+    shortcut(editor, Qt::Key_Return, Qt::ShiftModifier);
+    topicInput(editor).setPlainText(QStringLiteral("Preceding sibling"));
+    topicKey(editor, Qt::Key_Enter, Qt::KeypadModifier);
     const QString before = editor.selectedNodeId();
     CHECK(record(exported(editor), "nodes", QStringLiteral("r")).at("children") == Json({"a", "b", "c", utf8(child), utf8(before), utf8(after)}));
-    CHECK(changed.size() == 3);
+    CHECK(changed.size() == 6);
     CHECK(editor.selectNode(QStringLiteral("r")));
-    dialogs({topicResponse(editor, QStringLiteral("Root Enter child"))}, [&] { shortcut(editor, Qt::Key_Enter); });
+    shortcut(editor, Qt::Key_Enter);
+    topicInput(editor).setPlainText(QStringLiteral("Root Enter child"));
+    topicKey(editor, Qt::Key_Enter, Qt::ControlModifier | Qt::KeypadModifier);
     const QString rootChild = editor.selectedNodeId();
     CHECK(record(exported(editor), "nodes", QStringLiteral("r")).at("children").back() == utf8(rootChild));
-    CHECK(changed.size() == 4);
+    CHECK(changed.size() == 8);
     const Json inserted = exported(editor);
     const QString selected = editor.selectedNodeId();
     shortcut(editor, Qt::Key_F2);
     auto &text = topicInput(editor);
     QTest::keyClicks(&text, "Typing");
-    QTest::keyClick(&text, Qt::Key_Return);
+    QTest::keyClick(&text, Qt::Key_Return, Qt::ShiftModifier);
     QTest::keyClick(&text, Qt::Key_Tab);
     QTest::keyClicks(&text, "inside topic");
     CHECK(text.toPlainText() == QStringLiteral("Typing\n\tinside topic"));
-    CHECK(exported(editor) == inserted && changed.size() == 4);
+    CHECK(exported(editor) == inserted && changed.size() == 8);
     topicKey(editor, Qt::Key_Escape);
     CHECK(activeTopicInput(editor) == nullptr);
-    CHECK(exported(editor) == inserted && editor.selectedNodeId() == selected && changed.size() == 4);
+    CHECK(exported(editor) == inserted && editor.selectedNodeId() == selected && changed.size() == 8);
     CHECK(editor.selectNode(QStringLiteral("a")));
     shortcut(editor, Qt::Key_Right);
     CHECK(editor.selectedNodeId() == QStringLiteral("d"));
@@ -1581,18 +1579,18 @@ static void shortcuts_case() {
     shortcut(editor, Qt::Key_Right);
     CHECK(editor.selectedNodeId() == QStringLiteral("a"));
     shortcut(editor, Qt::Key_Space);
-    CHECK(changed.size() == 5);
+    CHECK(changed.size() == 9);
     shortcut(editor, Qt::Key_Right);
     CHECK(editor.selectedNodeId() == QStringLiteral("a") && editor.lastError().isEmpty());
     shortcut(editor, Qt::Key_Space);
-    CHECK(exported(editor) == inserted && changed.size() == 6);
+    CHECK(exported(editor) == inserted && changed.size() == 10);
     CHECK(editor.selectLink(QStringLiteral("l1")));
     shortcut(editor, Qt::Key_Home);
     CHECK(editor.selectedNodeId() == QStringLiteral("r") && editor.selectedLinkId().isEmpty());
     shortcut(editor, Qt::Key_Escape);
     CHECK(editor.selectedNodeId().isEmpty() && editor.selectedLinkId().isEmpty());
     dialogs({}, [&] { shortcut(editor, Qt::Key_Return); shortcut(editor, Qt::Key_Tab); });
-    CHECK(exported(editor) == inserted && changed.size() == 6);
+    CHECK(exported(editor) == inserted && changed.size() == 10);
     CHECK(editor.selectNode(QStringLiteral("a")));
     QComboBox *layout = nullptr;
     for (auto *combo : editor.findChildren<QComboBox *>())
@@ -1604,7 +1602,7 @@ static void shortcuts_case() {
         QTest::keyClick(layout, Qt::Key_Tab);
     });
     CHECK(editor.layoutDirection() == Editor::LayoutDirection::Right);
-    CHECK(editor.selectedNodeId() == QStringLiteral("a") && changed.size() == 6);
+    CHECK(editor.selectedNodeId() == QStringLiteral("a") && changed.size() == 10);
     auto &view = graphics(editor);
     shortcut(editor, Qt::Key_0, Qt::ControlModifier);
     CHECK(std::abs(view.transform().m11() - 1.0) < 1e-6);
@@ -1612,7 +1610,7 @@ static void shortcuts_case() {
     CHECK(std::abs(view.transform().m11() - 1.2) < 1e-6);
     shortcut(editor, Qt::Key_Minus, Qt::ControlModifier);
     CHECK(std::abs(view.transform().m11() - 1.0) < 1e-6);
-    CHECK(exported(editor) == inserted && changed.size() == 6);
+    CHECK(exported(editor) == inserted && changed.size() == 10);
 }
 
 static void controls_case() {
@@ -1649,32 +1647,32 @@ static void controls_case() {
     CHECK(editAction(editor, "deleteSelection").isEnabled());
     CHECK(editAction(editor, "moveNode").isEnabled());
     CHECK(!editAction(editor, "moveUp").isEnabled() && editAction(editor, "moveDown").isEnabled());
-    dialogs({topicResponse(editor, QString::fromUtf8("UI child\n世界"))}, [&] { shortcut(editor, Qt::Key_Insert); });
-    CHECK(changed.size() == 1);
+    trigger(editor, "addChild");
+    CHECK(changed.size() == 1 && record(exported(editor), "nodes", editor.selectedNodeId()).at("topic") == "");
+    topicInput(editor).setPlainText(QString::fromUtf8("UI child\n世界"));
+    topicKey(editor, Qt::Key_Return);
+    CHECK(changed.size() == 2);
     CHECK(!editAction(editor, "toggleExpanded").isEnabled());
     const QString added = editor.selectedNodeId();
     CHECK(!added.isEmpty() && added != QStringLiteral("a"));
     CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("children") == Json({"d", utf8(added)}));
     CHECK(record(exported(editor), "nodes", added).at("topic") == utf8(QString::fromUtf8("UI child\n世界")));
     CHECK(!texts(editor, QString::fromUtf8("UI child\n世界")).isEmpty());
-    const Json beforeCancel = exported(editor);
-    dialogs({topicResponse(editor, QStringLiteral("Do not insert"), false)}, [&] { shortcut(editor, Qt::Key_Insert); });
-    CHECK(exported(editor) == beforeCancel && editor.selectedNodeId() == added && changed.size() == 1);
     shortcut(editor, Qt::Key_F2);
     topicInput(editor).setPlainText(QStringLiteral("Renamed\nfrom F2"));
     topicKey(editor, Qt::Key_Return, Qt::ControlModifier);
     CHECK(record(exported(editor), "nodes", added).at("topic") == "Renamed\nfrom F2");
-    CHECK(changed.size() == 2 && editor.selectedNodeId() == added);
+    CHECK(changed.size() == 3 && editor.selectedNodeId() == added);
     const Json renamed = exported(editor);
     shortcut(editor, Qt::Key_F2);
     topicInput(editor).setPlainText(QStringLiteral("Canceled rename"));
     topicKey(editor, Qt::Key_Escape);
-    CHECK(exported(editor) == renamed && changed.size() == 2);
+    CHECK(exported(editor) == renamed && changed.size() == 3);
     clickLabel(editor, QStringLiteral("Renamed\nfrom F2"), true);
     topicInput(editor).setPlainText(QStringLiteral("Double click topic"));
     topicKey(editor, Qt::Key_Enter, Qt::ControlModifier);
     CHECK(record(exported(editor), "nodes", added).at("topic") == "Double click topic");
-    CHECK(changed.size() == 3);
+    CHECK(changed.size() == 4);
 
     CHECK(editor.selectNode(QStringLiteral("a")));
     shortcut(editor, Qt::Key_Space);
@@ -1684,7 +1682,7 @@ static void controls_case() {
     shortcut(editor, Qt::Key_Space);
     CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == true);
     CHECK(!texts(editor, QStringLiteral("Double click topic")).isEmpty());
-    CHECK(changed.size() == 5);
+    CHECK(changed.size() == 6);
 
     CHECK(editor.selectNode(QStringLiteral("d")));
     dialogs({[&](QDialog *dialog) {
@@ -1699,7 +1697,7 @@ static void controls_case() {
     }}, [&] { shortcut(editor, Qt::Key_M, Qt::ControlModifier); });
     CHECK(record(exported(editor), "nodes", QStringLiteral("b")).at("children") == Json({"d"}));
     CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("children") == Json({utf8(added)}));
-    CHECK(editor.selectedNodeId() == QStringLiteral("d") && changed.size() == 6);
+    CHECK(editor.selectedNodeId() == QStringLiteral("d") && changed.size() == 7);
     CHECK(editor.selectNode(QStringLiteral("c")));
     dialogs({[&](QDialog *dialog) {
         auto *parent = dialog->findChild<QComboBox *>(QStringLiteral("newParent"));
@@ -1814,7 +1812,9 @@ static void controls_case() {
     const Json otherBefore = exported(other);
     QSignalSpy otherChanges(&other, &Editor::documentChanged);
     CHECK(editor.selectNode(QStringLiteral("b")));
-    dialogs({topicResponse(editor, QStringLiteral("Only the focused editor"))}, [&] { shortcut(editor, Qt::Key_Insert); });
+    shortcut(editor, Qt::Key_Insert);
+    topicInput(editor).setPlainText(QStringLiteral("Only the focused editor"));
+    topicKey(editor, Qt::Key_Return);
     CHECK(record(exported(editor), "nodes", editor.selectedNodeId()).at("topic") == "Only the focused editor");
     CHECK(exported(other) == otherBefore && otherChanges.isEmpty());
     CHECK(other.selectedNodeId() == QStringLiteral("r"));
@@ -1825,16 +1825,16 @@ static void controls_case() {
     CHECK(collapsed.selectNode(QStringLiteral("a")));
     trigger(collapsed, "toggleExpanded");
     QSignalSpy collapsedChanges(&collapsed, &Editor::documentChanged);
-    dialogs({topicResponse(collapsed, QStringLiteral("Added while collapsed"))}, [&] {
-        shortcut(collapsed, Qt::Key_Insert);
-    });
+    shortcut(collapsed, Qt::Key_Insert);
+    const QString newChild = collapsed.selectedNodeId();
+    CHECK(record(exported(collapsed), "nodes", newChild).at("topic") == "" && collapsedChanges.size() == 2);
+    topicInput(collapsed).setPlainText(QStringLiteral("Added while collapsed"));
+    topicKey(collapsed, Qt::Key_Return);
     const Json collapsedDoc = exported(collapsed);
-    const QString hiddenChild = qs(record(collapsedDoc, "nodes", QStringLiteral("a")).at("children").back());
-    CHECK(record(collapsedDoc, "nodes", hiddenChild).at("topic") == "Added while collapsed");
-    CHECK(record(collapsedDoc, "nodes", QStringLiteral("a")).at("expanded") == false);
-    CHECK(collapsed.selectedNodeId() == QStringLiteral("a") && collapsedChanges.size() == 1);
-    CHECK(texts(collapsed, QStringLiteral("Added while collapsed")).isEmpty());
-    trigger(collapsed, "toggleExpanded");
+    CHECK(record(collapsedDoc, "nodes", QStringLiteral("a")).at("children").back() == utf8(newChild));
+    CHECK(record(collapsedDoc, "nodes", newChild).at("topic") == "Added while collapsed");
+    CHECK(record(collapsedDoc, "nodes", QStringLiteral("a")).at("expanded") == true);
+    CHECK(collapsed.selectedNodeId() == newChild && collapsedChanges.size() == 3);
     CHECK(!texts(collapsed, QStringLiteral("Added while collapsed")).isEmpty());
     const QRectF affordance = topicRect(collapsed, QStringLiteral("Alpha"));
     for (qreal x : {affordance.right() - 9, affordance.left() + 9}) {
@@ -1855,6 +1855,17 @@ static void controls_case() {
     CHECK(collapsed.lastError().isEmpty());
     for (auto *label : collapsed.findChildren<QLabel *>())
         CHECK(!label->isVisible() || !label->text().contains(shownError));
+
+    Editor canceled;
+    showEditor(canceled);
+    QSignalSpy creationChanges(&canceled, &Editor::documentChanged);
+    trigger(canceled, "addChild");
+    const QString blank = canceled.selectedNodeId();
+    const Json created = exported(canceled);
+    CHECK(record(created, "nodes", blank).at("topic") == "" && creationChanges.size() == 1);
+    topicInput(canceled).setPlainText(QStringLiteral("Discard only this draft"));
+    topicKey(canceled, Qt::Key_Escape);
+    CHECK(exported(canceled) == created && canceled.selectedNodeId() == blank && creationChanges.size() == 1);
 }
 
 #ifdef M3_QT_TEST_DEMO

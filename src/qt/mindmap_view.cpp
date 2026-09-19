@@ -201,6 +201,7 @@ void MindMapView::beginTopicEdit(const QString &id, const QList<QKeySequence> &a
     // Committing can synchronously replace every scene item.
     auto *node = findNode();
     if (!node) return;
+    ensureVisible(node);
     editedId = id;
     topicLabel = node->label;
     originalTopic = topicLabel->toPlainText();
@@ -285,8 +286,12 @@ bool MindMapView::eventFilter(QObject *watched, QEvent *event) {
             auto *key = static_cast<QKeyEvent *>(event);
             if (key->key() == Qt::Key_Escape) { key->accept(); return true; }
             const auto *accept = topicEditor->findChild<QShortcut *>();
+            auto modifiers = key->modifiers();
+            modifiers.setFlag(Qt::KeypadModifier, false);
+            const QKeyCombination nonKeypad(modifiers, Qt::Key(key->key()));
             for (const auto &sequence : accept->keys()) {
-                if (!sequence.isEmpty() && sequence[0] == key->keyCombination()) {
+                // Qt also matches keypad events against bindings without KeypadModifier.
+                if (!sequence.isEmpty() && (sequence[0] == key->keyCombination() || sequence[0] == nonKeypad)) {
                     // Leave sequence recognition to Qt, not QPlainTextEdit.
                     key->ignore();
                     return true;

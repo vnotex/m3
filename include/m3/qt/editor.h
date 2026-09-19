@@ -33,9 +33,11 @@ namespace m3::qt {
 // Widget policy, copied at construction; no Qt-specific configuration enters the core.
 // Replace a shortcut list to rebind it, or clear it to disable its keyboard binding
 // without removing the toolbar/menu command. Avoid assigning the same sequence to
-// multiple commands. Bindings are local to this widget; dialogs and the layout
-// picker keep their normal input keys. acceptTopic saves inline node edits and
-// accepts topic-creation dialogs. Inline Escape cancels; clicking outside saves.
+// multiple map commands. Bindings are local to this widget; link/move dialogs and
+// the layout picker keep their normal input keys. acceptTopic applies only during
+// inline editing, while map shortcuts are suspended. UI creation inserts a blank
+// node and starts inline editing. Escape cancels the draft (keeping a newly created
+// blank node); clicking outside saves. Programmatic addNode does not start editing.
 // Example: config.shortcuts.addChild = {QKeySequence(QStringLiteral("Ctrl+J"))};
 //          MindMapEditor editor(config);
 struct EditorConfig {
@@ -45,9 +47,9 @@ struct EditorConfig {
         QList<QKeySequence> addSibling{QKeySequence(Qt::Key_Return), QKeySequence(Qt::Key_Enter)};
         QList<QKeySequence> addSiblingBefore{QKeySequence(Qt::SHIFT | Qt::Key_Return), QKeySequence(Qt::SHIFT | Qt::Key_Enter)};
         QList<QKeySequence> editSelection{QKeySequence(Qt::Key_F2)};
-        // Inline and in topic-creation dialogs, Enter inserts a newline.
-        // These bindings accept the topic (Ctrl+Enter by default).
-        QList<QKeySequence> acceptTopic{QKeySequence(Qt::CTRL | Qt::Key_Return), QKeySequence(Qt::CTRL | Qt::Key_Enter)};
+        // Inline Enter or Ctrl+Enter accepts; Shift+Enter inserts a newline.
+        QList<QKeySequence> acceptTopic{QKeySequence(Qt::Key_Return), QKeySequence(Qt::Key_Enter),
+                                       QKeySequence(Qt::CTRL | Qt::Key_Return), QKeySequence(Qt::CTRL | Qt::Key_Enter)};
         QList<QKeySequence> deleteSelection{QKeySequence(Qt::Key_Delete)};
         QList<QKeySequence> toggleExpanded{QKeySequence(Qt::Key_Space)};
         QList<QKeySequence> moveNode{QKeySequence(Qt::CTRL | Qt::Key_M)};

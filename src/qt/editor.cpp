@@ -7,12 +7,10 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
-#include <QInputDialog>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
 #include <QSignalBlocker>
-#include <QShortcut>
 #include <QSpinBox>
 #include <QStringList>
 #include <functional>
@@ -88,30 +86,23 @@ public:
         QSignalBlocker blocker(direction);
         direction->setCurrentIndex(direction->findData(int(controller->layoutDirection())));
     }
-    void topicDialog(TopicOperation operation) {
+    void createNode(TopicOperation operation) {
         const QString id = controller->selectedNodeId();
         const auto nodes = controller->choices();
         const auto *node = choice(nodes, id);
         if (!node) return;
         QString parentId = id;
         int index = -1;
-        QString title = tr("Add child");
         if ((operation == TopicOperation::SiblingAfter || operation == TopicOperation::SiblingBefore) && !node->parent.isEmpty()) {
             const auto *parent = choice(nodes, node->parent);
             if (!parent) return;
             parentId = parent->id;
             index = int(parent->children.indexOf(id)) + (operation == TopicOperation::SiblingAfter ? 1 : 0);
-            title = tr("Add sibling");
         }
-        QInputDialog dialog(host);
-        dialog.setWindowTitle(title);
-        dialog.setLabelText(tr("Topic"));
-        dialog.setOption(QInputDialog::UsePlainTextEditForTextInput);
-        dialog.setTextValue(QString());
-        QShortcut accept(QKeySequence(), &dialog);
-        accept.setKeys(config.shortcuts.acceptTopic);
-        QObject::connect(&accept, &QShortcut::activated, &dialog, &QDialog::accept);
-        if (dialog.exec() == QDialog::Accepted) controller->addNode(parentId, dialog.textValue(), index);
+        const auto *parent = choice(nodes, parentId);
+        if (!parent || (!parent->expanded && !controller->setExpanded(parentId, true))) return;
+        const QString created = controller->addNode(parentId, QString(), index);
+        if (!created.isEmpty()) view->beginTopicEdit(created, config.shortcuts.acceptTopic);
     }
     void navigate(Navigation command) {
         const auto nodes = controller->choices();
@@ -208,9 +199,9 @@ public:
         controller = new MindMapController(*view, editor);
         toolbar = new QToolBar(editor);
         layout->addWidget(toolbar);
-        addChild = action("addChild", tr("Add child"), config.shortcuts.addChild, [this] { topicDialog(TopicOperation::Child); });
-        addSibling = action("addSibling", tr("Add sibling"), config.shortcuts.addSibling, [this] { topicDialog(TopicOperation::SiblingAfter); });
-        addSiblingBefore = action("addSiblingBefore", tr("Add sibling before"), config.shortcuts.addSiblingBefore, [this] { topicDialog(TopicOperation::SiblingBefore); });
+        addChild = action("addChild", tr("Add child"), config.shortcuts.addChild, [this] { createNode(TopicOperation::Child); });
+        addSibling = action("addSibling", tr("Add sibling"), config.shortcuts.addSibling, [this] { createNode(TopicOperation::SiblingAfter); });
+        addSiblingBefore = action("addSiblingBefore", tr("Add sibling before"), config.shortcuts.addSiblingBefore, [this] { createNode(TopicOperation::SiblingBefore); });
         editSelection = action("editSelection", tr("Rename/Edit"), config.shortcuts.editSelection, [this] {
             if (controller->selectedLinkId().isEmpty())
                 view->beginTopicEdit(controller->selectedNodeId(), config.shortcuts.acceptTopic);
