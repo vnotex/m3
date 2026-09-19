@@ -1,4 +1,6 @@
 #include "test_support.h"
+#include <future>
+#include <exception>
 static void roundtrip() {
     M3Mindmap *raw = nullptr;
     ok(m3_mindmap_create("r", "Root", &raw));
@@ -210,6 +212,59 @@ static void links() {
     CHECK(link(map,"l1") == actual);
 }
 
+
+static void threads() {
+    auto map = load(fixture());
+    char *missing = nullptr;
+    CHECK(m3_mindmap_get_node_json(map.get(),"absent",&missing) == M3_ERR_NOT_FOUND);
+    CHECK(missing == nullptr);
+    const char *main_borrowed = m3_last_error();
+    const std::string main_error = main_borrowed;
+    CHECK(!main_error.empty());
+
+    std::promise<void> ready, proceed;
+    auto ready_future = ready.get_future();
+    auto proceed_future = proceed.get_future();
+    auto worker = std::async(std::launch::async,[&] {
+        bool signaled = false;
+        try {
+            CHECK(!*m3_last_error()); // A new thread must not inherit main's error.
+            auto independent = load(fixture());
+            ok(m3_mindmap_update_node(independent.get(),"r",R"({"topic":"Worker"})"));
+            char *snapshot = nullptr;
+            ok(m3_mindmap_to_json(independent.get(),&snapshot));
+            Text owned(snapshot,m3_string_free);
+            M3Mindmap *invalid = reinterpret_cast<M3Mindmap *>(1);
+            CHECK(m3_mindmap_from_json("{",&invalid) == M3_ERR_JSON && invalid == nullptr);
+            const char *borrowed = m3_last_error();
+            const std::string saved = borrowed;
+            CHECK(!saved.empty());
+            ready.set_value();
+            signaled = true;
+            proceed_future.wait();
+            // Main has completed a successful call; only its error may clear.
+            CHECK(saved == borrowed && saved == m3_last_error());
+            independent.reset();
+            CHECK(saved == m3_last_error());
+            CHECK(Json::parse(owned.get())["nodes"][0]["topic"] == "Worker");
+        } catch (...) {
+            if (!signaled) ready.set_exception(std::current_exception());
+            throw;
+        }
+    });
+    ready_future.get(); // Worker failures before the handshake propagate, not deadlock.
+    const bool retained = main_error == main_borrowed && main_error == m3_last_error();
+    char *snapshot = nullptr;
+    const auto status = m3_mindmap_to_json(map.get(),&snapshot);
+    const bool cleared = !*m3_last_error();
+    Text owned(snapshot,m3_string_free);
+    // Release the worker before any throwing assertion in main.
+    proceed.set_value();
+    worker.get();
+    CHECK(retained && status == M3_OK && cleared);
+    CHECK(Json::parse(owned.get())["nodes"][0]["topic"] == fixture()["nodes"][0]["topic"]);
+}
+
 int main(int argc, char **argv) {
     try {
         CHECK(argc == 2);
@@ -219,6 +274,7 @@ int main(int argc, char **argv) {
         else if (name == "edits") edits();
         else if (name == "atomicity") atomicity();
         else if (name == "links") links();
+        else if (name == "threads") threads();
         else CHECK(false);
         return 0;
     } catch (const std::exception &e) { std::cerr << e.what() << '\n'; return 1; }

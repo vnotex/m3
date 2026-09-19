@@ -1,0 +1,50 @@
+name: Build and test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.os }} / ${{ matrix.build_type }} / shared=${{ matrix.shared }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        build_type: [Debug, Release]
+        shared: ["ON", "OFF"]
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Configure
+        run: cmake -S . -B build/core -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DM3_BUILD_SHARED=${{ matrix.shared }} -DM3_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build/core --config ${{ matrix.build_type }}
+      - name: Test
+        run: ctest --test-dir build/core -C ${{ matrix.build_type }} --output-on-failure
+      - name: Install
+        run: cmake --install build/core --config ${{ matrix.build_type }} --prefix build/install
+      - name: Configure installed-package consumer
+        run: cmake -S tests/consumer -B build/consumer -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DM3_PACKAGE_PREFIX=build/install
+      - name: Build installed-package consumer
+        run: cmake --build build/consumer --config ${{ matrix.build_type }} --verbose
+      - name: Run installed-package consumer
+        run: |
+          if ($IsWindows) {
+            & "./build/consumer/bin/${{ matrix.build_type }}/m3_consumer.exe"
+          } else {
+            & "./build/consumer/bin/m3_consumer"
+          }
+          exit $LASTEXITCODE
