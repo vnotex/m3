@@ -2,6 +2,7 @@
 #define M3_QT_MINDMAP_VIEW_H
 #include "presentation.h"
 #include <QGraphicsView>
+#include <QHash>
 #include <QKeySequence>
 #include <QPointer>
 
@@ -29,12 +30,15 @@ signals:
     void topicEditRequested(const QString &id, const QString &topic);
     void topicEditingChanged(bool editing);
     void nodePicked(const QString &id);
+    void nodeMoveRequested(const QString &id, const QString &parent, int index);
     void linkPicked(const QString &id);
     void emptyPicked();
     void editRequested();
     void expansionRequested(const QString &id, bool expanded);
     void appearanceChanged();
 protected:
+    bool event(QEvent *event) override;
+    bool viewportEvent(QEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
     void scrollContentsBy(int dx, int dy) override;
     void mousePressEvent(QMouseEvent *event) override;
@@ -49,6 +53,10 @@ private:
     Qt::MouseButton panning = Qt::NoButton;
     bool pendingFit = false;
     QPointF panPosition;
+    QHash<QString, QString> nodeParents;
+    QString draggedNodeId, dropTargetId;
+    QPoint dragPressPosition;
+    bool nodeDragging = false;
     QPointer<QPlainTextEdit> topicEditor;
     QPointer<QGraphicsTextItem> topicLabel;
     QString editedId, originalTopic;
@@ -56,6 +64,10 @@ private:
     void updateTopicEditorGeometry();
     QGraphicsItem *targetAt(const QPoint &position) const;
     void updatePanCursor(const QPoint &position);
+    QString dropTargetAt(const QPoint &position) const;
+    void setDropTarget(const QString &id);
+    void clearNodeDrag();
+    bool handleNodeDragEvent(QEvent *event);
     bool pick(QMouseEvent *event, bool activate);
     void preserveCenter(const QPointF &center);
 };

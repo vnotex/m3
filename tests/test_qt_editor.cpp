@@ -17,6 +17,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
+#include <QFocusEvent>
 #include <QGraphicsItem>
 #include <QGraphicsScene>
 #include <QGraphicsTextItem>
@@ -270,6 +271,12 @@ static void topicKey(Editor &editor, Qt::Key key, Qt::KeyboardModifiers modifier
 static void wheel(QGraphicsView &view, QPoint point, int delta, Qt::KeyboardModifiers modifiers) {
     QWheelEvent event(QPointF(point), QPointF(view.viewport()->mapToGlobal(point)), QPoint(),
                       QPoint(0, delta), Qt::NoButton, modifiers, Qt::NoScrollPhase, false);
+    QCoreApplication::sendEvent(view.viewport(), &event);
+    pump();
+}
+static void movePointer(QGraphicsView &view, QPoint position, Qt::MouseButtons buttons) {
+    QMouseEvent event(QEvent::MouseMove, QPointF(position), QPointF(view.viewport()->mapToGlobal(position)),
+                      Qt::NoButton, buttons, Qt::NoModifier);
     QCoreApplication::sendEvent(view.viewport(), &event);
     pump();
 }
@@ -1047,18 +1054,18 @@ static void empty_space_panning_case() {
     pump();
     const Json fixtureBefore = exported(editor);
     changed.clear();
-    auto dragWithoutPan = [&](QPoint point, Qt::MouseButton button) {
+    auto dragWithoutPan = [&](QPoint point, Qt::MouseButton button, bool node = false) {
         QTest::mousePress(view.viewport(), button, Qt::NoModifier, point);
         // Picking may scroll the selected item into view; dragging must not pan it further.
         const QPointF center = view.mapToScene(view.viewport()->rect().center());
         move(point + delta, button);
-        QTest::mouseRelease(view.viewport(), button, Qt::NoModifier, point + delta);
+        QTest::mouseRelease(view.viewport(), button, Qt::NoModifier, node ? blankPoint(view) : point + delta);
         CHECK(view.mapToScene(view.viewport()->rect().center()) == center);
     };
     const QPoint alphaPoint = labelPoint(editor, QStringLiteral("Alpha"));
     move(alphaPoint, Qt::NoButton);
     CHECK(view.viewport()->cursor().shape() == cursor);
-    dragWithoutPan(alphaPoint, Qt::LeftButton);
+    dragWithoutPan(alphaPoint, Qt::LeftButton, true);
     CHECK(editor.selectedNodeId() == QStringLiteral("a"));
     const QPoint linkPoint = labelPoint(editor, QStringLiteral("Related"));
     move(linkPoint, Qt::NoButton);
@@ -1082,6 +1089,283 @@ static void empty_space_panning_case() {
     QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, editStart + delta);
     CHECK(QLineF(view.mapFromScene(editedAnchor), editBefore + delta).length() <= 2);
     CHECK(changed.size() == 1);
+}
+
+static void node_drag_case() {
+    const QString alpha = QStringLiteral("Alpha"), beta = QStringLiteral("Beta"), delta = QStringLiteral("Delta");
+    const QString a = QStringLiteral("a"), b = QStringLiteral("b"), d = QStringLiteral("d"), r = QStringLiteral("r");
+    auto prepare = [](Editor &editor) {
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+        showEditor(editor);
+        assertFit(editor);
+    };
+    auto children = [](Json &doc, const QString &id, Json ids) {
+        for (auto &entry : doc.at("nodes")) if (entry.at("id") == utf8(id)) {
+            entry["children"] = std::move(ids);
+            return;
+        }
+        throw std::runtime_error("Missing drag fixture node");
+    };
+    auto press = [](Editor &editor, const QString &topic) {
+        const QPoint point = labelPoint(editor, topic);
+        QTest::mousePress(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        return point;
+    };
+    auto release = [](Editor &editor, QPoint point) {
+        QTest::mouseRelease(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        pump();
+    };
+    {
+        Editor editor;
+        prepare(editor);
+        CHECK(editor.moveNode(QStringLiteral("c"), b));
+        assertFit(editor);
+        auto &view = graphics(editor);
+        Json expected = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), errors(&editor, &Editor::errorOccurred);
+        press(editor, alpha);
+        const QPointF center = view.mapToScene(view.viewport()->rect().center());
+        const QTransform zoom = view.transform();
+        const QPoint target = labelPoint(editor, beta);
+        const QRectF targetRect = topicRect(editor, beta);
+        const QImage normal = paintScene(editor, targetRect);
+        movePointer(view, target, Qt::LeftButton);
+        CHECK(exported(editor) == expected && changed.isEmpty() && errors.isEmpty());
+        CHECK(editor.selectedNodeId() == a && !ownerItem(textItem(editor, beta))->isSelected());
+        CHECK(view.mapToScene(view.viewport()->rect().center()) == center && view.transform() == zoom);
+        CHECK(view.viewport()->cursor().shape() == Qt::DragMoveCursor);
+        CHECK(paintScene(editor, targetRect) != normal);
+        release(editor, target);
+        children(expected, r, Json::array({"b"}));
+        children(expected, b, Json::array({"c", "a"}));
+        CHECK(exported(editor) == nativeDocument(expected));
+        CHECK(changed.size() == 1 && errors.isEmpty() && editor.selectedNodeId() == a);
+        CHECK(!texts(editor, alpha).isEmpty() && !texts(editor, delta).isEmpty());
+        CHECK(view.viewport()->cursor().shape() != Qt::DragMoveCursor);
+        assertFit(editor);
+        press(editor, alpha);
+        const QPoint root = labelPoint(editor, qs(record(expected, "nodes", r).at("topic")));
+        movePointer(view, root, Qt::LeftButton);
+        release(editor, root);
+        children(expected, r, Json::array({"b", "a"}));
+        children(expected, b, Json::array({"c"}));
+        CHECK(exported(editor) == nativeDocument(expected));
+        CHECK(changed.size() == 2 && errors.isEmpty() && editor.selectedNodeId() == a);
+    }
+    // Every ineligible destination is silent, including current-parent drops (no reorder).
+    enum class Invalid { RootSource, Descendant, Self, Parent, Blank, Link, Outside };
+    for (auto invalid : {Invalid::RootSource, Invalid::Descendant, Invalid::Self, Invalid::Parent,
+                         Invalid::Blank, Invalid::Link, Invalid::Outside}) {
+        Editor editor;
+        prepare(editor);
+        auto &view = graphics(editor);
+        const Json before = exported(editor);
+        const QString source = invalid == Invalid::RootSource ? qs(record(before, "nodes", r).at("topic")) :
+                               invalid == Invalid::Descendant || invalid == Invalid::Self ? alpha : delta;
+        const QString sourceId = invalid == Invalid::RootSource ? r :
+                                 invalid == Invalid::Descendant || invalid == Invalid::Self ? a : d;
+        QSignalSpy changed(&editor, &Editor::documentChanged), errors(&editor, &Editor::errorOccurred);
+        const QPoint from = press(editor, source);
+        // Activate even for a self drop, at the exact viewport-pixel threshold.
+        movePointer(view, from + QPoint(QApplication::startDragDistance(), 0), Qt::LeftButton);
+        QPoint target;
+        switch (invalid) {
+        case Invalid::RootSource: target = labelPoint(editor, beta); break;
+        case Invalid::Descendant: target = labelPoint(editor, delta); break;
+        case Invalid::Self: target = labelPoint(editor, alpha); break;
+        case Invalid::Parent: target = labelPoint(editor, alpha); break;
+        case Invalid::Blank: target = blankPoint(view); break;
+        case Invalid::Link: target = labelPoint(editor, QStringLiteral("Related")); break;
+        case Invalid::Outside: target = QPoint(-20, -20); break;
+        }
+        movePointer(view, target, Qt::LeftButton);
+        if (invalid != Invalid::RootSource) CHECK(view.viewport()->cursor().shape() == Qt::ForbiddenCursor);
+        CHECK(editor.selectedNodeId() == sourceId);
+        release(editor, target);
+        CHECK(exported(editor) == before && changed.isEmpty() && errors.isEmpty());
+        CHECK(editor.selectedNodeId() == sourceId);
+    }
+    {
+        Editor editor;
+        prepare(editor);
+        auto &view = graphics(editor);
+        Json expected = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), errors(&editor, &Editor::errorOccurred);
+        press(editor, delta);
+        const QPoint target = labelPoint(editor, beta);
+        const QPointF center = view.mapToScene(view.viewport()->rect().center());
+        // Pending and active drags both own secondary button input.
+        QTest::mousePress(view.viewport(), Qt::MiddleButton, Qt::NoModifier, target);
+        QTest::mouseRelease(view.viewport(), Qt::MiddleButton, Qt::NoModifier, target);
+        movePointer(view, target, Qt::LeftButton);
+        QTest::mousePress(view.viewport(), Qt::RightButton, Qt::NoModifier, target);
+        QTest::mouseRelease(view.viewport(), Qt::RightButton, Qt::NoModifier, target);
+        bool popupOpened = false;
+        QTimer dismissPopup;
+        QObject::connect(&dismissPopup, &QTimer::timeout, [&] {
+            if (auto *popup = QApplication::activePopupWidget()) { popupOpened = true; popup->close(); }
+        });
+        dismissPopup.start(0);
+        QContextMenuEvent menu(QContextMenuEvent::Mouse, target, view.viewport()->mapToGlobal(target));
+        QCoreApplication::sendEvent(view.viewport(), &menu);
+        pump();
+        dismissPopup.stop();
+        CHECK(!popupOpened && QApplication::activePopupWidget() == nullptr);
+        CHECK(view.viewport()->cursor().shape() == Qt::DragMoveCursor);
+        CHECK(view.mapToScene(view.viewport()->rect().center()) == center && editor.selectedNodeId() == d);
+        release(editor, target);
+        children(expected, a, Json::array());
+        children(expected, b, Json::array({"d"}));
+        CHECK(exported(editor) == nativeDocument(expected));
+        CHECK(changed.size() == 1 && errors.isEmpty());
+    }
+    for (bool jitter : {false, true}) {
+        Editor editor;
+        prepare(editor);
+        auto &view = graphics(editor);
+        const Json before = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), errors(&editor, &Editor::errorOccurred);
+        const QPoint from = press(editor, alpha);
+        if (jitter) movePointer(view, from + QPoint(QApplication::startDragDistance() - 1, 0), Qt::LeftButton);
+        CHECK(view.viewport()->cursor().shape() != Qt::DragMoveCursor &&
+              view.viewport()->cursor().shape() != Qt::ForbiddenCursor);
+        // Release coordinates alone must not turn a click into a drag.
+        release(editor, labelPoint(editor, beta));
+        CHECK(exported(editor) == before && changed.isEmpty() && errors.isEmpty());
+        CHECK(editor.selectedNodeId() == a);
+    }
+    enum class Cancel { EscapeViewport, EscapeView, NoButtons, FocusView, FocusViewport, Ungrab, Hide, Replace };
+    for (auto cancel : {Cancel::EscapeViewport, Cancel::EscapeView, Cancel::NoButtons, Cancel::FocusView,
+                        Cancel::FocusViewport, Cancel::Ungrab, Cancel::Hide, Cancel::Replace}) {
+        Editor editor;
+        prepare(editor);
+        auto &view = graphics(editor);
+        Json expected = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), errors(&editor, &Editor::errorOccurred);
+        press(editor, alpha);
+        QPoint target = labelPoint(editor, beta);
+        const QRectF targetRect = topicRect(editor, beta);
+        const QImage normal = paintScene(editor, targetRect);
+        movePointer(view, target, Qt::LeftButton);
+        CHECK(view.viewport()->cursor().shape() == Qt::DragMoveCursor);
+        CHECK(paintScene(editor, targetRect) != normal);
+        switch (cancel) {
+        case Cancel::EscapeViewport: QTest::keyClick(view.viewport(), Qt::Key_Escape); break;
+        case Cancel::EscapeView: QTest::keyClick(&view, Qt::Key_Escape); break;
+        case Cancel::NoButtons: movePointer(view, target, Qt::NoButton); break;
+        case Cancel::FocusView:
+        case Cancel::FocusViewport: {
+            QFocusEvent event(QEvent::FocusOut, Qt::OtherFocusReason);
+            QCoreApplication::sendEvent(cancel == Cancel::FocusView ? &view : view.viewport(), &event);
+            break;
+        }
+        case Cancel::Ungrab: {
+            QEvent event(QEvent::UngrabMouse);
+            QCoreApplication::sendEvent(view.viewport(), &event);
+            break;
+        }
+        case Cancel::Hide: editor.hide(); showEditor(editor); break;
+        case Cancel::Replace:
+            setTopic(expected, "r", QStringLiteral("Replacement root"));
+            CHECK(editor.loadJson(encoded(expected)));
+            changed.clear();
+            target = labelPoint(editor, beta);
+            break;
+        }
+        pump();
+        if (cancel != Cancel::Replace) {
+            CHECK(paintScene(editor, targetRect) == normal);
+            CHECK(editor.selectedNodeId() == a);
+        }
+        release(editor, target);
+        CHECK(exported(editor) == nativeDocument(expected) && changed.isEmpty() && errors.isEmpty());
+        CHECK(view.viewport()->cursor().shape() != Qt::DragMoveCursor);
+        if (cancel == Cancel::EscapeViewport || cancel == Cancel::EscapeView) {
+            QTest::keyClick(view.viewport(), Qt::Key_Escape);
+            CHECK(editor.selectedNodeId().isEmpty());
+        }
+    }
+    {
+        Editor editor;
+        prepare(editor);
+        CHECK(editor.setExpanded(b, false));
+        assertFit(editor);
+        Json expected = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), errors(&editor, &Editor::errorOccurred);
+        press(editor, alpha);
+        const QPoint target = labelPoint(editor, beta);
+        movePointer(graphics(editor), target, Qt::LeftButton);
+        release(editor, target);
+        children(expected, r, Json::array({"b", "c"}));
+        children(expected, b, Json::array({"a"}));
+        CHECK(exported(editor) == nativeDocument(expected));
+        CHECK(changed.size() == 1 && errors.isEmpty() && editor.selectedNodeId().isEmpty());
+        CHECK(texts(editor, alpha).isEmpty() && texts(editor, delta).isEmpty());
+        CHECK(editor.setExpanded(b, true));
+        CHECK(!texts(editor, alpha).isEmpty() && !texts(editor, delta).isEmpty());
+    }
+    {
+        Editor editor;
+        prepare(editor);
+        auto &view = graphics(editor);
+        Json expected = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), errors(&editor, &Editor::errorOccurred);
+        clickLabel(editor, alpha, true);
+        const QString draft = QStringLiteral("A much wider Alpha draft committed at the start of a node drag");
+        topicInput(editor).setPlainText(draft);
+        const QPoint from = labelPoint(editor, delta);
+        CHECK(!topicInput(editor).geometry().contains(from));
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, from);
+        CHECK(activeTopicInput(editor) == nullptr && editor.selectedNodeId() == d);
+        CHECK(changed.size() == 1);
+        const QPoint target = labelPoint(editor, beta);
+        movePointer(view, target, Qt::LeftButton);
+        release(editor, target);
+        setTopic(expected, "a", draft);
+        children(expected, a, Json::array());
+        children(expected, b, Json::array({"d"}));
+        CHECK(exported(editor) == nativeDocument(expected));
+        CHECK(changed.size() == 2 && errors.isEmpty() && activeTopicInput(editor) == nullptr);
+    }
+    {
+        Editor editor;
+        prepare(editor);
+        CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Left));
+        assertFit(editor);
+        trigger(editor, "zoomOut");
+        auto &view = graphics(editor);
+        const QTransform zoom = view.transform();
+        CHECK(zoom.m11() != 1);
+        Json expected = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), errors(&editor, &Editor::errorOccurred);
+        press(editor, delta);
+        const QPoint target = labelPoint(editor, beta);
+        movePointer(view, target, Qt::LeftButton);
+        release(editor, target);
+        children(expected, a, Json::array());
+        children(expected, b, Json::array({"d"}));
+        CHECK(exported(editor) == nativeDocument(expected) && view.transform() == zoom);
+        CHECK(changed.size() == 1 && errors.isEmpty());
+    }
+    {
+        Editor editor;
+        prepare(editor);
+        auto &view = graphics(editor);
+        const Json before = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), errors(&editor, &Editor::errorOccurred);
+        press(editor, alpha);
+        const QPoint target = labelPoint(editor, beta);
+        const QRectF targetRect = topicRect(editor, beta);
+        const QImage normal = paintScene(editor, targetRect);
+        movePointer(view, target, Qt::LeftButton);
+        CHECK(paintScene(editor, targetRect) != normal);
+        // Eligibility must be recomputed on release, even without a final mouse move.
+        release(editor, blankPoint(view));
+        CHECK(exported(editor) == before && changed.isEmpty() && errors.isEmpty());
+        CHECK(paintScene(editor, targetRect) == normal && editor.selectedNodeId() == a);
+        CHECK(view.viewport()->cursor().shape() == Qt::OpenHandCursor);
+    }
 }
 
 static void focus_root_case() {
@@ -2446,6 +2730,7 @@ int main(int argc, char **argv) {
         else if (name == "graph_edits") { graph_edits_case(); graph_edits_scene(); }
         else if (name == "render") render_case();
         else if (name == "navigation") navigation_case();
+        else if (name == "node_drag") node_drag_case();
         else if (name == "controls") controls_case();
         else if (name == "inline_edit") inline_edit_case();
         else if (name == "configuration") configuration_case();

@@ -263,6 +263,7 @@ public:
         });
         QObject::connect(controller, &MindMapController::commandSucceeded, editor, [this] { error->clear(); error->hide(); updateActions(); });
         QObject::connect(view, &MindMapView::nodePicked, controller, &MindMapController::selectNode);
+        QObject::connect(view, &MindMapView::nodeMoveRequested, controller, &MindMapController::moveNode);
         QObject::connect(view, &MindMapView::linkPicked, controller, &MindMapController::selectLink);
         QObject::connect(view, &MindMapView::emptyPicked, controller, &MindMapController::clearSelection);
         QObject::connect(view, &MindMapView::expansionRequested, controller, &MindMapController::setExpanded);
