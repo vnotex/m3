@@ -30,6 +30,8 @@
 // Selection, layout direction, zoom/pan and fit never change persisted JSON.
 // Selecting a node or accepting an inline topic scrolls its full bounds into view
 // without changing zoom; oversized nodes can only be partially shown by scrolling.
+// Expanding a node centers it at the current zoom; large branches may still
+// extend beyond the viewport.
 // Topics/labels are plain Unicode text. Embedded NULs are rejected.
 namespace m3::qt {
 // Widget policy, copied at construction; no Qt-specific configuration enters the core.

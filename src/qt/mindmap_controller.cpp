@@ -216,7 +216,9 @@ bool MindMapController::setExpanded(const QString &id, bool expanded) {
             if (current == id) { fallback = id; break; }
     }
     const auto patch = Json{{"expanded", expanded}}.dump();
-    return changed(m3_mindmap_update_node(model.get(), id.toUtf8().constData(), patch.c_str()), fallback);
+    if (!changed(m3_mindmap_update_node(model.get(), id.toUtf8().constData(), patch.c_str()), fallback)) return false;
+    if (expanded) view.centerNode(id);
+    return true;
 }
 QString MindMapController::addLink(const QString &source, const QString &target, bool directed, const QString &topic) {
     if (!strings({source, target, topic})) return {};

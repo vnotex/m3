@@ -456,6 +456,17 @@ void MindMapView::ensureNodeVisible(const QString &id) {
         }
     }
 }
+void MindMapView::centerNode(const QString &id) {
+    if (id.isEmpty() || !isVisible()) return;
+    for (auto *item : scene()->items()) {
+        if (auto *node = dynamic_cast<NodeItem *>(item); node && node->id == id) {
+            pendingFit = false;
+            preserveCenter(node->sceneBoundingRect().center());
+            updateTopicEditorGeometry();
+            return;
+        }
+    }
+}
 void MindMapView::fitContents() {
     if (!isVisible() || viewport()->width() <= 0 || viewport()->height() <= 0) { pendingFit = true; return; }
     pendingFit = false;

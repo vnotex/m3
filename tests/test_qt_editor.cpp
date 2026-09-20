@@ -2173,6 +2173,65 @@ static void collapse_scene() {
     CHECK(editor.setExpanded(QStringLiteral("r"), true));
     CHECK(!texts(editor, QStringLiteral("Hidden child")).isEmpty());
     CHECK(editor.selectNode(inserted));
+
+    // Centering must work at either scene edge, without fitting or selecting the branch.
+    Json centeredInput = editorFixture();
+    for (auto &entry : centeredInput.at("nodes")) if (entry.at("id") == "a") {
+        entry["expanded"] = false;
+        entry["children"] = Json({"d", "e", "f"});
+    }
+    centeredInput["nodes"].push_back({{"id", "e"}, {"topic", "Second child"}});
+    centeredInput["nodes"].push_back({{"id", "f"}, {"topic", "Third child"}});
+    for (const auto direction : {Editor::LayoutDirection::Right, Editor::LayoutDirection::Left}) {
+        Editor centered;
+        CHECK(centered.loadJson(encoded(centeredInput)));
+        CHECK(centered.setLayoutDirection(direction));
+        showEditor(centered);
+        trigger(centered, "resetZoom");
+        CHECK(centered.selectNode(QStringLiteral("a")));
+        auto &centeredView = graphics(centered);
+        const QTransform zoom = centeredView.transform();
+        const Json collapsed = exported(centered);
+        Json expanded = collapsed;
+        for (auto &entry : expanded.at("nodes")) if (entry.at("id") == "a") entry["expanded"] = true;
+        QSignalSpy centeredChanges(&centered, &Editor::documentChanged), centeredSelection(&centered, &Editor::selectionChanged);
+        auto parentCentered = [&] {
+            return QLineF(centeredView.mapFromScene(topicRect(centered, QStringLiteral("Alpha")).center()),
+                          centeredView.viewport()->rect().center()).length() <= 2.0;
+        };
+        auto childrenVisible = [&] {
+            for (const auto &topic : {QStringLiteral("Delta"), QStringLiteral("Second child"), QStringLiteral("Third child")})
+                CHECK(centeredView.viewport()->rect().adjusted(-1, -1, 1, 1).contains(
+                    centeredView.mapFromScene(topicRect(centered, topic)).boundingRect()));
+        };
+        CHECK(!parentCentered());
+        shortcut(centered, Qt::Key_Space);
+        CHECK(parentCentered());
+        childrenVisible();
+        CHECK(centeredView.transform() == zoom && centered.selectedNodeId() == QStringLiteral("a"));
+        CHECK(exported(centered) == expanded && centeredChanges.size() == 1 && centeredSelection.isEmpty());
+
+        CHECK(centered.selectNode(QStringLiteral("b")));
+        auto *scroll = centeredView.horizontalScrollBar();
+        scroll->setValue(scroll->maximum());
+        pump();
+        const QPointF beforeCollapse = centeredView.mapToScene(centeredView.viewport()->rect().center());
+        CHECK(QLineF(beforeCollapse, topicRect(centered, QStringLiteral("Alpha")).center()).length() > 2.0);
+        CHECK(centered.setExpanded(QStringLiteral("a"), false));
+        pump();
+        CHECK(QLineF(beforeCollapse, centeredView.mapToScene(centeredView.viewport()->rect().center())).length() < 2.0);
+        CHECK(exported(centered) == collapsed && centeredChanges.size() == 2 && centeredSelection.size() == 1);
+
+        const QRectF parent = topicRect(centered, QStringLiteral("Alpha"));
+        const QPoint circle = centeredView.mapFromScene(QPointF(parent.right() - 15, parent.center().y()));
+        CHECK(centeredView.viewport()->rect().contains(circle));
+        QTest::mouseClick(centeredView.viewport(), Qt::LeftButton, Qt::NoModifier, circle);
+        pump();
+        CHECK(parentCentered());
+        childrenVisible();
+        CHECK(centeredView.transform() == zoom && centered.selectedNodeId() == QStringLiteral("b"));
+        CHECK(exported(centered) == expanded && centeredChanges.size() == 3 && centeredSelection.size() == 1);
+    }
 }
 
 static void graph_edits_scene() {
