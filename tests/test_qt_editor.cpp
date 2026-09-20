@@ -1084,7 +1084,66 @@ static void empty_space_panning_case() {
     CHECK(changed.size() == 1);
 }
 
+static void focus_root_case() {
+    Editor editor;
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+    showEditor(editor);
+    trigger(editor, "resetZoom");
+    trigger(editor, "zoomIn");
+    auto &view = graphics(editor);
+    const QTransform zoom = view.transform();
+    const Json original = exported(editor);
+    const QString rootTopic = qs(record(original, "nodes", QStringLiteral("r")).at("topic"));
+    QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+    QToolButton *focusButton = nullptr;
+    for (auto *button : editor.findChildren<QToolButton *>())
+        if (button->defaultAction() == &editAction(editor, "selectRoot")) focusButton = button;
+    CHECK(focusButton != nullptr && focusButton->isVisible());
+    auto rootCentered = [&] {
+        return QLineF(view.mapFromScene(topicRect(editor, rootTopic).center()),
+                      view.viewport()->rect().center()).length() <= 2.0;
+    };
+    auto checkFocused = [&] {
+        CHECK(editor.selectedNodeId() == QStringLiteral("r") && editor.selectedLinkId().isEmpty());
+        CHECK(rootCentered() && view.transform() == zoom && view.hasFocus());
+    };
+
+    editor.clearSelection();
+    editor.findChild<QComboBox *>()->setFocus();
+    CHECK(!view.hasFocus());
+    QTest::mouseClick(focusButton, Qt::LeftButton);
+    pump();
+    checkFocused();
+    CHECK(editor.selectLink(QStringLiteral("l1")));
+    QTest::mouseClick(focusButton, Qt::LeftButton);
+    pump();
+    checkFocused();
+
+    const auto selectionCount = selected.size();
+    const QPoint center = view.viewport()->rect().center();
+    dragMiddle(view, center, center + QPoint(160, 90));
+    CHECK(!rootCentered());
+    shortcut(editor, Qt::Key_Home);
+    checkFocused();
+    CHECK(selected.size() == selectionCount && changed.isEmpty() && exported(editor) == original);
+
+    // The public command must commit before selecting/recentering the root.
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    shortcut(editor, Qt::Key_F2);
+    const QString draft = QStringLiteral("Draft preserved by focusRoot\nSecond line");
+    topicInput(editor).setPlainText(draft);
+    CHECK(editor.focusRoot());
+    pump();
+    checkFocused();
+    CHECK(activeTopicInput(editor) == nullptr && changed.size() == 1);
+    Json expected = original;
+    setTopic(expected, "a", draft);
+    CHECK(exported(editor) == expected);
+}
+
 static void navigation_case() {
+    focus_root_case();
     empty_space_panning_case();
     Json input = editorFixture();
     for (int i = 0; i < 10; ++i) {

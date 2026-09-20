@@ -31,7 +31,7 @@ public:
     QAction *rootSelection, *clearSelectionAction;
     QList<QAction *> nodeNavigation;
     enum class TopicOperation { Child, SiblingAfter, SiblingBefore };
-    enum class Navigation { Parent, Child, PreviousSibling, NextSibling, Root };
+    enum class Navigation { Parent, Child, PreviousSibling, NextSibling };
     QList<QAction *> menuActions;
     QAction *action(const char *name, const QString &text, const QList<QKeySequence> &shortcuts, std::function<void()> command, bool showInToolbar = true) {
         auto *result = new QAction(text, host);
@@ -107,7 +107,6 @@ public:
     void navigate(Navigation command) {
         const auto nodes = controller->choices();
         if (nodes.empty()) return;
-        if (command == Navigation::Root) { controller->selectNode(nodes.front().id); return; }
         const auto *node = choice(nodes, controller->selectedNodeId());
         if (!node) return;
         QString target;
@@ -229,6 +228,7 @@ public:
         action("zoomOut", tr("Zoom -"), config.shortcuts.zoomOut, [this] { view->zoom(1 / 1.2); });
         action("resetZoom", tr("100%"), config.shortcuts.resetZoom, [this] { view->resetZoom(); });
         action("fit", tr("Fit"), config.shortcuts.fit, [this] { view->fitContents(); });
+        rootSelection = action("selectRoot", tr("Focus main node"), config.shortcuts.selectRoot, [this] { host->focusRoot(); });
         direction = new QComboBox(toolbar);
         direction->addItem(tr("Balanced"), int(LayoutDirection::Balanced));
         direction->addItem(tr("Right"), int(LayoutDirection::Right));
@@ -247,7 +247,6 @@ public:
             action("previousSibling", tr("Select previous sibling"), config.shortcuts.previousSibling, [this] { navigate(Navigation::PreviousSibling); }, false),
             action("nextSibling", tr("Select next sibling"), config.shortcuts.nextSibling, [this] { navigate(Navigation::NextSibling); }, false)
         };
-        rootSelection = action("selectRoot", tr("Select root"), config.shortcuts.selectRoot, [this] { navigate(Navigation::Root); }, false);
         clearSelectionAction = action("clearSelection", tr("Clear selection"), config.shortcuts.clearSelection, [this] { controller->clearSelection(); }, false);
         layout->addWidget(view, 1); layout->addWidget(error);
         view->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -301,4 +300,12 @@ QString MindMapEditor::selectedLinkId() const { return d->controller->selectedLi
 bool MindMapEditor::setLayoutDirection(LayoutDirection direction) { return d->controller->setLayoutDirection(direction); }
 MindMapEditor::LayoutDirection MindMapEditor::layoutDirection() const { return d->controller->layoutDirection(); }
 void MindMapEditor::fitToContents() { d->view->fitContents(); }
+bool MindMapEditor::focusRoot() {
+    d->view->finishTopicEdit(true);
+    const auto nodes = d->controller->choices();
+    if (nodes.empty() || !d->controller->selectNode(nodes.front().id)) return false;
+    d->view->centerNode(nodes.front().id);
+    d->view->setFocus(Qt::OtherFocusReason);
+    return true;
+}
 }

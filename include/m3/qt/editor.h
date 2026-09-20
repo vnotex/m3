@@ -68,6 +68,7 @@ struct EditorConfig {
         QList<QKeySequence> selectChild{QKeySequence(Qt::Key_Right)};
         QList<QKeySequence> previousSibling{QKeySequence(Qt::Key_Up)};
         QList<QKeySequence> nextSibling{QKeySequence(Qt::Key_Down)};
+        // Focus main node: select the root, center it, and focus the canvas.
         QList<QKeySequence> selectRoot{QKeySequence(Qt::Key_Home)};
         QList<QKeySequence> clearSelection{QKeySequence(Qt::Key_Escape)};
         QList<QKeySequence> zoomIn{QKeySequence(QKeySequence::ZoomIn), QKeySequence(Qt::CTRL | Qt::Key_Equal)};
@@ -106,6 +107,10 @@ public:
     bool setLayoutDirection(LayoutDirection direction);
     LayoutDirection layoutDirection() const;
     void fitToContents();
+    // Commit any inline draft and select the document root. For a shown editor,
+    // also center it and focus the canvas without changing zoom. Navigation alone
+    // does not change the document. Returns false if the root cannot be selected.
+    bool focusRoot();
 signals:
     void documentChanged();
     void selectionChanged(const QString &nodeId, const QString &linkId);
