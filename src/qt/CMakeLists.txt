@@ -6,6 +6,9 @@ add_library(m3qt SHARED
     mindmap_view.h
     mindmap_view.cpp
     editor.cpp)
+qt_add_resources(m3qt m3_property_styles
+    PREFIX "/m3/qt"
+    FILES node_properties.qss color_swatch.qss)
 add_library(m3::qt_editor ALIAS m3qt)
 target_link_libraries(m3qt PUBLIC Qt6::Widgets PRIVATE m3::core)
 target_include_directories(m3qt PUBLIC

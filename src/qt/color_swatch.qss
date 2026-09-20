@@ -1,0 +1,18 @@
+QToolButton {
+    background: %1;
+    color: %2;
+    border: 1px solid palette(mid);
+    border-radius: 4px;
+}
+
+QToolButton:hover {
+    border: 2px solid %2;
+}
+
+QToolButton:checked {
+    border: 3px solid %2;
+}
+
+QToolButton:focus {
+    border: 2px dashed %2;
+}

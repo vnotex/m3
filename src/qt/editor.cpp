@@ -8,6 +8,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QEvent>
+#include <QFile>
 #include <QFrame>
 #include <QFormLayout>
 #include <QGridLayout>
@@ -37,6 +38,12 @@
 #include <QVBoxLayout>
 namespace m3::qt {
 namespace {
+QString loadStyleSheet(const QString &path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        qFatal("Cannot load embedded stylesheet %s: %s", qPrintable(path), qPrintable(file.errorString()));
+    return QString::fromUtf8(file.readAll());
+}
 // Lucide: https://lucide.dev/icons/rotate-ccw; notice: third_party/lucide/LICENSE.
 class RotateCcwIconEngine final : public QIconEngine {
 public:
@@ -86,14 +93,8 @@ public:
         : QFrame(host), view(canvas), controller(model) {
         setObjectName(QStringLiteral("nodePropertiesPanel"));
         setAccessibleName(tr("Node properties"));
-        setStyleSheet(QStringLiteral(
-            "QFrame#nodePropertiesPanel { background: palette(window); border: 1px solid palette(mid); border-radius: 10px; }"
-            "QLabel#nodePropertiesTitle { font-weight: 600; }"
-            "QToolButton#nodeBold, QToolButton#nodeItalic, QToolButton#nodeResetAppearance, QToolButton#nodeTextColor, QToolButton#nodeFillColor {"
-            " border: 1px solid palette(mid); border-radius: 4px; padding: 4px 8px; }"
-            "QToolButton#nodeBold:checked, QToolButton#nodeItalic:checked, QToolButton#nodeTextColor:checked, QToolButton#nodeFillColor:checked {"
-            " background: palette(highlight); color: palette(highlighted-text); }"
-            "QToolButton#nodeResetAppearance:focus { border: 2px dashed palette(button-text); }"));
+        static const QString panelStyleSheet = loadStyleSheet(QStringLiteral(":/m3/qt/node_properties.qss"));
+        setStyleSheet(panelStyleSheet);
         auto *layout = new QVBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(0);
@@ -206,6 +207,7 @@ public:
         content->addLayout(modeRow);
         auto *palette = new QGridLayout;
         palette->setSpacing(6);
+        static const QString swatchStyleSheet = loadStyleSheet(QStringLiteral(":/m3/qt/color_swatch.qss"));
         auto makeSwatch = [this](const QString &background, const QString &contrast) {
             auto *button = new QToolButton(body);
             button->setCheckable(true);
@@ -213,11 +215,7 @@ public:
             button->setMinimumWidth(24);
             button->setFixedHeight(26);
             button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-            button->setStyleSheet(QStringLiteral(
-                "QToolButton { background: %1; color: %2; border: 1px solid palette(mid); border-radius: 4px; }"
-                "QToolButton:hover { border: 2px solid %2; }"
-                "QToolButton:checked { border: 3px solid %2; }"
-                "QToolButton:focus { border: 2px dashed %2; }").arg(background, contrast));
+            button->setStyleSheet(swatchStyleSheet.arg(background, contrast));
             return button;
         };
         defaultColor = makeSwatch(QStringLiteral("palette(button)"), QStringLiteral("palette(button-text)"));

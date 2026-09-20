@@ -1,0 +1,27 @@
+QFrame#nodePropertiesPanel {
+    background: palette(window);
+    border: 1px solid palette(mid);
+    border-radius: 10px;
+}
+
+QLabel#nodePropertiesTitle {
+    font-weight: 600;
+}
+
+QToolButton#nodeBold,
+QToolButton#nodeItalic,
+QToolButton#nodeResetAppearance,
+QToolButton#nodeTextColor,
+QToolButton#nodeFillColor {
+    border: 1px solid palette(mid);
+    border-radius: 4px;
+    padding: 4px 8px;
+}
+
+QToolButton#nodeBold:checked,
+QToolButton#nodeItalic:checked,
+QToolButton#nodeTextColor:checked,
+QToolButton#nodeFillColor:checked {
+    background: palette(highlight);
+    color: palette(highlighted-text);
+}
