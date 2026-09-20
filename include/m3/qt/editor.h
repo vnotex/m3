@@ -28,6 +28,8 @@
 // IDs are case-sensitive. Index -1 appends; move indexes apply after removal.
 // Only visible nodes/links can be selected, exclusively; hidden data is preserved.
 // Selection, layout direction, zoom/pan and fit never change persisted JSON.
+// Drag empty space with the left mouse button to pan; the middle button pans anywhere.
+// Empty space shows an open hand cursor, closing during a pan. Empty clicks clear selection.
 // Selecting a node or accepting an inline topic scrolls its full bounds into view
 // without changing zoom; oversized nodes can only be partially shown by scrolling.
 // Expanding a node centers it at the current zoom; large branches may still

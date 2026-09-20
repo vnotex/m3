@@ -12,7 +12,6 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPathStroker>
-#include <QScrollBar>
 #include <QResizeEvent>
 #include <limits>
 #include <QTimer>
@@ -176,6 +175,7 @@ MindMapView::MindMapView(QWidget *parent) : QGraphicsView(parent) {
     setResizeAnchor(NoAnchor);
     setTransformationAnchor(NoAnchor);
     setFocusPolicy(Qt::StrongFocus);
+    viewport()->setMouseTracking(true);
     setBackgroundBrush(palette().brush(QPalette::Base));
 }
 MindMapView::~MindMapView() {
@@ -489,23 +489,31 @@ void MindMapView::resetZoom() {
     resetTransform(); preserveCenter(center);
     updateTopicEditorGeometry();
 }
-void MindMapView::pick(QMouseEvent *event, bool activate) {
+QGraphicsItem *MindMapView::targetAt(const QPoint &position) const {
+    for (auto *item = itemAt(position); item; item = item->parentItem())
+        if (dynamic_cast<NodeItem *>(item) || dynamic_cast<LinkItem *>(item)) return item;
+    return nullptr;
+}
+void MindMapView::updatePanCursor(const QPoint &position) {
+    if (panning != Qt::NoButton) viewport()->setCursor(Qt::ClosedHandCursor);
+    else if (!targetAt(position)) viewport()->setCursor(Qt::OpenHandCursor);
+    else viewport()->unsetCursor();
+}
+bool MindMapView::pick(QMouseEvent *event, bool activate) {
     enum class Target { Empty, Node, Link, Expansion };
     Target target = Target::Empty;
     QString id;
     bool expanded = false;
-    for (auto *item = itemAt(event->position().toPoint()); item; item = item->parentItem()) {
+    {
+        auto *item = targetAt(event->position().toPoint());
         if (auto *node = dynamic_cast<NodeItem *>(item)) {
             id = node->id;
             expanded = !node->expanded;
             const bool toggle = node->hasChildren && node->affordance().contains(node->mapFromScene(mapToScene(event->position().toPoint())));
             target = toggle && !activate ? Target::Expansion : Target::Node;
-            break;
-        }
-        if (auto *link = dynamic_cast<LinkItem *>(item)) {
+        } else if (auto *link = dynamic_cast<LinkItem *>(item)) {
             id = link->id;
             target = Target::Link;
-            break;
         }
     }
     // No scene pointers or old-coordinate hit tests survive the synchronous rename.
@@ -517,25 +525,46 @@ void MindMapView::pick(QMouseEvent *event, bool activate) {
     case Target::Expansion: emit expansionRequested(id, expanded); break;
     case Target::Empty: emit emptyPicked(); break;
     }
+    return target == Target::Empty;
 }
 void MindMapView::mousePressEvent(QMouseEvent *event) {
-    if (event->button() == Qt::MiddleButton) {
-        panning = true; panPosition = event->position().toPoint(); setCursor(Qt::ClosedHandCursor); event->accept();
-    } else if (event->button() == Qt::LeftButton || event->button() == Qt::RightButton) {
-        pick(event, false); event->accept();
-    } else QGraphicsView::mousePressEvent(event);
+    if (panning != Qt::NoButton) { event->accept(); return; }
+    bool startPan = event->button() == Qt::MiddleButton;
+    if (event->button() == Qt::LeftButton || event->button() == Qt::RightButton) {
+        const bool empty = pick(event, false);
+        startPan = empty && event->button() == Qt::LeftButton;
+        event->accept();
+    } else if (!startPan) {
+        QGraphicsView::mousePressEvent(event);
+    }
+    if (startPan) {
+        panning = event->button();
+        panPosition = mapToScene(event->position().toPoint());
+        event->accept();
+    }
+    updatePanCursor(event->position().toPoint());
 }
 void MindMapView::mouseMoveEvent(QMouseEvent *event) {
-    if (panning) {
-        const QPoint current = event->position().toPoint(), delta = current - panPosition;
-        horizontalScrollBar()->setValue(horizontalScrollBar()->value() - delta.x());
-        verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
-        panPosition = current; event->accept();
-    } else QGraphicsView::mouseMoveEvent(event);
+    if (panning != Qt::NoButton) {
+        if (event->buttons().testFlag(panning)) {
+            const QPoint current = event->position().toPoint();
+            // Keep the original scene point under the pointer; incremental centering loses pixels.
+            const QPointF delta = panPosition - mapToScene(current);
+            pendingFit = false;
+            preserveCenter(mapToScene(viewport()->rect().center()) + delta);
+            event->accept();
+            return;
+        }
+        panning = Qt::NoButton;
+    }
+    QGraphicsView::mouseMoveEvent(event);
+    updatePanCursor(event->position().toPoint());
 }
 void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
-    if (event->button() == Qt::MiddleButton) { panning = false; unsetCursor(); event->accept(); }
-    else QGraphicsView::mouseReleaseEvent(event);
+    if (panning != Qt::NoButton && event->button() == panning) {
+        panning = Qt::NoButton; event->accept();
+    } else QGraphicsView::mouseReleaseEvent(event);
+    updatePanCursor(event->position().toPoint());
 }
 void MindMapView::mouseDoubleClickEvent(QMouseEvent *event) {
     if (event->button() == Qt::LeftButton) { pick(event, true); event->accept(); }

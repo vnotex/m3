@@ -46,14 +46,17 @@ protected:
     void showEvent(QShowEvent *event) override;
     void changeEvent(QEvent *event) override;
 private:
-    bool panning = false, pendingFit = false;
-    QPoint panPosition;
+    Qt::MouseButton panning = Qt::NoButton;
+    bool pendingFit = false;
+    QPointF panPosition;
     QPointer<QPlainTextEdit> topicEditor;
     QPointer<QGraphicsTextItem> topicLabel;
     QString editedId, originalTopic;
     Qt::FocusPolicy viewFocusPolicy = Qt::NoFocus, viewportFocusPolicy = Qt::NoFocus;
     void updateTopicEditorGeometry();
-    void pick(QMouseEvent *event, bool activate);
+    QGraphicsItem *targetAt(const QPoint &position) const;
+    void updatePanCursor(const QPoint &position);
+    bool pick(QMouseEvent *event, bool activate);
     void preserveCenter(const QPointF &center);
 };
 }

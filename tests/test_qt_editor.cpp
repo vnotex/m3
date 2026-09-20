@@ -993,7 +993,99 @@ static void render_case() {
     CHECK(arrowDifference > 5);
 }
 
+static void empty_space_panning_case() {
+    Editor editor;
+    showEditor(editor);
+    auto &view = graphics(editor);
+    const Json original = exported(editor);
+    QSignalSpy changed(&editor, &Editor::documentChanged);
+    const auto cursor = view.viewport()->cursor().shape();
+    const qreal scale = view.transform().m11();
+    const QPointF anchor = topicRect(editor, QStringLiteral("Central topic")).center();
+    const QPoint before = view.mapFromScene(anchor);
+    const QPoint start = blankPoint(view), delta(85, 55);
+    auto move = [&](QPoint point, Qt::MouseButtons buttons) {
+        QMouseEvent event(QEvent::MouseMove, QPointF(point), QPointF(view.viewport()->mapToGlobal(point)),
+                          Qt::NoButton, buttons, Qt::NoModifier);
+        QCoreApplication::sendEvent(view.viewport(), &event);
+        pump();
+    };
+    move(start, Qt::NoButton);
+    CHECK(view.viewport()->cursor().shape() == Qt::OpenHandCursor);
+    CHECK(view.cursor().shape() == cursor);
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, start);
+    CHECK(editor.selectedNodeId().isEmpty());
+    CHECK(view.viewport()->cursor().shape() == Qt::ClosedHandCursor);
+    for (int step = 1; step <= 12; ++step) move(start + delta * step / 12, Qt::LeftButton);
+    // A fitted single-node scene has no scroll range: content must still follow the pointer.
+    CHECK(QLineF(view.mapFromScene(anchor), before + delta).length() <= 2);
+    QTest::mousePress(view.viewport(), Qt::MiddleButton, Qt::NoModifier, start + delta);
+    QTest::mouseRelease(view.viewport(), Qt::MiddleButton, Qt::NoModifier, start + delta);
+    CHECK(view.viewport()->cursor().shape() == Qt::ClosedHandCursor);
+    move(start + 2 * delta, Qt::LeftButton);
+    CHECK(QLineF(view.mapFromScene(anchor), before + 2 * delta).length() <= 3);
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, start + 2 * delta);
+    CHECK(view.viewport()->cursor().shape() == Qt::OpenHandCursor);
+    const QPoint after = view.mapFromScene(anchor);
+    move(start + 3 * delta, Qt::NoButton);
+    CHECK(view.mapFromScene(anchor) == after);
+    CHECK(view.transform().m11() == scale);
+    CHECK(exported(editor) == original && changed.isEmpty());
+
+    // A second-button release must not interrupt the existing middle-button gesture either.
+    const QPoint middleStart = view.mapFromScene(anchor);
+    QTest::mousePress(view.viewport(), Qt::MiddleButton, Qt::NoModifier, middleStart);
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, middleStart);
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, middleStart);
+    CHECK(view.viewport()->cursor().shape() == Qt::ClosedHandCursor);
+    move(middleStart - delta, Qt::MiddleButton);
+    QTest::mouseRelease(view.viewport(), Qt::MiddleButton, Qt::NoModifier, middleStart - delta);
+    CHECK(QLineF(view.mapFromScene(anchor), after - delta).length() <= 2);
+    CHECK(view.viewport()->cursor().shape() == cursor);
+
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    pump();
+    const Json fixtureBefore = exported(editor);
+    changed.clear();
+    auto dragWithoutPan = [&](QPoint point, Qt::MouseButton button) {
+        QTest::mousePress(view.viewport(), button, Qt::NoModifier, point);
+        // Picking may scroll the selected item into view; dragging must not pan it further.
+        const QPointF center = view.mapToScene(view.viewport()->rect().center());
+        move(point + delta, button);
+        QTest::mouseRelease(view.viewport(), button, Qt::NoModifier, point + delta);
+        CHECK(view.mapToScene(view.viewport()->rect().center()) == center);
+    };
+    const QPoint alphaPoint = labelPoint(editor, QStringLiteral("Alpha"));
+    move(alphaPoint, Qt::NoButton);
+    CHECK(view.viewport()->cursor().shape() == cursor);
+    dragWithoutPan(alphaPoint, Qt::LeftButton);
+    CHECK(editor.selectedNodeId() == QStringLiteral("a"));
+    const QPoint linkPoint = labelPoint(editor, QStringLiteral("Related"));
+    move(linkPoint, Qt::NoButton);
+    CHECK(view.viewport()->cursor().shape() == cursor);
+    dragWithoutPan(linkPoint, Qt::LeftButton);
+    CHECK(editor.selectedLinkId() == QStringLiteral("l1"));
+    dragWithoutPan(blankPoint(view), Qt::RightButton);
+    CHECK(exported(editor) == fixtureBefore && changed.isEmpty());
+
+    // Committing a topic rebuilds the scene; the original empty hit must still start the pan.
+    clickLabel(editor, QStringLiteral("Alpha"), true);
+    const QString renamed = QStringLiteral("A much wider topic committed before dragging the canvas");
+    topicInput(editor).setPlainText(renamed);
+    const QPoint editStart = blankPoint(view);
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, editStart);
+    CHECK(activeTopicInput(editor) == nullptr);
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == utf8(renamed));
+    const QPointF editedAnchor = topicRect(editor, renamed).center();
+    const QPoint editBefore = view.mapFromScene(editedAnchor);
+    move(editStart + delta, Qt::LeftButton);
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, editStart + delta);
+    CHECK(QLineF(view.mapFromScene(editedAnchor), editBefore + delta).length() <= 2);
+    CHECK(changed.size() == 1);
+}
+
 static void navigation_case() {
+    empty_space_panning_case();
     Json input = editorFixture();
     for (int i = 0; i < 10; ++i) {
         const std::string id = "scroll-" + std::to_string(i);
