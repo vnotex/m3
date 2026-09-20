@@ -62,7 +62,7 @@ if(M3_BUILD_QT)
     m3_target_defaults(m3_test_qt_editor)
     set_target_properties(m3_test_qt_editor PROPERTIES
         AUTOMOC ON CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
-    set(_m3_qt_cases document tree_edits collapse graph_edits render navigation controls configuration shortcuts lifetime inline_edit node_drag)
+    set(_m3_qt_cases document tree_edits collapse graph_edits render navigation controls configuration shortcuts lifetime inline_edit node_drag properties)
     if(M3_BUILD_QT_DEMO)
         target_sources(m3_test_qt_editor PRIVATE ../examples/qt_demo_window.cpp)
         target_include_directories(m3_test_qt_editor PRIVATE ../examples)

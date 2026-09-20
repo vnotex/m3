@@ -30,10 +30,12 @@ public:
     bool dropTarget = false;
     QRectF rect;
     QPalette colors;
+    QColor backgroundColor;
     QGraphicsTextItem *label;
     NodeItem(NodePresentation node, const QPalette &palette)
         : id(node.id), expanded(node.expanded), hasChildren(node.hasChildren),
-          rect(QPointF(), node.rectangle.size()), colors(palette) {
+          rect(QPointF(), node.rectangle.size()), colors(palette),
+          backgroundColor(node.style.backgroundColor.isValid() ? node.style.backgroundColor : palette.color(QPalette::Button)) {
         setPos(node.rectangle.topLeft());
         setZValue(2);
         setFlag(ItemIsSelectable);
@@ -42,7 +44,7 @@ public:
         node.text->setParent(label);
         label->setDocument(node.text.release());
         label->setFont(label->document()->defaultFont());
-        label->setDefaultTextColor(colors.color(QPalette::Text));
+        label->setDefaultTextColor(node.style.textColor.isValid() ? node.style.textColor : colors.color(QPalette::Text));
         label->setTextInteractionFlags(Qt::NoTextInteraction);
         label->setPos(12, 8);
     }
@@ -52,7 +54,7 @@ public:
     void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
         p->setPen(QPen(colors.color(dropTarget || isSelected() ? QPalette::Highlight : QPalette::Mid),
                        dropTarget || isSelected() ? 3 : 1, dropTarget ? Qt::DashLine : Qt::SolidLine));
-        p->setBrush(colors.color(QPalette::Button));
+        p->setBrush(backgroundColor);
         p->drawRoundedRect(rect, 8, 8);
         if (hasChildren) {
             const QPointF center = affordance().center();
@@ -375,7 +377,9 @@ void MindMapView::prepare(NodePresentation &node) const {
     node.text = std::make_unique<QTextDocument>();
     node.text->setDocumentMargin(0);
     QFont textFont = font();
-    textFont.setBold(node.root);
+    if (node.style.fontSize > 0) textFont.setPixelSize(qRound(node.style.fontSize));
+    textFont.setBold(node.style.bold.value_or(node.root));
+    if (node.style.italic.has_value()) textFont.setItalic(*node.style.italic);
     node.text->setDefaultFont(textFont);
     QTextOption option;
     option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);

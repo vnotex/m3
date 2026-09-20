@@ -24,7 +24,8 @@
 // is a copied native JSON snapshot, including opaque metadata, or empty on error.
 // Mutations return false/empty on semantic failure. After a successful mutation,
 // a drawing failure is reported without claiming rollback: the error scene is
-// retried on the next refresh. documentChanged fires once per semantic success.
+// retried on the next refresh. documentChanged fires once per semantic success;
+// unchanged node-property edits do not emit it.
 // IDs are case-sensitive. Index -1 appends; move indexes apply after removal.
 // Only visible nodes/links can be selected, exclusively; hidden data is preserved.
 // Selection, layout direction, zoom/pan and fit never change persisted JSON.
@@ -35,12 +36,23 @@
 // Expanding a node centers it at the current zoom; large branches may still
 // extend beyond the viewport.
 // Topics/labels are plain Unicode text. Embedded NULs are rejected.
+// A selected node has a floating properties card; links/empty selection hide it.
+// Appearance, tags, icons, URL and note edits persist immediately without changing
+// selection or zoom. Tags/icons accept comma-separated entries; URLs are inert.
+// Collapsing the card leaves only its top-right toggle, without changing selection.
+// The expanded/collapsed preference is local to this editor and survives selection
+// and document changes; links/empty selection hide either form without resetting it.
+// The renderer recognizes style.color/background, fontSize (1-256 pixels, numeric
+// or "Npx"), fontWeight (normal/bold or CSS weight 100-900), and fontStyle
+// (normal/italic, inheriting the editor font when unset). Other style data stays
+// opaque and is preserved when a property is edited or appearance is reset.
 namespace m3::qt {
 // Widget policy, copied at construction; no Qt-specific configuration enters the core.
 // Replace a shortcut list to rebind it, or clear it to disable its keyboard binding
 // without removing the toolbar/menu command. Avoid assigning the same sequence to
 // multiple map commands. Bindings are local to this widget; link/move dialogs and
-// the layout picker keep their normal input keys. acceptTopic applies only during
+// the layout picker and properties inputs keep their normal input keys.
+// acceptTopic applies only during
 // inline editing, while map shortcuts are suspended. UI creation inserts a blank
 // node and starts inline editing. Escape cancels the draft (keeping a newly created
 // blank node); clicking outside saves. Programmatic addNode does not start editing.

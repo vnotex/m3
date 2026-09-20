@@ -4,6 +4,8 @@
 #include "qt_demo_window.h"
 #endif
 #include <QAction>
+#include <QAbstractButton>
+#include <QAccessible>
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
@@ -37,6 +39,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QScrollArea>
 #include <QSignalSpy>
 #include <QSpinBox>
 #include <QStatusBar>
@@ -1366,6 +1369,284 @@ static void node_drag_case() {
         CHECK(paintScene(editor, targetRect) == normal && editor.selectedNodeId() == a);
         CHECK(view.viewport()->cursor().shape() == Qt::OpenHandCursor);
     }
+}
+
+static void properties_case() {
+    Editor editor;
+    Json input = editorFixture();
+    for (auto &entry : input.at("nodes")) if (entry.at("id") == "a")
+        entry["style"] = Json{{"custom", {{"integer", UINT64_C(9007199254740993)}, {"nested", Json::array({true, "opaque"})}}}};
+    CHECK(editor.loadJson(encoded(input)));
+    CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+    showEditor(editor, QSize(1100, 900));
+    assertFit(editor);
+    auto &view = graphics(editor);
+    auto *panel = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
+    CHECK(panel != nullptr && panel->isVisible() && !view.isAncestorOf(panel));
+    auto *scroll = panel->findChild<QScrollArea *>();
+    auto *tags = panel->findChild<QLineEdit *>(QStringLiteral("nodeTags"));
+    auto *icons = panel->findChild<QLineEdit *>(QStringLiteral("nodeIcons"));
+    auto *url = panel->findChild<QLineEdit *>(QStringLiteral("nodeUrl"));
+    auto *note = panel->findChild<QPlainTextEdit *>(QStringLiteral("nodeNote"));
+    auto *size = panel->findChild<QComboBox *>(QStringLiteral("nodeFontSize"));
+    CHECK(scroll && tags && icons && url && note && size);
+    auto button = [&](const char *name) {
+        auto *result = panel->findChild<QAbstractButton *>(QString::fromLatin1(name));
+        CHECK(result != nullptr);
+        return result;
+    };
+    auto reveal = [&](QWidget *widget) {
+        if (scroll->widget()->isAncestorOf(widget)) scroll->ensureWidgetVisible(widget);
+        pump();
+    };
+    auto click = [&](const char *name) {
+        auto *control = button(name);
+        reveal(control);
+        QTest::mouseClick(control, Qt::LeftButton);
+        pump();
+    };
+    auto paste = [&](QWidget *widget, const QString &text) {
+        reveal(widget);
+        widget->setFocus(Qt::OtherFocusReason);
+        QTest::keyClick(widget, Qt::Key_A, Qt::ControlModifier);
+        QApplication::clipboard()->setText(text);
+        QTest::keyClick(widget, Qt::Key_V, Qt::ControlModifier);
+        pump();
+    };
+    auto jsonNode = [](Json &doc, const char *id) -> Json & {
+        for (auto &entry : doc.at("nodes")) if (entry.at("id") == id) return entry;
+        throw std::runtime_error("Missing property fixture node");
+    };
+    auto anchored = [&] {
+        const QRect canvas(view.viewport()->mapTo(&editor, QPoint()), view.viewport()->size());
+        CHECK(canvas.contains(panel->geometry()));
+        CHECK(panel->geometry().right() > canvas.center().x());
+        CHECK(panel->geometry().top() < canvas.top() + 24);
+    };
+    Json expected = exported(editor);
+    QSignalSpy changed(&editor, &Editor::documentChanged), errors(&editor, &Editor::errorOccurred);
+    const QTransform zoom = view.transform();
+    anchored();
+    editor.clearSelection();
+    CHECK(!panel->isVisible());
+    CHECK(editor.selectLink(QStringLiteral("l1")) && !panel->isVisible());
+    CHECK(editor.selectNode(QStringLiteral("a")) && panel->isVisible());
+    CHECK(exported(editor) == expected && changed.isEmpty());
+    CHECK(view.transform() == zoom);
+
+    // Each edit changes only its native field; arbitrary style/image/link data survive.
+    paste(tags, QString::fromUtf8("todo, 世界, todo"));
+    jsonNode(expected, "a")["tags"] = Json::array({"todo", "世界", "todo"});
+    CHECK(exported(editor) == expected && changed.size() == 1);
+    QTest::keyClicks(tags, ", ");
+    CHECK(tags->text().endsWith(QStringLiteral(", ")) && tags->cursorPosition() == tags->text().size());
+    CHECK(exported(editor) == expected && changed.size() == 1);
+    tags->setCursorPosition(0);
+    QTest::keyClicks(tags, "x");
+    jsonNode(expected, "a")["tags"][0] = "xtodo";
+    CHECK(tags->cursorPosition() == 1 && tags->text().endsWith(QStringLiteral(", ")));
+    CHECK(exported(editor) == expected && changed.size() == 2);
+    paste(icons, QStringLiteral("star, flag, star"));
+    jsonNode(expected, "a")["icons"] = Json::array({"star", "flag", "star"});
+    paste(url, QString::fromUtf8("opaque:世界?q=1"));
+    jsonNode(expected, "a")["hyperLink"] = "opaque:世界?q=1";
+    paste(note, QString::fromUtf8("Memo café\nSecond line 世界"));
+    jsonNode(expected, "a")["note"] = "Memo café\nSecond line 世界";
+    CHECK(exported(editor) == expected && changed.size() == 5 && errors.isEmpty());
+    // Assistive technology sets values without emitting keyboard-only edit signals.
+    auto *accessibleUrl = QAccessible::queryAccessibleInterface(url);
+    CHECK(accessibleUrl != nullptr);
+    accessibleUrl->setText(QAccessible::Value, QStringLiteral("opaque:accessible"));
+    jsonNode(expected, "a")["hyperLink"] = "opaque:accessible";
+    CHECK(exported(editor) == expected && changed.size() == 6);
+
+    // Panel focus is outside the map shortcut scope; typing cannot create/delete/reorder nodes.
+    reveal(icons);
+    icons->setFocus();
+    QTest::keyClick(icons, Qt::Key_Home);
+    CHECK(icons->cursorPosition() == 0);
+    QTest::keyClick(icons, Qt::Key_Right);
+    QTest::keyClick(icons, Qt::Key_Delete);
+    QTest::keyClick(icons, Qt::Key_Space);
+    QTest::keyClick(icons, Qt::Key_Return);
+    QTest::keyClick(icons, Qt::Key_Escape);
+    QTest::keyClick(icons, Qt::Key_Tab);
+    CHECK(!icons->hasFocus() && editor.selectedNodeId() == QStringLiteral("a") && panel->isVisible());
+    CHECK(exported(editor).at("nodes").size() == expected.at("nodes").size());
+    for (const auto &entry : expected.at("nodes"))
+        CHECK(record(exported(editor), "nodes", qs(entry.at("id"))).at("children") == entry.at("children"));
+    reveal(note);
+    note->setFocus();
+    QTest::keyClick(note, Qt::Key_End, Qt::ControlModifier);
+    QTest::keyClick(note, Qt::Key_Return);
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("note") == "Memo café\nSecond line 世界\n");
+    CHECK(editor.selectedNodeId() == QStringLiteral("a"));
+    expected = exported(editor);
+
+    // Typography participates in measurement; colors paint without disturbing selection or zoom.
+    const QRectF normalRect = topicRect(editor, QStringLiteral("Alpha"));
+    reveal(size);
+    size->setFocus();
+    const int large = size->findData(24);
+    CHECK(large >= 0);
+    for (int step = 0; size->currentIndex() != large && step < size->count(); ++step)
+        QTest::keyClick(size, size->currentIndex() < large ? Qt::Key_Down : Qt::Key_Up);
+    CHECK(size->currentIndex() == large);
+    CHECK(textItem(editor, QStringLiteral("Alpha"))->font().pixelSize() == 24);
+    CHECK(topicRect(editor, QStringLiteral("Alpha")).height() > normalRect.height());
+    auto *accessibleBold = QAccessible::queryAccessibleInterface(button("nodeBold"));
+    CHECK(accessibleBold && accessibleBold->actionInterface());
+    accessibleBold->actionInterface()->doAction(QAccessibleActionInterface::toggleAction());
+    CHECK(textItem(editor, QStringLiteral("Alpha"))->font().bold());
+    if (button("nodeItalic")->isChecked()) click("nodeItalic");
+    click("nodeItalic");
+    CHECK(textItem(editor, QStringLiteral("Alpha"))->font().italic());
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("style").at("fontStyle") == "italic");
+    click("nodeTextColor");
+    click("nodeColor_2980b9");
+    CHECK(textItem(editor, QStringLiteral("Alpha"))->defaultTextColor() == QColor(QStringLiteral("#2980b9")));
+    const QRectF paintedRect = topicRect(editor, QStringLiteral("Alpha"));
+    const QImage beforeFill = paintScene(editor, paintedRect);
+    click("nodeFillColor");
+    click("nodeColor_e74c3c");
+    CHECK(paintScene(editor, paintedRect) != beforeFill);
+    const auto styled = exported(editor);
+    CHECK(record(styled, "nodes", QStringLiteral("a")).at("style").at("background") == "#e74c3c");
+    CHECK(record(styled, "nodes", QStringLiteral("a")).at("style").at("custom") ==
+          record(expected, "nodes", QStringLiteral("a")).at("style").at("custom"));
+    Editor roundtrip;
+    CHECK(roundtrip.loadJson(editor.toJson()) && exported(roundtrip) == styled);
+    CHECK(textItem(roundtrip, QStringLiteral("Alpha"))->font().italic());
+    CHECK(editor.selectedNodeId() == QStringLiteral("a") && view.transform() == zoom);
+    const auto beforeReset = changed.size();
+    click("nodeResetAppearance");
+    CHECK(exported(editor) == expected && changed.size() == beforeReset + 1);
+    CHECK(topicRect(editor, QStringLiteral("Alpha")).size() == normalRect.size());
+    CHECK(textItem(editor, QStringLiteral("Alpha"))->font().italic() == editor.font().italic());
+    click("nodeResetAppearance");
+    CHECK(changed.size() == beforeReset + 1);
+    CHECK(editor.selectNode(QStringLiteral("r")));
+    const QString rootTopic = qs(record(expected, "nodes", QStringLiteral("r")).at("topic"));
+    CHECK(textItem(editor, rootTopic)->font().bold());
+    click("nodeBold");
+    CHECK(!textItem(editor, rootTopic)->font().bold());
+    click("nodeResetAppearance");
+    CHECK(textItem(editor, rootTopic)->font().bold() && exported(editor) == expected);
+
+    // Unset style inherits the editor font; explicit normal and reset must remain distinct.
+    const QFont originalFont = editor.font();
+    QFont inheritedItalic = originalFont;
+    inheritedItalic.setItalic(true);
+    const auto beforeFontChange = changed.size();
+    editor.setFont(inheritedItalic);
+    pump();
+    CHECK(textItem(editor, rootTopic)->font().italic() && button("nodeItalic")->isChecked());
+    CHECK(exported(editor) == expected && changed.size() == beforeFontChange);
+    click("nodeItalic");
+    CHECK(!textItem(editor, rootTopic)->font().italic());
+    CHECK(record(exported(editor), "nodes", QStringLiteral("r")).at("style").at("fontStyle") == "normal");
+    click("nodeResetAppearance");
+    CHECK(textItem(editor, rootTopic)->font().italic() && button("nodeItalic")->isChecked());
+    CHECK(exported(editor) == expected && changed.size() == beforeFontChange + 2);
+    editor.setFont(originalFont);
+    pump();
+    CHECK(textItem(editor, rootTopic)->font().italic() == originalFont.italic());
+    CHECK(button("nodeItalic")->isChecked() == originalFont.italic());
+    CHECK(exported(editor) == expected && changed.size() == beforeFontChange + 2);
+
+    // Same-ID replacement must refresh focused inputs even without selectionChanged.
+    reveal(note);
+    note->setFocus();
+    Json replacement = expected;
+    jsonNode(replacement, "r")["note"] = "External replacement";
+    jsonNode(replacement, "r")["style"]["fontSize"] = "18px";
+    jsonNode(replacement, "r")["style"]["fontWeight"] = 700;
+    CHECK(editor.loadJson(encoded(replacement)));
+    CHECK(note->toPlainText() == QStringLiteral("External replacement"));
+    CHECK(textItem(editor, rootTopic)->font().pixelSize() == 18 && textItem(editor, rootTopic)->font().bold());
+    CHECK(exported(editor) == nativeDocument(replacement));
+    changed.clear();
+    const Json beforeResize = exported(editor);
+    editor.resize(760, 440);
+    pump();
+    anchored();
+    CHECK(scroll->verticalScrollBar()->maximum() > 0);
+    reveal(note);
+    CHECK(note->isVisible() && panel->isVisible());
+    CHECK(exported(editor) == beforeResize && changed.isEmpty());
+    auto *toggle = button("nodePropertiesToggle");
+    auto compact = [&] {
+        pump();
+        anchored();
+        CHECK(panel->isVisible() && toggle->isVisible() && scroll->isHidden());
+        CHECK(panel->width() <= toggle->width() + 8 && panel->height() <= toggle->height() + 8);
+        for (auto *control : panel->findChildren<QAbstractButton *>())
+            CHECK(control == toggle || !control->isVisible());
+        for (auto *label : panel->findChildren<QLabel *>()) CHECK(!label->isVisible());
+    };
+    QSignalSpy selected(&editor, &Editor::selectionChanged);
+    const QTransform beforeToggleZoom = view.transform();
+    const QPointF beforeToggleCenter = view.mapToScene(view.viewport()->rect().center());
+    click("nodePropertiesToggle");
+    compact();
+    CHECK(editor.selectedNodeId() == QStringLiteral("r") && selected.isEmpty());
+    CHECK(exported(editor) == beforeResize && changed.isEmpty());
+    CHECK(view.transform() == beforeToggleZoom && view.mapToScene(view.viewport()->rect().center()) == beforeToggleCenter);
+    editor.resize(1100, 900);
+    compact();
+    clickLabel(editor, QStringLiteral("Delta"));
+    CHECK(editor.selectedNodeId() == QStringLiteral("d"));
+    compact();
+    clickLabel(editor, QStringLiteral("Alpha"));
+    CHECK(editor.selectedNodeId() == QStringLiteral("a"));
+    compact();
+    editor.clearSelection();
+    CHECK(!panel->isVisible());
+    CHECK(editor.selectLink(QStringLiteral("l1")) && !panel->isVisible());
+    CHECK(editor.selectNode(QStringLiteral("d")));
+    compact();
+    CHECK(exported(editor) == beforeResize && changed.isEmpty());
+    CHECK(editor.newDocument(QStringLiteral("Temporary document")));
+    compact();
+    CHECK(editor.loadJson(encoded(beforeResize)));
+    compact();
+    CHECK(editor.selectedNodeId() == QStringLiteral("r"));
+    changed.clear(); selected.clear();
+    const QTransform expandZoom = view.transform();
+    const QPointF expandCenter = view.mapToScene(view.viewport()->rect().center());
+    toggle->setFocus();
+    QTest::keyClick(toggle, Qt::Key_Space);
+    pump();
+    CHECK(panel->isVisible() && scroll->isVisible() && note->isVisible());
+    CHECK(note->toPlainText() == QStringLiteral("External replacement"));
+    CHECK(editor.selectedNodeId() == QStringLiteral("r") && selected.isEmpty());
+    CHECK(exported(editor) == beforeResize && changed.isEmpty());
+    CHECK(view.transform() == expandZoom && view.mapToScene(view.viewport()->rect().center()) == expandCenter);
+    CHECK(editor.selectNode(QStringLiteral("d")) && panel->isVisible());
+    CHECK(note->toPlainText().isEmpty());
+    CHECK(editor.setExpanded(QStringLiteral("b"), false));
+    CHECK(editor.moveNode(QStringLiteral("d"), QStringLiteral("b")));
+    CHECK(editor.selectedNodeId().isEmpty() && !panel->isVisible());
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    CHECK(editor.removeNode(QStringLiteral("a")));
+    CHECK(editor.selectedNodeId() == QStringLiteral("r") && panel->isVisible());
+    CHECK(note->toPlainText() == QStringLiteral("External replacement"));
+
+    // Clicking a property field commits the old inline draft once before applying its own edit.
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    assertFit(editor);
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    shortcut(editor, Qt::Key_F2);
+    topicInput(editor).setPlainText(QStringLiteral("Renamed from inline editor"));
+    changed.clear();
+    reveal(tags);
+    QTest::mouseClick(tags, Qt::LeftButton);
+    pump();
+    CHECK(activeTopicInput(editor) == nullptr && changed.size() == 1);
+    QTest::keyClicks(tags, "new");
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "Renamed from inline editor");
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("tags") == Json::array({"new"}));
+    CHECK(editor.selectedNodeId() == QStringLiteral("a") && errors.isEmpty());
 }
 
 static void focus_root_case() {
@@ -2731,6 +3012,7 @@ int main(int argc, char **argv) {
         else if (name == "render") render_case();
         else if (name == "navigation") navigation_case();
         else if (name == "node_drag") node_drag_case();
+        else if (name == "properties") properties_case();
         else if (name == "controls") controls_case();
         else if (name == "inline_edit") inline_edit_case();
         else if (name == "configuration") configuration_case();

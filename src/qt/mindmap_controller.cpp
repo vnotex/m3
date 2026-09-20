@@ -3,6 +3,7 @@
 #include <QHash>
 #include <QUuid>
 #include <nlohmann/json.hpp>
+#include <cmath>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -26,6 +27,44 @@ M3LayoutDirection coreDirection(MindMapEditor::LayoutDirection d) {
 QRectF rectangle(const Json &j) {
     return {j.at("x").get<double>(), j.at("y").get<double>(),
             j.at("width").get<double>(), j.at("height").get<double>()};
+}
+NodeStyle nodeStyle(const Json &style) {
+    NodeStyle result;
+    if (!style.is_object()) return result;
+    if (const auto size = style.find("fontSize"); size != style.end()) {
+        qreal pixels = 0;
+        if (size->is_number()) pixels = size->get<qreal>();
+        else if (size->is_string()) {
+            QString text = string(*size).trimmed();
+            if (text.endsWith(QStringLiteral("px"), Qt::CaseInsensitive)) {
+                text.chop(2);
+                bool valid = false;
+                pixels = text.toDouble(&valid);
+                if (!valid) pixels = 0;
+            }
+        }
+        if (std::isfinite(pixels) && pixels >= 1 && pixels <= 256) result.fontSize = pixels;
+    }
+    if (const auto weight = style.find("fontWeight"); weight != style.end()) {
+        if (weight->is_number()) {
+            const double value = weight->get<double>();
+            if (std::isfinite(value) && value >= 100 && value <= 900) result.bold = value >= 600;
+        } else if (weight->is_string()) {
+            const QString value = string(*weight).trimmed();
+            if (value.compare(QStringLiteral("bold"), Qt::CaseInsensitive) == 0) result.bold = true;
+            else if (value.compare(QStringLiteral("normal"), Qt::CaseInsensitive) == 0) result.bold = false;
+        }
+    }
+    if (const auto fontStyle = style.find("fontStyle"); fontStyle != style.end() && fontStyle->is_string()) {
+        const QString value = string(*fontStyle).trimmed();
+        if (value.compare(QStringLiteral("italic"), Qt::CaseInsensitive) == 0) result.italic = true;
+        else if (value.compare(QStringLiteral("normal"), Qt::CaseInsensitive) == 0) result.italic = false;
+    }
+    if (const auto color = style.find("color"); color != style.end() && color->is_string())
+        result.textColor = QColor(string(*color));
+    if (const auto color = style.find("background"); color != style.end() && color->is_string())
+        result.backgroundColor = QColor(string(*color));
+    return result;
 }
 LinkPresentation linkPresentation(const Json &j) {
     return {string(j.at("id")), string(j.at("source")), string(j.at("target")),
@@ -76,6 +115,7 @@ Presentation MindMapController::prepare(const M3Mindmap *map, MindMapEditor::Lay
         node.expanded = record.at("expanded").get<bool>();
         const auto &children = record.at("children");
         node.hasChildren = children.empty() == false;
+        node.style = nodeStyle(record.at("style"));
         view.prepare(node);
         if (node.expanded)
             for (auto it = children.rbegin(); it != children.rend(); ++it)
@@ -190,6 +230,45 @@ bool MindMapController::renameNode(const QString &id, const QString &topic) {
     const auto patch = Json{{"topic", utf8(topic)}}.dump();
     return changed(m3_mindmap_update_node(model.get(), id.toUtf8().constData(), patch.c_str()));
 }
+bool MindMapController::updateNodeProperties(const QString &id, const QByteArray &patch) {
+    if (!strings({id})) return false;
+    if (patch.contains('\0')) return fail(tr("JSON cannot contain NUL bytes"));
+    try {
+        auto update = Json::parse(patch.constData(), patch.constData() + patch.size());
+        char *raw = nullptr;
+        const auto read = m3_mindmap_get_node_json(model.get(), id.toUtf8().constData(), &raw);
+        Text text(raw, m3_string_free);
+        requireStatus(read);
+        const auto original = Json::parse(text.get());
+        if (update.is_object()) {
+            const auto style = update.find("style");
+            if (style != update.end() && style->is_object()) {
+                Json merged = original.at("style");
+                for (auto member = style->begin(); member != style->end(); ++member) {
+                    if (member->is_null()) merged.erase(member.key());
+                    else merged[member.key()] = *member;
+                }
+                *style = std::move(merged);
+            }
+        }
+        bool modified = update.is_object() == false;
+        if (!modified) {
+            for (auto member = update.begin(); member != update.end(); ++member) {
+                const auto previous = original.find(member.key());
+                if (previous == original.end() || *previous != *member) {
+                    modified = true;
+                    break;
+                }
+            }
+        }
+        const auto serialized = update.dump();
+        const auto result = m3_mindmap_update_node(model.get(), id.toUtf8().constData(), serialized.c_str());
+        if (modified) return changed(result);
+        if (!status(result)) return false;
+        success();
+        return true;
+    } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
+}
 bool MindMapController::removeNode(const QString &id) {
     if (!strings({id})) return false;
     QHash<QString, QString> parents;
@@ -264,6 +343,28 @@ std::vector<NodeChoice> MindMapController::choices() {
         }
     } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); }
     return result;
+}
+NodeProperties MindMapController::nodeProperties(const QString &id) {
+    if (!model || id.isEmpty()) return {};
+    try {
+        const auto bytes = snapshot(model.get());
+        const auto data = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
+        const auto key = utf8(id);
+        for (const auto &record : data.at("nodes")) {
+            if (record.at("id") != key) continue;
+            NodeProperties result;
+            result.id = string(record.at("id"));
+            result.topic = string(record.at("topic"));
+            result.hyperlink = string(record.at("hyperLink"));
+            result.note = string(record.at("note"));
+            for (const auto &tag : record.at("tags")) result.tags.append(string(tag));
+            for (const auto &icon : record.at("icons")) result.icons.append(string(icon));
+            result.root = record.at("id") == data.at("rootId");
+            result.style = nodeStyle(record.at("style"));
+            return result;
+        }
+    } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); }
+    return {};
 }
 LinkPresentation MindMapController::linkChoice(const QString &id) {
     try {

@@ -2,22 +2,430 @@
 #include "mindmap_controller.h"
 #include "mindmap_view.h"
 #include <QAction>
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QEvent>
+#include <QFrame>
 #include <QFormLayout>
+#include <QGridLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPlainTextEdit>
+#include <QPointer>
+#include <QPushButton>
+#include <QScopedValueRollback>
+#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStringList>
 #include <functional>
 #include <QToolBar>
+#include <QToolButton>
 #include <QLabel>
 #include <QVBoxLayout>
 namespace m3::qt {
+namespace {
+class NodePropertiesPanel final : public QFrame {
+public:
+    NodePropertiesPanel(MindMapEditor *host, MindMapView *canvas, MindMapController *model)
+        : QFrame(host), view(canvas), controller(model) {
+        setObjectName(QStringLiteral("nodePropertiesPanel"));
+        setAccessibleName(tr("Node properties"));
+        setStyleSheet(QStringLiteral(
+            "QFrame#nodePropertiesPanel { background: palette(window); border: 1px solid palette(mid); border-radius: 10px; }"
+            "QLabel#nodePropertiesTitle { font-weight: 600; }"
+            "QToolButton#nodeBold, QToolButton#nodeItalic, QToolButton#nodeTextColor, QToolButton#nodeFillColor {"
+            " border: 1px solid palette(mid); border-radius: 4px; padding: 4px 8px; }"
+            "QToolButton#nodeBold:checked, QToolButton#nodeItalic:checked, QToolButton#nodeTextColor:checked, QToolButton#nodeFillColor:checked {"
+            " background: palette(highlight); color: palette(highlighted-text); }"));
+        auto *layout = new QVBoxLayout(this);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(0);
+        layout->setSizeConstraint(QLayout::SetNoConstraint);
+        heading = new QWidget(this);
+        auto *header = new QVBoxLayout(heading);
+        header->setContentsMargins(12, 8, 8, 9);
+        header->setSpacing(2);
+        auto *titleRow = new QHBoxLayout;
+        title = new QLabel(tr("Node properties"), heading);
+        title->setObjectName(QStringLiteral("nodePropertiesTitle"));
+        title->setTextFormat(Qt::PlainText);
+        title->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        toggle = new QToolButton(heading);
+        toggle->setObjectName(QStringLiteral("nodePropertiesToggle"));
+        toggle->setCheckable(true);
+        toggle->setChecked(true);
+        toggle->setFixedSize(28, 28);
+        toggle->setAutoRaise(true);
+        toggle->setFocusPolicy(Qt::StrongFocus);
+        titleRow->addWidget(title, 1);
+        titleRow->addWidget(toggle);
+        header->addLayout(titleRow);
+        subtitle = new QLabel(heading);
+        subtitle->setTextFormat(Qt::PlainText);
+        subtitle->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        subtitle->setFixedHeight(subtitle->fontMetrics().height());
+        header->addWidget(subtitle);
+        layout->addWidget(heading);
+        scroll = new QScrollArea(this);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setWidgetResizable(true);
+        scroll->setMinimumSize(0, 0);
+        body = new QWidget(scroll);
+        auto *content = new QVBoxLayout(body);
+        content->setContentsMargins(12, 8, 12, 12);
+        content->setSpacing(8);
+        auto section = [this, content](const QString &text) {
+            auto *label = new QLabel(text, body);
+            auto font = label->font();
+            font.setBold(true);
+            label->setFont(font);
+            content->addWidget(label);
+        };
+        section(tr("Appearance"));
+        auto *fontRow = new QHBoxLayout;
+        auto *sizeLabel = new QLabel(tr("&Size"), body);
+        fontSize = new QComboBox(body);
+        fontSize->setObjectName(QStringLiteral("nodeFontSize"));
+        fontSize->setAccessibleName(tr("Font size"));
+        fontSize->addItem(tr("Default"), 0.0);
+        for (const int size : {10, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64})
+            fontSize->addItem(tr("%1 px").arg(size), double(size));
+        presetCount = fontSize->count();
+        sizeLabel->setBuddy(fontSize);
+        bold = new QToolButton(body);
+        bold->setObjectName(QStringLiteral("nodeBold"));
+        bold->setText(QStringLiteral("B"));
+        bold->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        bold->setAccessibleName(tr("Bold"));
+        bold->setCheckable(true);
+        bold->setFocusPolicy(Qt::StrongFocus);
+        auto boldFont = bold->font();
+        boldFont.setBold(true);
+        bold->setFont(boldFont);
+        italic = new QToolButton(body);
+        italic->setObjectName(QStringLiteral("nodeItalic"));
+        italic->setText(QStringLiteral("I"));
+        italic->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        italic->setAccessibleName(tr("Italic"));
+        italic->setCheckable(true);
+        italic->setFocusPolicy(Qt::StrongFocus);
+        auto italicFont = italic->font();
+        italicFont.setItalic(true);
+        italic->setFont(italicFont);
+        fontRow->addWidget(sizeLabel);
+        fontRow->addWidget(fontSize, 1);
+        fontRow->addWidget(bold);
+        fontRow->addWidget(italic);
+        content->addLayout(fontRow);
+        auto *modeRow = new QHBoxLayout;
+        auto *modes = new QButtonGroup(this);
+        textColor = new QToolButton(body);
+        fillColor = new QToolButton(body);
+        textColor->setObjectName(QStringLiteral("nodeTextColor"));
+        fillColor->setObjectName(QStringLiteral("nodeFillColor"));
+        textColor->setText(tr("Text"));
+        fillColor->setText(tr("Fill"));
+        textColor->setAccessibleName(tr("Text color"));
+        fillColor->setAccessibleName(tr("Fill color"));
+        for (auto *button : {textColor, fillColor}) {
+            button->setCheckable(true);
+            button->setFocusPolicy(Qt::StrongFocus);
+            button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            modes->addButton(button);
+            modeRow->addWidget(button);
+            connect(button, &QToolButton::toggled, this, [this](bool checked) { if (checked) refreshColors(); });
+        }
+        content->addLayout(modeRow);
+        auto *palette = new QGridLayout;
+        palette->setSpacing(6);
+        struct Swatch { const char *hex; const char *name; };
+        const Swatch colors[] = {
+            {"#ffffff", QT_TR_NOOP("White")}, {"#ecf0f1", QT_TR_NOOP("Cloud")},
+            {"#95a5a6", QT_TR_NOOP("Gray")}, {"#34495e", QT_TR_NOOP("Slate")},
+            {"#2c3e50", QT_TR_NOOP("Midnight")}, {"#000000", QT_TR_NOOP("Black")},
+            {"#e74c3c", QT_TR_NOOP("Red")}, {"#e67e22", QT_TR_NOOP("Orange")},
+            {"#f39c12", QT_TR_NOOP("Amber")}, {"#f1c40f", QT_TR_NOOP("Yellow")},
+            {"#2ecc71", QT_TR_NOOP("Green")}, {"#27ae60", QT_TR_NOOP("Forest")},
+            {"#1abc9c", QT_TR_NOOP("Teal")}, {"#16a085", QT_TR_NOOP("Jade")},
+            {"#3498db", QT_TR_NOOP("Blue")}, {"#2980b9", QT_TR_NOOP("Ocean")},
+            {"#9b59b6", QT_TR_NOOP("Purple")}, {"#8e44ad", QT_TR_NOOP("Violet")}
+        };
+        for (const auto &entry : colors) {
+            const QString hex = QString::fromLatin1(entry.hex);
+            const QString description = tr("%1 (%2)").arg(tr(entry.name), hex);
+            auto *button = new QToolButton(body);
+            button->setObjectName(QStringLiteral("nodeColor_") + hex.mid(1));
+            button->setProperty("color", hex);
+            button->setAccessibleName(description);
+            button->setToolTip(description);
+            button->setCheckable(true);
+            button->setFocusPolicy(Qt::StrongFocus);
+            button->setMinimumWidth(24);
+            button->setFixedHeight(26);
+            button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            const QString contrast = QColor(hex).lightnessF() > 0.55 ? QStringLiteral("#202020") : QStringLiteral("#ffffff");
+            button->setStyleSheet(QStringLiteral(
+                "QToolButton { background: %1; border: 1px solid palette(mid); border-radius: 4px; }"
+                "QToolButton:hover { border: 2px solid %2; }"
+                "QToolButton:checked { border: 3px solid %2; }"
+                "QToolButton:focus { border: 2px dashed %2; }").arg(hex, contrast));
+            const int index = int(swatches.size());
+            palette->addWidget(button, index / 6, index % 6);
+            swatches.append(button);
+            connect(button, &QToolButton::toggled, this, [this, hex](bool checked) {
+                if (checked) applyStyle({{colorKey(), hex}});
+                else refreshColors();
+            });
+        }
+        content->addLayout(palette);
+        auto *colorActions = new QHBoxLayout;
+        defaultColor = new QPushButton(tr("Default color"), body);
+        defaultColor->setObjectName(QStringLiteral("nodeDefaultColor"));
+        defaultColor->setCheckable(true);
+        auto *reset = new QPushButton(tr("Reset appearance"), body);
+        reset->setObjectName(QStringLiteral("nodeResetAppearance"));
+        reset->setToolTip(tr("Restore default font, text color and fill"));
+        colorActions->addWidget(defaultColor);
+        colorActions->addWidget(reset);
+        content->addLayout(colorActions);
+        auto *separator = new QFrame(body);
+        separator->setFrameShape(QFrame::HLine);
+        separator->setFrameShadow(QFrame::Sunken);
+        content->addWidget(separator);
+        section(tr("Details"));
+        auto *fields = new QFormLayout;
+        fields->setContentsMargins(0, 0, 0, 0);
+        fields->setSpacing(8);
+        fields->setRowWrapPolicy(QFormLayout::WrapLongRows);
+        fields->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        auto line = [this, fields](const char *name, const QString &label, const QString &accessible) {
+            auto *input = new QLineEdit(body);
+            input->setObjectName(QString::fromLatin1(name));
+            input->setAccessibleName(accessible);
+            input->setMinimumWidth(80);
+            auto *caption = new QLabel(label, body);
+            caption->setBuddy(input);
+            fields->addRow(caption, input);
+            return input;
+        };
+        tags = line("nodeTags", tr("&Tags"), tr("Tags"));
+        icons = line("nodeIcons", tr("&Icons"), tr("Icons"));
+        url = line("nodeUrl", tr("&URL"), tr("URL"));
+        tags->setPlaceholderText(tr("Separate with commas"));
+        icons->setPlaceholderText(tr("Names or symbols, comma-separated"));
+        url->setPlaceholderText(tr("URL or reference"));
+        note = new QPlainTextEdit(body);
+        note->setObjectName(QStringLiteral("nodeNote"));
+        note->setAccessibleName(tr("Note"));
+        note->setPlaceholderText(tr("Add a note"));
+        note->setTabChangesFocus(true);
+        note->setMinimumHeight(78);
+        note->setMaximumHeight(100);
+        auto *noteLabel = new QLabel(tr("&Note"), body);
+        noteLabel->setBuddy(note);
+        fields->addRow(noteLabel, note);
+        content->addLayout(fields);
+        content->addStretch();
+        scroll->setWidget(body);
+        layout->addWidget(scroll, 1);
+        textColor->setChecked(true);
+        connect(toggle, &QToolButton::toggled, this, [this] {
+            reposition();
+            toggle->setFocus(Qt::OtherFocusReason);
+        });
+        connect(fontSize, &QComboBox::currentIndexChanged, this, [this] {
+            const double size = fontSize->currentData().toDouble();
+            applyStyle({{QStringLiteral("fontSize"), size > 0 ? QJsonValue(size) : QJsonValue(QJsonValue::Null)}});
+        });
+        connect(bold, &QToolButton::toggled, this, [this](bool checked) {
+            applyStyle({{QStringLiteral("fontWeight"), checked ? QStringLiteral("bold") : QStringLiteral("normal")}});
+        });
+        connect(italic, &QToolButton::toggled, this, [this](bool checked) {
+            applyStyle({{QStringLiteral("fontStyle"), checked ? QStringLiteral("italic") : QStringLiteral("normal")}});
+        });
+        connect(defaultColor, &QPushButton::toggled, this, [this](bool checked) {
+            if (checked) applyStyle({{colorKey(), QJsonValue(QJsonValue::Null)}});
+            else refreshColors();
+        });
+        connect(reset, &QPushButton::clicked, this, [this] {
+            applyStyle({{QStringLiteral("fontSize"), QJsonValue(QJsonValue::Null)},
+                        {QStringLiteral("fontWeight"), QJsonValue(QJsonValue::Null)},
+                        {QStringLiteral("fontStyle"), QJsonValue(QJsonValue::Null)},
+                        {QStringLiteral("color"), QJsonValue(QJsonValue::Null)},
+                        {QStringLiteral("background"), QJsonValue(QJsonValue::Null)}});
+        });
+        connect(tags, &QLineEdit::textChanged, this, [this](const QString &text) {
+            apply({{QStringLiteral("tags"), QJsonArray::fromStringList(commaValues(text))}});
+        });
+        connect(icons, &QLineEdit::textChanged, this, [this](const QString &text) {
+            apply({{QStringLiteral("icons"), QJsonArray::fromStringList(commaValues(text))}});
+        });
+        connect(url, &QLineEdit::textChanged, this, [this](const QString &text) {
+            apply({{QStringLiteral("hyperLink"), text}});
+        });
+        connect(note, &QPlainTextEdit::textChanged, this, [this] {
+            apply({{QStringLiteral("note"), note->toPlainText()}});
+        });
+        connect(controller, &MindMapController::selectionChanged, this, [this] { refresh(); });
+        connect(controller, &MindMapController::documentChanged, this, [this] { refresh(); });
+        host->installEventFilter(this);
+        view->installEventFilter(this);
+        view->viewport()->installEventFilter(this);
+        hide();
+    }
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        switch (event->type()) {
+        case QEvent::Resize:
+        case QEvent::Move:
+        case QEvent::Show:
+        case QEvent::LayoutRequest:
+        case QEvent::StyleChange:
+            reposition();
+            break;
+        case QEvent::FontChange:
+            refresh();
+            break;
+        default:
+            break;
+        }
+        return QFrame::eventFilter(watched, event);
+    }
+private:
+    QPointer<MindMapView> view;
+    MindMapController *controller;
+    QWidget *heading, *body;
+    QLabel *title, *subtitle;
+    QScrollArea *scroll;
+    QComboBox *fontSize;
+    QToolButton *toggle, *bold, *italic, *textColor, *fillColor;
+    QPushButton *defaultColor;
+    QLineEdit *tags, *icons, *url;
+    QPlainTextEdit *note;
+    QList<QToolButton *> swatches;
+    QString boundId;
+    NodeStyle currentStyle;
+    int presetCount = 0;
+    bool refreshing = false;
+    static QStringList commaValues(const QString &text) {
+        QStringList values;
+        for (const auto &part : text.split(QLatin1Char(','))) {
+            const QString value = part.trimmed();
+            if (!value.isEmpty()) values.append(value);
+        }
+        return values;
+    }
+    QString colorKey() const {
+        return fillColor->isChecked() ? QStringLiteral("background") : QStringLiteral("color");
+    }
+    void applyStyle(const QJsonObject &style) {
+        apply({{QStringLiteral("style"), style}});
+    }
+    void apply(const QJsonObject &patch) {
+        if (refreshing || boundId.isEmpty()) return;
+        const QString id = boundId;
+        const QByteArray json = QJsonDocument(patch).toJson(QJsonDocument::Compact);
+        controller->updateNodeProperties(id, json);
+        // Re-read even after a no-op or a nested load/new from a host signal handler.
+        refresh();
+    }
+    void refreshColors() {
+        const QColor color = fillColor->isChecked() ? currentStyle.backgroundColor : currentStyle.textColor;
+        for (auto *button : swatches) {
+            const QSignalBlocker blocker(button);
+            button->setChecked(color.isValid() && color == QColor(button->property("color").toString()));
+        }
+        const QSignalBlocker blocker(defaultColor);
+        defaultColor->setChecked(!color.isValid());
+        defaultColor->setToolTip(fillColor->isChecked() ? tr("Use the default fill") : tr("Use the default text color"));
+    }
+    void refresh() {
+        const auto properties = controller->nodeProperties(controller->selectedNodeId());
+        const bool sameNode = properties.id.isEmpty() == false && properties.id == boundId;
+        const QScopedValueRollback<bool> guard(refreshing, true);
+        boundId = properties.id;
+        currentStyle = properties.style;
+        subtitle->setText(properties.topic);
+        subtitle->setToolTip(QStringLiteral("<qt>%1</qt>").arg(properties.topic.toHtmlEscaped()));
+        auto refreshList = [sameNode](QLineEdit *input, const QStringList &values) {
+            const QString text = values.join(QStringLiteral(", "));
+            if (!sameNode || (commaValues(input->text()) != values && input->text() != text)) {
+                const QSignalBlocker blocker(input);
+                input->setText(text);
+            }
+        };
+        refreshList(tags, properties.tags);
+        refreshList(icons, properties.icons);
+        if (!sameNode || url->text() != properties.hyperlink) {
+            const QSignalBlocker blocker(url);
+            url->setText(properties.hyperlink);
+        }
+        if (!sameNode || note->toPlainText() != properties.note) {
+            const QSignalBlocker blocker(note);
+            note->setPlainText(properties.note);
+        }
+        {
+            const QSignalBlocker blocker(fontSize);
+            int index = fontSize->findData(double(properties.style.fontSize));
+            if (index < 0) {
+                if (fontSize->count() > presetCount) fontSize->removeItem(presetCount);
+                fontSize->addItem(tr("%1 px").arg(QString::number(properties.style.fontSize, 'g', 6)), double(properties.style.fontSize));
+                index = presetCount;
+            } else if (index < presetCount && fontSize->count() > presetCount) {
+                fontSize->removeItem(presetCount);
+            }
+            fontSize->setCurrentIndex(index);
+        }
+        {
+            const QSignalBlocker blocker(bold);
+            bold->setChecked(properties.style.bold.value_or(properties.root));
+            bold->setToolTip(properties.style.bold.has_value()
+                ? tr("Explicit font weight; Reset appearance restores the default")
+                : tr("Default font weight for this node"));
+        }
+        {
+            const QSignalBlocker blocker(italic);
+            italic->setChecked(properties.style.italic.value_or(view && view->font().italic()));
+            italic->setToolTip(properties.style.italic.has_value()
+                ? tr("Explicit font style; Reset appearance restores the default")
+                : tr("Default font style for this node"));
+        }
+        refreshColors();
+        reposition();
+    }
+    void reposition() {
+        if (!view || boundId.isEmpty()) { hide(); return; }
+        const QRect viewport(view->viewport()->mapTo(parentWidget(), QPoint()), view->viewport()->size());
+        const QRect available = viewport.intersected(parentWidget()->rect()).adjusted(12, 12, -12, -12);
+        if (available.isEmpty()) { hide(); return; }
+        const bool expanded = toggle->isChecked();
+        title->setVisible(expanded);
+        subtitle->setVisible(expanded);
+        scroll->setVisible(expanded);
+        heading->layout()->setContentsMargins(expanded ? QMargins(12, 8, 8, 9) : QMargins());
+        toggle->setArrowType(expanded ? Qt::UpArrow : Qt::DownArrow);
+        const QString action = expanded ? tr("Collapse node properties") : tr("Expand node properties");
+        toggle->setToolTip(action);
+        toggle->setAccessibleName(action);
+        heading->layout()->activate();
+        layout()->activate();
+        const QSize header = heading->sizeHint();
+        const int width = qMin(expanded ? 300 : header.width() + 2, available.width());
+        const int height = qMin(header.height() + (expanded ? body->sizeHint().height() : 0) + 2, available.height());
+        setGeometry(available.right() - width + 1, available.top(), width, height);
+        show();
+        raise();
+    }
+};
+}
 class MindMapEditor::Private {
 public:
     MindMapEditor *host;
@@ -230,6 +638,7 @@ public:
         action("fit", tr("Fit"), config.shortcuts.fit, [this] { view->fitContents(); });
         rootSelection = action("selectRoot", tr("Focus main node"), config.shortcuts.selectRoot, [this] { host->focusRoot(); });
         direction = new QComboBox(toolbar);
+        direction->setObjectName(QStringLiteral("layoutDirection"));
         direction->addItem(tr("Balanced"), int(LayoutDirection::Balanced));
         direction->addItem(tr("Right"), int(LayoutDirection::Right));
         direction->addItem(tr("Left"), int(LayoutDirection::Left));
@@ -249,6 +658,7 @@ public:
         };
         clearSelectionAction = action("clearSelection", tr("Clear selection"), config.shortcuts.clearSelection, [this] { controller->clearSelection(); }, false);
         layout->addWidget(view, 1); layout->addWidget(error);
+        new NodePropertiesPanel(editor, view, controller);
         view->setContextMenuPolicy(Qt::CustomContextMenu);
         QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this](const QPoint &point) {
             view->finishTopicEdit(true);

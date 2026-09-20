@@ -18,6 +18,7 @@ public:
     QString lastError() const { return error; }
     QString addNode(const QString &parent, const QString &topic, int index);
     bool renameNode(const QString &id, const QString &topic);
+    bool updateNodeProperties(const QString &id, const QByteArray &patch);
     bool removeNode(const QString &id);
     bool moveNode(const QString &id, const QString &parent, int index);
     bool setExpanded(const QString &id, bool expanded);
@@ -32,6 +33,7 @@ public:
     bool setLayoutDirection(MindMapEditor::LayoutDirection direction);
     MindMapEditor::LayoutDirection layoutDirection() const { return direction; }
     std::vector<NodeChoice> choices();
+    NodeProperties nodeProperties(const QString &id);
     LinkPresentation linkChoice(const QString &id);
     void refreshAppearance();
 signals:
