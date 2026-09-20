@@ -1647,6 +1647,67 @@ static void properties_case() {
     CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "Renamed from inline editor");
     CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("tags") == Json::array({"new"}));
     CHECK(editor.selectedNodeId() == QStringLiteral("a") && errors.isEmpty());
+
+    // Rebuilds must preserve one fixed camera anchor across all edits, even at half-pixel midpoints.
+    for (int parity : {0, 1}) for (bool zoomed : {false, true}) {
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor, QSize(1100, 900));
+        if (scroll->isHidden()) click("nodePropertiesToggle");
+        editor.resize(editor.width() + (view.viewport()->width() % 2 != parity),
+                      editor.height() + (view.viewport()->height() % 2 != parity));
+        pump();
+        CHECK(view.viewport()->width() % 2 == parity && view.viewport()->height() % 2 == parity);
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        trigger(editor, "resetZoom");
+        if (zoomed) trigger(editor, "zoomIn");
+        reveal(note);
+        note->setFocus(Qt::OtherFocusReason);
+        pump();
+        CHECK(note->hasFocus() && note->toPlainText().isEmpty());
+        CHECK(std::abs(view.transform().m11() - (zoomed ? 1.2 : 1.0)) < 1e-6);
+        changed.clear();
+
+        const QTransform initialTransform = view.transform();
+        const QPointF anchor = view.mapToScene(QPoint(0, 0));
+        const QPointF initialPosition = view.viewportTransform().map(anchor);
+        const QRectF initialRect = topicRect(editor, QStringLiteral("Alpha"));
+        auto cameraUnchanged = [&] {
+            const QPointF displacement = view.viewportTransform().map(anchor) - initialPosition;
+            CHECK(std::abs(displacement.x()) <= 1e-6);
+            CHECK(std::abs(displacement.y()) <= 1e-6);
+            CHECK(view.transform() == initialTransform);
+            CHECK(editor.selectedNodeId() == QStringLiteral("a") && editor.selectedLinkId().isEmpty());
+        };
+        for (int i = 0; i < 50; ++i) {
+            QTest::keyClick(note, Qt::Key_A);
+            pump();
+            cameraUnchanged();
+            CHECK(topicRect(editor, QStringLiteral("Alpha")) == initialRect);
+            CHECK(changed.size() == i + 1);
+        }
+        const QString expectedNote(50, QLatin1Char('a'));
+        CHECK(note->toPlainText() == expectedNote);
+        CHECK(qs(record(exported(editor), "nodes", QStringLiteral("a")).at("note")) == expectedNote);
+
+        click("nodeTextColor");
+        cameraUnchanged();
+        CHECK(topicRect(editor, QStringLiteral("Alpha")) == initialRect);
+        for (int i = 0; i < 20; ++i) {
+            click(i % 2 == 0 ? "nodeColor_2980b9" : "nodeColor_e74c3c");
+            cameraUnchanged();
+            CHECK(topicRect(editor, QStringLiteral("Alpha")) == initialRect);
+            const QString color = i % 2 == 0 ? QStringLiteral("#2980b9") : QStringLiteral("#e74c3c");
+            CHECK(textItem(editor, QStringLiteral("Alpha"))->defaultTextColor() == QColor(color));
+            CHECK(qs(record(exported(editor), "nodes", QStringLiteral("a")).at("style").at("color")) == color);
+        }
+        for (int i = 0; i < 10; ++i) {
+            click("nodeBold");
+            cameraUnchanged();
+            // Typography may reflow layout, but it must not translate the camera.
+            CHECK(textItem(editor, QStringLiteral("Alpha"))->font().bold() == button("nodeBold")->isChecked());
+        }
+        CHECK(errors.isEmpty());
+    }
 }
 
 static void focus_root_case() {
@@ -1745,6 +1806,23 @@ static void navigation_case() {
     reset.trigger();
     pump();
     CHECK(std::abs(view.transform().m11() - 1.0) < 1e-6);
+
+    // Repeated 100% resets are idempotent, including the even-size midpoint boundary.
+    editor.resize(editor.width() + view.viewport()->width() % 2,
+                  editor.height() + view.viewport()->height() % 2);
+    pump();
+    CHECK(view.viewport()->width() % 2 == 0 && view.viewport()->height() % 2 == 0);
+    const QTransform resetTransform = view.transform();
+    const QPointF resetAnchor = view.mapToScene(QPoint(0, 0));
+    const QPointF resetPosition = view.viewportTransform().map(resetAnchor);
+    for (int i = 0; i < 50; ++i) {
+        trigger(editor, "resetZoom");
+        const QPointF displacement = view.viewportTransform().map(resetAnchor) - resetPosition;
+        CHECK(std::abs(displacement.x()) <= 1e-6);
+        CHECK(std::abs(displacement.y()) <= 1e-6);
+        CHECK(view.transform() == resetTransform);
+    }
+
     zoomIn.trigger();
     CHECK(std::abs(view.transform().m11() - 1.2) < 1e-6);
     zoomOut.trigger();

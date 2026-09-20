@@ -170,6 +170,11 @@ QPointF boundary(const QRectF &rect, const QPointF &towards) {
     const qreal y = delta.y() == 0 ? std::numeric_limits<qreal>::infinity() : rect.height() / (2 * std::abs(delta.y()));
     return rect.center() + delta * std::min(x, y);
 }
+QPointF sceneCenter(const QGraphicsView &view, const QSize &viewportSize) {
+    // centerOn uses width/height divided by two, not QRect's inclusive integer center.
+    const QPointF midpoint(viewportSize.width() / 2.0, viewportSize.height() / 2.0);
+    return view.viewportTransform().inverted().map(midpoint);
+}
 }
 MindMapView::MindMapView(QWidget *parent) : QGraphicsView(parent) {
     setScene(new QGraphicsScene(this));
@@ -449,7 +454,7 @@ void MindMapView::install(Presentation presentation, bool fit) {
         if (topicEditor && item->id == editedId) replacementLabel = item->label;
     }
     replacement->setSceneRect(replacement->itemsBoundingRect().adjusted(-32, -32, 32, 32));
-    const QPointF center = mapToScene(viewport()->rect().center());
+    const QPointF center = sceneCenter(*this, viewport()->size());
     if (topicEditor) {
         if (fit || !replacementLabel || replacementLabel->toPlainText() != originalTopic) {
             finishTopicEdit(false);
@@ -520,7 +525,7 @@ void MindMapView::fitContents() {
 }
 void MindMapView::zoom(qreal factor) {
     pendingFit = false;
-    const QPointF center = mapToScene(viewport()->rect().center());
+    const QPointF center = sceneCenter(*this, viewport()->size());
     const qreal current = transform().m11();
     const qreal target = std::clamp(current * factor, qreal(0.1), qreal(4));
     scale(target / current, target / current);
@@ -529,7 +534,7 @@ void MindMapView::zoom(qreal factor) {
 }
 void MindMapView::resetZoom() {
     pendingFit = false;
-    const QPointF center = mapToScene(viewport()->rect().center());
+    const QPointF center = sceneCenter(*this, viewport()->size());
     resetTransform(); preserveCenter(center);
     updateTopicEditorGeometry();
 }
@@ -631,7 +636,7 @@ void MindMapView::mouseMoveEvent(QMouseEvent *event) {
             // Keep the original scene point under the pointer; incremental centering loses pixels.
             const QPointF delta = panPosition - mapToScene(current);
             pendingFit = false;
-            preserveCenter(mapToScene(viewport()->rect().center()) + delta);
+            preserveCenter(sceneCenter(*this, viewport()->size()) + delta);
             event->accept();
             return;
         }
@@ -678,7 +683,7 @@ void MindMapView::wheelEvent(QWheelEvent *event) {
         const QPointF before = mapToScene(position);
         zoom(std::pow(1.2, event->angleDelta().y() / 120.0));
         const QPointF after = mapToScene(position);
-        preserveCenter(mapToScene(viewport()->rect().center()) + before - after);
+        preserveCenter(sceneCenter(*this, viewport()->size()) + before - after);
         updateTopicEditorGeometry();
         event->accept();
     } else QGraphicsView::wheelEvent(event);
@@ -691,7 +696,7 @@ void MindMapView::preserveCenter(const QPointF &center) {
     centerOn(center);
 }
 void MindMapView::resizeEvent(QResizeEvent *event) {
-    const QPointF center = mapToScene(QRect(QPoint(), event->oldSize()).center());
+    const QPointF center = sceneCenter(*this, event->oldSize());
     QGraphicsView::resizeEvent(event);
     if (pendingFit) fitContents();
     else if (event->oldSize().isValid()) preserveCenter(center);
