@@ -156,7 +156,10 @@ public:
             {"#2ecc71", QT_TR_NOOP("Green")}, {"#27ae60", QT_TR_NOOP("Forest")},
             {"#1abc9c", QT_TR_NOOP("Teal")}, {"#16a085", QT_TR_NOOP("Jade")},
             {"#3498db", QT_TR_NOOP("Blue")}, {"#2980b9", QT_TR_NOOP("Ocean")},
-            {"#9b59b6", QT_TR_NOOP("Purple")}, {"#8e44ad", QT_TR_NOOP("Violet")}
+            {"#9b59b6", QT_TR_NOOP("Purple")}, {"#8e44ad", QT_TR_NOOP("Violet")},
+            {"#ffb6c1", QT_TR_NOOP("Pink")}, {"#f4a6a6", QT_TR_NOOP("Rose")},
+            {"#ffd3a5", QT_TR_NOOP("Peach")}, {"#a8e6cf", QT_TR_NOOP("Mint")},
+            {"#a9d6f5", QT_TR_NOOP("Sky")}, {"#d7bde2", QT_TR_NOOP("Lavender")}
         };
         for (const auto &entry : colors) {
             const QString hex = QString::fromLatin1(entry.hex);
