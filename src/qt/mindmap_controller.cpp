@@ -112,10 +112,14 @@ void MindMapController::install(Presentation presentation, bool fit) {
     visibleLinks.swap(links);
 }
 void MindMapController::selection(const QString &node, const QString &link) {
-    if (node == selectedNode && link == selectedLink) return;
+    if (node == selectedNode && link == selectedLink) {
+        view.ensureNodeVisible(node);
+        return;
+    }
     selectedNode = node;
     selectedLink = link;
     view.setSelection(node, link);
+    view.ensureNodeVisible(node);
     emit selectionChanged(node, link);
 }
 bool MindMapController::replace(Map candidate) {

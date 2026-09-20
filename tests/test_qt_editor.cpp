@@ -1107,6 +1107,72 @@ static void navigation_case() {
     wheel(view, view.viewport()->rect().center(), 120, Qt::ControlModifier);
     CHECK(std::abs(view.transform().m11() - 0.1) < 1e-6);
     CHECK(changed.size() == largeChanges);
+
+    // Reveal full node bounds without changing zoom or manufacturing selection changes.
+    wheel(view, view.viewport()->rect().center(), 120 * 50, Qt::ControlModifier);
+    const qreal selectionScale = view.transform().m11();
+    const Json beforeVisibility = exported(editor);
+    const auto selectionCount = selected.size();
+    auto mappedNode = [&](const QString &topic) {
+        return view.mapFromScene(topicRect(editor, topic)).boundingRect();
+    };
+    auto fullyVisible = [&](const QString &topic) {
+        return view.viewport()->rect().adjusted(-1, -1, 1, 1).contains(mappedNode(topic));
+    };
+    auto partiallyHide = [&](const QRectF &bounds) {
+        const QRect mapped = view.mapFromScene(bounds).boundingRect();
+        CHECK(mapped.width() < view.viewport()->width() && mapped.height() < view.viewport()->height());
+        const QPoint desired(view.viewport()->width() - mapped.width() / 2,
+                             view.viewport()->height() - mapped.height() / 2);
+        view.horizontalScrollBar()->setValue(view.horizontalScrollBar()->value() + mapped.left() - desired.x());
+        view.verticalScrollBar()->setValue(view.verticalScrollBar()->value() + mapped.top() - desired.y());
+        pump();
+        const QRect clipped = view.mapFromScene(bounds).boundingRect();
+        CHECK(view.viewport()->rect().intersects(clipped));
+        CHECK(!view.viewport()->rect().adjusted(-1, -1, 1, 1).contains(clipped));
+    };
+    const QString lastTopic = QStringLiteral("Tall map branch 179");
+    partiallyHide(topicRect(editor, lastTopic));
+    CHECK(editor.selectNode(QStringLiteral("large-179")));
+    pump();
+    CHECK(fullyVisible(lastTopic) && selected.size() == selectionCount + 1);
+    partiallyHide(topicRect(editor, lastTopic));
+    CHECK(editor.selectNode(QStringLiteral("large-179")));
+    pump();
+    CHECK(fullyVisible(lastTopic) && selected.size() == selectionCount + 1);
+
+    const QString middleTopic = QStringLiteral("Tall map branch 90");
+    partiallyHide(topicRect(editor, middleTopic));
+    const QPoint clippedHit = mappedNode(middleTopic).intersected(view.viewport()->rect()).center();
+    CHECK(belongsTo(view.itemAt(clippedHit), ownerItem(textItem(editor, middleTopic))));
+    // Do not use clickLabel: its own ensureVisible would hide the missing product scroll.
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, clippedHit);
+    pump();
+    CHECK(editor.selectedNodeId() == QStringLiteral("large-90") && fullyVisible(middleTopic));
+    const QString nextTopic = QStringLiteral("Tall map branch 91");
+    CHECK(!fullyVisible(nextTopic));
+    shortcut(editor, Qt::Key_Down);
+    CHECK(editor.selectedNodeId() == QStringLiteral("large-91") && fullyVisible(nextTopic));
+    CHECK(selected.size() == selectionCount + 3 && exported(editor) == beforeVisibility && changed.size() == largeChanges);
+    CHECK(std::abs(view.transform().m11() - selectionScale) < 1e-6);
+
+    const QRectF oldBounds = topicRect(editor, nextTopic);
+    shortcut(editor, Qt::Key_F2);
+    partiallyHide(oldBounds);
+    const QString grown = QStringLiteral("Committed branch with a wider topic\nSecond line\nThird line");
+    topicInput(editor).setPlainText(grown);
+    topicKey(editor, Qt::Key_Return);
+    CHECK(record(exported(editor), "nodes", QStringLiteral("large-91")).at("topic") == utf8(grown));
+    CHECK(fullyVisible(grown) && changed.size() == largeChanges + 1 && selected.size() == selectionCount + 3);
+    CHECK(std::abs(view.transform().m11() - selectionScale) < 1e-6);
+
+    const Json committed = exported(editor);
+    const QRectF committedBounds = topicRect(editor, grown);
+    shortcut(editor, Qt::Key_F2);
+    partiallyHide(committedBounds);
+    topicKey(editor, Qt::Key_Return, Qt::ControlModifier);
+    CHECK(fullyVisible(grown) && exported(editor) == committed && changed.size() == largeChanges + 1);
+    CHECK(std::abs(view.transform().m11() - selectionScale) < 1e-6);
 }
 
 static void inline_edit_case() {

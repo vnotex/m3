@@ -259,6 +259,7 @@ void MindMapView::finishTopicEdit(bool commit, bool restoreFocus) {
     input->deleteLater();
     emit topicEditingChanged(false);
     if (commit && draft != original) emit topicEditRequested(id, draft);
+    if (commit) ensureNodeVisible(id);
     if (restoreFocus) setFocus(Qt::OtherFocusReason);
 }
 void MindMapView::updateTopicEditorGeometry() {
@@ -444,6 +445,15 @@ void MindMapView::setSelection(const QString &node, const QString &link) {
     for (auto *item : scene()->items()) {
         if (auto *n = dynamic_cast<NodeItem *>(item)) n->setSelected(n->id == node);
         else if (auto *l = dynamic_cast<LinkItem *>(item)) l->setSelected(l->id == link);
+    }
+}
+void MindMapView::ensureNodeVisible(const QString &id) {
+    if (id.isEmpty() || !isVisible()) return;
+    for (auto *item : scene()->items()) {
+        if (auto *node = dynamic_cast<NodeItem *>(item); node && node->id == id) {
+            ensureVisible(node, 0, 0);
+            return;
+        }
     }
 }
 void MindMapView::fitContents() {

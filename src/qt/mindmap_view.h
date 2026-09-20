@@ -20,6 +20,7 @@ public:
     void install(Presentation presentation, bool fit);
     void showError(const QString &message);
     void setSelection(const QString &node, const QString &link);
+    void ensureNodeVisible(const QString &id);
     void fitContents();
     void zoom(qreal factor);
     void resetZoom();

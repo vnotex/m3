@@ -28,6 +28,8 @@
 // IDs are case-sensitive. Index -1 appends; move indexes apply after removal.
 // Only visible nodes/links can be selected, exclusively; hidden data is preserved.
 // Selection, layout direction, zoom/pan and fit never change persisted JSON.
+// Selecting a node or accepting an inline topic scrolls its full bounds into view
+// without changing zoom; oversized nodes can only be partially shown by scrolling.
 // Topics/labels are plain Unicode text. Embedded NULs are rejected.
 namespace m3::qt {
 // Widget policy, copied at construction; no Qt-specific configuration enters the core.
