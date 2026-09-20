@@ -1519,7 +1519,11 @@ static void properties_case() {
     CHECK(textItem(roundtrip, QStringLiteral("Alpha"))->font().italic());
     CHECK(editor.selectedNodeId() == QStringLiteral("a") && view.transform() == zoom);
     const auto beforeReset = changed.size();
-    click("nodeResetAppearance");
+    auto *reset = button("nodeResetAppearance");
+    reveal(reset);
+    reset->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(reset, Qt::Key_Space);
+    pump();
     CHECK(exported(editor) == expected && changed.size() == beforeReset + 1);
     CHECK(topicRect(editor, QStringLiteral("Alpha")).size() == normalRect.size());
     CHECK(textItem(editor, QStringLiteral("Alpha"))->font().italic() == editor.font().italic());
@@ -1707,6 +1711,78 @@ static void properties_case() {
             CHECK(textItem(editor, QStringLiteral("Alpha"))->font().bold() == button("nodeBold")->isChecked());
         }
         CHECK(errors.isEmpty());
+    }
+    // Auto removes only the active color override, never typography or opaque data.
+    {
+        Editor colorsEditor;
+        Json colorsInput = editorFixture();
+        jsonNode(colorsInput, "a")["style"] = Json{
+            {"fontSize", 24}, {"fontWeight", "bold"}, {"fontStyle", "italic"},
+            {"color", "#2980b9"}, {"background", "#e74c3c"},
+            {"custom", {{"integer", UINT64_C(9007199254740993)}, {"nested", Json::array({true, "opaque"})}}}};
+        jsonNode(colorsInput, "b")["style"]["color"] = "#d7bde2";
+        CHECK(colorsEditor.loadJson(encoded(colorsInput)));
+        showEditor(colorsEditor, QSize(1100, 900));
+        CHECK(colorsEditor.selectNode(QStringLiteral("a")));
+        auto *colorsPanel = colorsEditor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
+        CHECK(colorsPanel != nullptr);
+        auto *colorsScroll = colorsPanel->findChild<QScrollArea *>();
+        CHECK(colorsScroll != nullptr);
+        auto colorButton = [&](const char *name) {
+            auto *control = colorsPanel->findChild<QAbstractButton *>(QString::fromLatin1(name));
+            CHECK(control != nullptr);
+            colorsScroll->ensureWidgetVisible(control);
+            pump();
+            return control;
+        };
+        auto colorClick = [&](const char *name) {
+            QTest::mouseClick(colorButton(name), Qt::LeftButton);
+            pump();
+        };
+        auto autoSpace = [&] {
+            auto *control = colorButton("nodeDefaultColor");
+            control->setFocus(Qt::OtherFocusReason);
+            QTest::keyClick(control, Qt::Key_Space);
+            pump();
+        };
+        auto *automatic = colorButton("nodeDefaultColor");
+        Json colorsExpected = exported(colorsEditor);
+        QSignalSpy colorChanges(&colorsEditor, &Editor::documentChanged);
+        colorClick("nodeTextColor");
+        CHECK(!automatic->isChecked());
+        colorClick("nodeDefaultColor");
+        jsonNode(colorsExpected, "a")["style"].erase("color");
+        CHECK(exported(colorsEditor) == colorsExpected && colorChanges.size() == 1);
+        CHECK(automatic->isChecked());
+        autoSpace();
+        CHECK(exported(colorsEditor) == colorsExpected && colorChanges.size() == 1);
+        CHECK(automatic->isChecked());
+
+        colorClick("nodeFillColor");
+        CHECK(!automatic->isChecked());
+        autoSpace();
+        jsonNode(colorsExpected, "a")["style"].erase("background");
+        CHECK(exported(colorsEditor) == colorsExpected && colorChanges.size() == 2);
+        CHECK(automatic->isChecked());
+        colorClick("nodeTextColor");
+        CHECK(automatic->isChecked());
+
+        colorClick("nodeColor_ffffff");
+        jsonNode(colorsExpected, "a")["style"]["color"] = "#ffffff";
+        CHECK(record(exported(colorsEditor), "nodes", QStringLiteral("a")).at("style").at("color") == "#ffffff");
+        CHECK(exported(colorsEditor) == colorsExpected && colorChanges.size() == 3);
+        CHECK(!automatic->isChecked());
+        autoSpace();
+        jsonNode(colorsExpected, "a")["style"].erase("color");
+        CHECK(exported(colorsEditor) == colorsExpected && colorChanges.size() == 4);
+        CHECK(automatic->isChecked());
+
+        CHECK(colorsEditor.selectNode(QStringLiteral("b")));
+        CHECK(!automatic->isChecked());
+        CHECK(exported(colorsEditor) == colorsExpected && colorChanges.size() == 4);
+        CHECK(colorsEditor.selectNode(QStringLiteral("a")));
+        CHECK(automatic->isChecked());
+        CHECK(exported(colorsEditor) == colorsExpected && colorChanges.size() == 4);
     }
 }
 

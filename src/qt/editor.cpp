@@ -11,15 +11,20 @@
 #include <QFrame>
 #include <QFormLayout>
 #include <QGridLayout>
+#include <QIconEngine>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPalette>
+#include <QPen>
+#include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPointer>
-#include <QPushButton>
 #include <QScopedValueRollback>
 #include <QScrollArea>
 #include <QSignalBlocker>
@@ -32,6 +37,49 @@
 #include <QVBoxLayout>
 namespace m3::qt {
 namespace {
+// Lucide: https://lucide.dev/icons/rotate-ccw; notice: third_party/lucide/LICENSE.
+class RotateCcwIconEngine final : public QIconEngine {
+public:
+    explicit RotateCcwIconEngine(const QPalette &palette) : palette(palette) {}
+    QIconEngine *clone() const override { return new RotateCcwIconEngine(*this); }
+    void paint(QPainter *painter, const QRect &rect, QIcon::Mode mode, QIcon::State) override {
+        if (rect.isEmpty()) return;
+        static const QPainterPath glyph = [] {
+            QPainterPath path;
+            path.moveTo(3, 12);
+            path.arcTo(QRectF(3, 3, 18, 18), 180, 270);
+            path.arcTo(QRectF(2.2866781853, 2.9999310106, 19.5, 19.5),
+                       90.2155395051, 43.8151773805);
+            path.lineTo(3, 8);
+            path.moveTo(3, 3);
+            path.lineTo(3, 8);
+            path.lineTo(8, 8);
+            return path;
+        }();
+        const auto group = mode == QIcon::Disabled ? QPalette::Disabled : palette.currentColorGroup();
+        const auto role = mode == QIcon::Selected ? QPalette::HighlightedText : QPalette::ButtonText;
+        const qreal side = qMin(rect.width(), rect.height());
+        painter->save();
+        painter->translate(rect.x() + (rect.width() - side) / 2, rect.y() + (rect.height() - side) / 2);
+        painter->scale(side / 24, side / 24);
+        painter->setRenderHint(QPainter::Antialiasing);
+        painter->setBrush(Qt::NoBrush);
+        painter->setPen(QPen(palette.color(group, role), 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter->drawPath(glyph);
+        painter->restore();
+    }
+    QPixmap pixmap(const QSize &size, QIcon::Mode mode, QIcon::State state) override {
+        if (size.isEmpty()) return QPixmap();
+        QPixmap result(size);
+        result.fill(Qt::transparent);
+        QPainter painter(&result);
+        paint(&painter, QRect(QPoint(0, 0), size), mode, state);
+        painter.end();
+        return result;
+    }
+private:
+    QPalette palette;
+};
 class NodePropertiesPanel final : public QFrame {
 public:
     NodePropertiesPanel(MindMapEditor *host, MindMapView *canvas, MindMapController *model)
@@ -41,10 +89,11 @@ public:
         setStyleSheet(QStringLiteral(
             "QFrame#nodePropertiesPanel { background: palette(window); border: 1px solid palette(mid); border-radius: 10px; }"
             "QLabel#nodePropertiesTitle { font-weight: 600; }"
-            "QToolButton#nodeBold, QToolButton#nodeItalic, QToolButton#nodeTextColor, QToolButton#nodeFillColor {"
+            "QToolButton#nodeBold, QToolButton#nodeItalic, QToolButton#nodeResetAppearance, QToolButton#nodeTextColor, QToolButton#nodeFillColor {"
             " border: 1px solid palette(mid); border-radius: 4px; padding: 4px 8px; }"
             "QToolButton#nodeBold:checked, QToolButton#nodeItalic:checked, QToolButton#nodeTextColor:checked, QToolButton#nodeFillColor:checked {"
-            " background: palette(highlight); color: palette(highlighted-text); }"));
+            " background: palette(highlight); color: palette(highlighted-text); }"
+            "QToolButton#nodeResetAppearance:focus { border: 2px dashed palette(button-text); }"));
         auto *layout = new QVBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(0);
@@ -120,10 +169,21 @@ public:
         auto italicFont = italic->font();
         italicFont.setItalic(true);
         italic->setFont(italicFont);
+        reset = new QToolButton(body);
+        reset->setObjectName(QStringLiteral("nodeResetAppearance"));
+        reset->setText(tr("Reset appearance"));
+        reset->setAccessibleName(tr("Reset appearance"));
+        reset->setToolTip(tr("Restore default font, text color and fill"));
+        reset->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        reset->setFocusPolicy(Qt::StrongFocus);
+        reset->setIconSize(QSize(16, 16));
+        reset->setIcon(QIcon(new RotateCcwIconEngine(reset->palette())));
+        reset->installEventFilter(this);
         fontRow->addWidget(sizeLabel);
         fontRow->addWidget(fontSize, 1);
         fontRow->addWidget(bold);
         fontRow->addWidget(italic);
+        fontRow->addWidget(reset);
         content->addLayout(fontRow);
         auto *modeRow = new QHBoxLayout;
         auto *modes = new QButtonGroup(this);
@@ -146,6 +206,26 @@ public:
         content->addLayout(modeRow);
         auto *palette = new QGridLayout;
         palette->setSpacing(6);
+        auto makeSwatch = [this](const QString &background, const QString &contrast) {
+            auto *button = new QToolButton(body);
+            button->setCheckable(true);
+            button->setFocusPolicy(Qt::StrongFocus);
+            button->setMinimumWidth(24);
+            button->setFixedHeight(26);
+            button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            button->setStyleSheet(QStringLiteral(
+                "QToolButton { background: %1; color: %2; border: 1px solid palette(mid); border-radius: 4px; }"
+                "QToolButton:hover { border: 2px solid %2; }"
+                "QToolButton:checked { border: 3px solid %2; }"
+                "QToolButton:focus { border: 2px dashed %2; }").arg(background, contrast));
+            return button;
+        };
+        defaultColor = makeSwatch(QStringLiteral("palette(button)"), QStringLiteral("palette(button-text)"));
+        defaultColor->setObjectName(QStringLiteral("nodeDefaultColor"));
+        defaultColor->setText(tr("Auto"));
+        defaultColor->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        defaultColor->setAccessibleName(tr("Default color"));
+        palette->addWidget(defaultColor, 0, 0);
         struct Swatch { const char *hex; const char *name; };
         const Swatch colors[] = {
             {"#ffffff", QT_TR_NOOP("White")}, {"#ecf0f1", QT_TR_NOOP("Cloud")},
@@ -159,28 +239,18 @@ public:
             {"#9b59b6", QT_TR_NOOP("Purple")}, {"#8e44ad", QT_TR_NOOP("Violet")},
             {"#ffb6c1", QT_TR_NOOP("Pink")}, {"#f4a6a6", QT_TR_NOOP("Rose")},
             {"#ffd3a5", QT_TR_NOOP("Peach")}, {"#a8e6cf", QT_TR_NOOP("Mint")},
-            {"#a9d6f5", QT_TR_NOOP("Sky")}, {"#d7bde2", QT_TR_NOOP("Lavender")}
+            {"#a9d6f5", QT_TR_NOOP("Sky")}
         };
         for (const auto &entry : colors) {
             const QString hex = QString::fromLatin1(entry.hex);
             const QString description = tr("%1 (%2)").arg(tr(entry.name), hex);
-            auto *button = new QToolButton(body);
+            const QString contrast = QColor(hex).lightnessF() > 0.55 ? QStringLiteral("#202020") : QStringLiteral("#ffffff");
+            auto *button = makeSwatch(hex, contrast);
             button->setObjectName(QStringLiteral("nodeColor_") + hex.mid(1));
             button->setProperty("color", hex);
             button->setAccessibleName(description);
             button->setToolTip(description);
-            button->setCheckable(true);
-            button->setFocusPolicy(Qt::StrongFocus);
-            button->setMinimumWidth(24);
-            button->setFixedHeight(26);
-            button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-            const QString contrast = QColor(hex).lightnessF() > 0.55 ? QStringLiteral("#202020") : QStringLiteral("#ffffff");
-            button->setStyleSheet(QStringLiteral(
-                "QToolButton { background: %1; border: 1px solid palette(mid); border-radius: 4px; }"
-                "QToolButton:hover { border: 2px solid %2; }"
-                "QToolButton:checked { border: 3px solid %2; }"
-                "QToolButton:focus { border: 2px dashed %2; }").arg(hex, contrast));
-            const int index = int(swatches.size());
+            const int index = int(swatches.size()) + 1;
             palette->addWidget(button, index / 6, index % 6);
             swatches.append(button);
             connect(button, &QToolButton::toggled, this, [this, hex](bool checked) {
@@ -189,16 +259,6 @@ public:
             });
         }
         content->addLayout(palette);
-        auto *colorActions = new QHBoxLayout;
-        defaultColor = new QPushButton(tr("Default color"), body);
-        defaultColor->setObjectName(QStringLiteral("nodeDefaultColor"));
-        defaultColor->setCheckable(true);
-        auto *reset = new QPushButton(tr("Reset appearance"), body);
-        reset->setObjectName(QStringLiteral("nodeResetAppearance"));
-        reset->setToolTip(tr("Restore default font, text color and fill"));
-        colorActions->addWidget(defaultColor);
-        colorActions->addWidget(reset);
-        content->addLayout(colorActions);
         auto *separator = new QFrame(body);
         separator->setFrameShape(QFrame::HLine);
         separator->setFrameShadow(QFrame::Sunken);
@@ -254,11 +314,11 @@ public:
         connect(italic, &QToolButton::toggled, this, [this](bool checked) {
             applyStyle({{QStringLiteral("fontStyle"), checked ? QStringLiteral("italic") : QStringLiteral("normal")}});
         });
-        connect(defaultColor, &QPushButton::toggled, this, [this](bool checked) {
+        connect(defaultColor, &QToolButton::toggled, this, [this](bool checked) {
             if (checked) applyStyle({{colorKey(), QJsonValue(QJsonValue::Null)}});
             else refreshColors();
         });
-        connect(reset, &QPushButton::clicked, this, [this] {
+        connect(reset, &QToolButton::clicked, this, [this] {
             applyStyle({{QStringLiteral("fontSize"), QJsonValue(QJsonValue::Null)},
                         {QStringLiteral("fontWeight"), QJsonValue(QJsonValue::Null)},
                         {QStringLiteral("fontStyle"), QJsonValue(QJsonValue::Null)},
@@ -294,6 +354,9 @@ protected:
         case QEvent::StyleChange:
             reposition();
             break;
+        case QEvent::PaletteChange:
+            if (watched == reset) reset->setIcon(QIcon(new RotateCcwIconEngine(reset->palette())));
+            break;
         case QEvent::FontChange:
             refresh();
             break;
@@ -309,8 +372,7 @@ private:
     QLabel *title, *subtitle;
     QScrollArea *scroll;
     QComboBox *fontSize;
-    QToolButton *toggle, *bold, *italic, *textColor, *fillColor;
-    QPushButton *defaultColor;
+    QToolButton *toggle, *bold, *italic, *reset, *textColor, *fillColor, *defaultColor;
     QLineEdit *tags, *icons, *url;
     QPlainTextEdit *note;
     QList<QToolButton *> swatches;
