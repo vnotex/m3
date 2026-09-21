@@ -1926,7 +1926,6 @@ static void properties_case() {
     QTest::keyClick(icons, Qt::Key_Delete);
     QTest::keyClick(icons, Qt::Key_Space);
     QTest::keyClick(icons, Qt::Key_Return);
-    QTest::keyClick(icons, Qt::Key_Escape);
     QTest::keyClick(icons, Qt::Key_Tab);
     CHECK(!icons->hasFocus() && editor.selectedNodeId() == QStringLiteral("a") && panel->isVisible());
     CHECK(exported(editor).at("nodes").size() == expected.at("nodes").size());
@@ -2083,6 +2082,55 @@ static void properties_case() {
     CHECK(editor.selectedNodeId() == QStringLiteral("r") && selected.isEmpty());
     CHECK(exported(editor) == beforeResize && changed.isEmpty());
     CHECK(view.transform() == expandZoom && view.mapToScene(view.viewport()->rect().center()) == expandCenter);
+    // Escape collapses only the panel, keeps focus on its toggle, and never expands it.
+    editor.activateWindow();
+    pump();
+    for (QWidget *control : {static_cast<QWidget *>(tags), static_cast<QWidget *>(note), static_cast<QWidget *>(toggle)}) {
+        reveal(control);
+        control->setFocus();
+        QTest::keyClick(control, Qt::Key_Escape);
+        compact();
+        CHECK(toggle->hasFocus());
+        QTest::keyClick(toggle, Qt::Key_Escape);
+        compact();
+        CHECK(editor.selectedNodeId() == QStringLiteral("r") && selected.isEmpty());
+        CHECK(exported(editor) == beforeResize && changed.isEmpty());
+        CHECK(view.transform() == expandZoom && view.mapToScene(view.viewport()->rect().center()) == expandCenter);
+        QTest::keyClick(toggle, Qt::Key_Space);
+        pump();
+        CHECK(scroll->isVisible() && note->isVisible());
+    }
+    // A dropdown or emoji picker owns the first Escape; the panel owns the next.
+    reveal(size);
+    size->setFocus();
+    QTest::keyClick(size, Qt::Key_Down, Qt::AltModifier);
+    pump();
+    CHECK(size->view()->isVisible());
+    QTest::keyClick(size->view(), Qt::Key_Escape);
+    pump();
+    CHECK(!size->view()->isVisible() && scroll->isVisible());
+    QTest::keyClick(size, Qt::Key_Escape);
+    compact();
+    CHECK(toggle->hasFocus());
+    QTest::keyClick(toggle, Qt::Key_Space);
+    reveal(icons);
+    icons->setFocus();
+    pump();
+    auto *picker = icons->findChild<QWidget *>(QStringLiteral("emojiPopup"));
+    CHECK(picker && picker->isVisible());
+    QTest::keyClick(icons, Qt::Key_Escape);
+    CHECK(!picker->isVisible() && scroll->isVisible() && icons->hasFocus());
+    QTest::keyClick(icons, Qt::Key_Escape);
+    compact();
+    CHECK(toggle->hasFocus());
+    CHECK(editor.selectedNodeId() == QStringLiteral("r") && selected.isEmpty());
+    CHECK(exported(editor) == beforeResize && changed.isEmpty());
+    QTest::keyClick(toggle, Qt::Key_Space);
+    pump();
+    // Canvas Escape retains its existing selection-clearing behavior.
+    shortcut(editor, Qt::Key_Escape);
+    CHECK(editor.selectedNodeId().isEmpty() && !panel->isVisible());
+    CHECK(editor.selectNode(QStringLiteral("r")) && scroll->isVisible());
     CHECK(editor.selectNode(QStringLiteral("d")) && panel->isVisible());
     CHECK(note->toPlainText().isEmpty());
     CHECK(editor.setExpanded(QStringLiteral("b"), false));
