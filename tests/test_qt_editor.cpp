@@ -50,6 +50,7 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
+#include <QToolTip>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QWindow>
@@ -1621,6 +1622,30 @@ static void emoji_category_popup_case() {
     pump();
     auto *popup = icons->findChild<QWidget *>(QStringLiteral("emojiPopup"));
     CHECK(popup && popup->isVisible());
+    CHECK(QTest::qWaitFor([] { return QToolTip::isVisible(); }));
+    const QString navigationTip = QToolTip::text();
+    auto navigationTipVisible = [&] { return QToolTip::isVisible() && QToolTip::text() == navigationTip; };
+    QTest::keyClick(icons, Qt::Key_Escape);
+    CHECK(QTest::qWaitFor([&] { return !navigationTipVisible(); }));
+    CHECK(!popup->isVisible() && icons->hasFocus());
+    QTest::mouseClick(icons, Qt::LeftButton);
+    pump();
+    CHECK(popup->isVisible() && !navigationTipVisible());
+    {
+        Editor other;
+        showEditor(other);
+        auto *otherIcons = other.findChild<QLineEdit *>(QStringLiteral("nodeIcons"));
+        auto *otherPanel = other.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
+        otherPanel->findChild<QScrollArea *>()->ensureWidgetVisible(otherIcons);
+        otherIcons->setFocus();
+        pump();
+        auto *otherPopup = otherIcons->findChild<QWidget *>(QStringLiteral("emojiPopup"));
+        CHECK(otherPopup && otherPopup->isVisible() && !navigationTipVisible());
+    }
+    editor.activateWindow();
+    icons->setFocus();
+    pump();
+    CHECK(popup->isVisible() && !navigationTipVisible());
     const Json before = exported(editor);
     // Exercise the native-window stage that QWidget-only mouse tests bypass.
     const QPoint border = popup->rect().topLeft();
@@ -1690,6 +1715,75 @@ static void emoji_category_popup_case() {
     icons->setText(originalIcons);
     checkFilledRow();
     CHECK(exported(editor) == before);
+    {
+        QAction hostShortcut(&editor);
+        hostShortcut.setShortcut(QKeySequence(Qt::CTRL | Qt::Key_L));
+        hostShortcut.setShortcutContext(Qt::WindowShortcut);
+        editor.addAction(&hostShortcut);
+        QSignalSpy hostTriggered(&hostShortcut, &QAction::triggered);
+        icons->setText(QStringLiteral("heart"));
+        icons->setSelection(1, 2);
+        const QString text = icons->text(), selectedText = icons->selectedText();
+        const int caret = icons->cursorPosition(), selectionStart = icons->selectionStart();
+        const Json navigationDocument = exported(editor);
+        auto navigate = [&](Qt::Key key) {
+            QTest::keyClick(icons, key, Qt::ControlModifier);
+            pump();
+            CHECK(popup->isVisible() && icons->hasFocus());
+            CHECK(icons->text() == text && icons->cursorPosition() == caret &&
+                  icons->selectionStart() == selectionStart && icons->selectedText() == selectedText);
+            CHECK(exported(editor) == navigationDocument && hostTriggered.isEmpty());
+            return choices->currentIndex();
+        };
+        for (int width : {337, 517}) {
+            popup->resize(width, originalPopupSize.height());
+            pump();
+            const QModelIndex first = choices->model()->index(0, 0), right = choices->model()->index(1, 0);
+            choices->setCurrentIndex(first);
+            choices->scrollToTop();
+            const QRect firstCell = choices->visualRect(first), rightCell = choices->visualRect(right);
+            CHECK(rightCell.top() == firstCell.top() && rightCell.left() > firstCell.right());
+            int belowRow = 1;
+            while (belowRow < choices->model()->rowCount() &&
+                   choices->visualRect(choices->model()->index(belowRow, 0)).top() == firstCell.top()) ++belowRow;
+            CHECK(belowRow < choices->model()->rowCount());
+            const QModelIndex below = choices->model()->index(belowRow, 0);
+            CHECK(choices->visualRect(below).left() == firstCell.left());
+            CHECK(navigate(Qt::Key_L) == right);
+            CHECK(navigate(Qt::Key_H) == first);
+            CHECK(navigate(Qt::Key_J) == below);
+            CHECK(navigate(Qt::Key_K) == first);
+            CHECK(navigate(Qt::Key_H) == first && navigate(Qt::Key_K) == first);
+            const QModelIndex last = choices->model()->index(choices->model()->rowCount() - 1, 0);
+            choices->setCurrentIndex(last);
+            CHECK(navigate(Qt::Key_J) == last && navigate(Qt::Key_L) == last);
+            CHECK(choices->viewport()->rect().contains(choices->visualRect(last)));
+        }
+        choices->setLayoutDirection(Qt::RightToLeft);
+        const QModelIndex rtlFirst = choices->model()->index(0, 0);
+        choices->setCurrentIndex(rtlFirst);
+        choices->scrollToTop();
+        pump();
+        const QRect rtlFirstCell = choices->visualRect(rtlFirst);
+        CHECK(choices->visualRect(navigate(Qt::Key_H)).right() < rtlFirstCell.left());
+        CHECK(navigate(Qt::Key_L) == rtlFirst);
+        choices->setLayoutDirection(Qt::LeftToRight);
+        icons->setText(QStringLiteral("no-such-emoji-xyz"));
+        pump();
+        const Json emptySearchDocument = exported(editor);
+        for (auto key : {Qt::Key_H, Qt::Key_J, Qt::Key_K, Qt::Key_L}) QTest::keyClick(icons, key, Qt::ControlModifier);
+        pump();
+        CHECK(icons->text() == QStringLiteral("no-such-emoji-xyz") && exported(editor) == emptySearchDocument);
+        CHECK(!choices->currentIndex().isValid() && popup->isVisible() && hostTriggered.isEmpty());
+        QTest::keyClick(icons, Qt::Key_Escape);
+        CHECK(!popup->isVisible() && icons->hasFocus());
+        QTest::keyClick(icons, Qt::Key_L, Qt::ControlModifier);
+        CHECK(hostTriggered.size() == 1);
+        icons->setText(originalIcons);
+        popup->resize(originalPopupSize);
+        pump();
+        CHECK(exported(editor) == before);
+    }
     auto hasEmoji = [&](const QString &name) {
         for (int row = 0; row < choices->model()->rowCount(); ++row)
             if (choices->model()->index(row, 0).data().toString() == name) return true;

@@ -28,11 +28,12 @@ private:
     QListView *choices = nullptr;
     QLabel *description = nullptr;
     QAbstractItemModel *emojiModel = nullptr;
-    QString query;
+    QString query, navigationHintText;
     bool inserting = false, focusCheckPending = false;
     void createPopup();
     void syncAppearance();
     void showPopup(bool all = false);
+    void scheduleNavigationHint();
     bool positionPopup();
     void filterMatches();
     bool ownsPopupWidget(QWidget *widget) const;

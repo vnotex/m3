@@ -42,7 +42,9 @@
 // literal Unicode text above the topic, wrapping within the node; names are not
 // mapped to an icon library. The Icons field opens a searchable, categorized
 // Unicode 15.1 emoji picker on focus; a choice replaces the current entry or a
-// selection within it, never adjacent entries.
+// selection within it, never adjacent entries. Ctrl+H/J/K/L moves the picker
+// selection left/down/up/right without editing the input text.
+// The automatic navigation tooltip is shown once per QApplication lifetime.
 // Direct typing still saves immediately; glyph availability depends on host fonts.
 // Empty icons reserve no space. Nonempty URLs
 // show an indicator beside the topic. Activating it emits nodeLinkActivated with

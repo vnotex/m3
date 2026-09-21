@@ -18,12 +18,14 @@
 #include <QStyledItemDelegate>
 #include <QTextStream>
 #include <QTimer>
+#include <QToolTip>
 #include <QVBoxLayout>
 #include <algorithm>
 
 namespace m3::qt {
 namespace {
 constexpr int glyphRole = Qt::UserRole + 1;
+constexpr char navigationHintShownProperty[] = "m3.emojiNavigationHintShown";
 struct Emoji {
     QString glyph, name, searchable;
     int category;
@@ -102,6 +104,13 @@ private:
 class EmojiGridView final : public QListView {
 public:
     explicit EmojiGridView(QWidget *parent) : QListView(parent) { updateGrid(); }
+    void moveSelection(int key) {
+        // IconMode's horizontal cursor actions follow model order, even in RTL.
+        if (isRightToLeft() && (key == Qt::Key_Left || key == Qt::Key_Right))
+            key = key == Qt::Key_Left ? Qt::Key_Right : Qt::Key_Left;
+        QKeyEvent arrow(QEvent::KeyPress, key, Qt::NoModifier);
+        QListView::keyPressEvent(&arrow);
+    }
     void doItemsLayout() override {
         updateGrid();
         QListView::doItemsLayout();
@@ -265,7 +274,24 @@ void EmojiLineEdit::showPopup(bool all) {
     if (!popup->isVisible()) {
         qApp->installEventFilter(this);
         popup->show();
+        queuePopupFocusCheck();
     }
+}
+void EmojiLineEdit::scheduleNavigationHint() {
+    if (qApp->property(navigationHintShownProperty).toBool()) return;
+    // Wait past focus/click dispatch: Qt dismisses tooltips on the opening release.
+    QTimer::singleShot(0, this, [this] {
+        if (focusCheckPending || !popup || !popup->isVisible() || !hasFocus() ||
+            QGuiApplication::applicationState() != Qt::ApplicationActive ||
+            QApplication::mouseButtons() != Qt::NoButton ||
+            qApp->property(navigationHintShownProperty).toBool()) return;
+        const QString text = tr("Ctrl+H/J/K/L for navigation");
+        const QPointer<QWidget> owner(popup);
+        const QPoint anchor = popup->mapToGlobal(popup->rect().topLeft());
+        navigationHintText = text;
+        qApp->setProperty(navigationHintShownProperty, true);
+        if (owner && owner->isVisible()) QToolTip::showText(anchor, text, owner, QRect(), 5000);
+    });
 }
 bool EmojiLineEdit::positionPopup() {
     if (visibleRegion().isEmpty()) { dismissPopup(); return false; }
@@ -316,11 +342,15 @@ void EmojiLineEdit::queuePopupFocusCheck() {
         if (!hasFocus() && active) {
             window()->activateWindow();
             setFocus(Qt::OtherFocusReason);
+            return; // The resulting FocusIn will recheck ownership before showing a tip.
         }
+        scheduleNavigationHint();
     });
 }
 void EmojiLineEdit::dismissPopup() {
     qApp->removeEventFilter(this);
+    if (!navigationHintText.isEmpty() && QToolTip::text() == navigationHintText) QToolTip::hideText();
+    navigationHintText.clear();
     if (categories) categories->hidePopup();
     if (popup) popup->hide();
 }
@@ -362,6 +392,22 @@ bool EmojiLineEdit::event(QEvent *event) {
         dismissPopup();
     if (popup && popup->isVisible() && (event->type() == QEvent::KeyPress || event->type() == QEvent::ShortcutOverride)) {
         auto *key = static_cast<QKeyEvent *>(event);
+        if (key->modifiers() == Qt::ControlModifier && !categories->view()->isVisible()) {
+            int direction = 0;
+            switch (key->key()) {
+            case Qt::Key_H: direction = Qt::Key_Left; break;
+            case Qt::Key_J: direction = Qt::Key_Down; break;
+            case Qt::Key_K: direction = Qt::Key_Up; break;
+            case Qt::Key_L: direction = Qt::Key_Right; break;
+            default: break;
+            }
+            if (direction) {
+                if (event->type() == QEvent::KeyPress)
+                    static_cast<EmojiGridView *>(choices)->moveSelection(direction);
+                event->accept();
+                return true;
+            }
+        }
         if (key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab) dismissPopup();
         else if (event->type() == QEvent::ShortcutOverride &&
                  (key->key() == Qt::Key_Up || key->key() == Qt::Key_Down || key->key() == Qt::Key_Return ||
@@ -402,6 +448,9 @@ bool EmojiLineEdit::eventFilter(QObject *watched, QEvent *event) {
     // QWindow receives native mouse events before forwarding them to the QWidget.
     if (event->type() == QEvent::MouseButtonPress && widget) {
         if (!ownsPopupWidget(widget) && !within(widget, this)) dismissPopup();
+    } else if (event->type() == QEvent::MouseButtonRelease && widget &&
+               (ownsPopupWidget(widget) || within(widget, this))) {
+        scheduleNavigationHint();
     } else if (event->type() == QEvent::FocusIn || event->type() == QEvent::ApplicationDeactivate ||
                (event->type() == QEvent::Hide && ownsPopupWidget(widget))) {
         queuePopupFocusCheck();

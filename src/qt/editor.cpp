@@ -284,8 +284,24 @@ public:
         url = line("nodeUrl", tr("&URL"), tr("URL"));
         tags->setPlaceholderText(tr("Separate with commas"));
         icons->setPlaceholderText(tr("Search emoji names or paste emoji"));
-        icons->setToolTip(tr("Comma-separated icons. Type a name to search; Up/Down and Enter choose an emoji.\n"
-                             "Ctrl+PageUp/PageDown changes category; Escape closes the picker."));
+        icons->setToolTip(tr(
+            "<qt><p align=\"left\" style=\"margin-top: 0; margin-bottom: 6px;\">"
+            "Search by emoji name, or paste emoji.<br>"
+            "Separate multiple icons with commas.</p>"
+            "<table cellspacing=\"0\" cellpadding=\"2\">"
+            "<tr><td align=\"left\" valign=\"top\"><nobr><b>Ctrl+H / Ctrl+L</b></nobr></td>"
+            "<td align=\"left\" valign=\"top\">Move left / right</td></tr>"
+            "<tr><td align=\"left\" valign=\"top\"><nobr><b>Ctrl+J / Ctrl+K</b></nobr></td>"
+            "<td align=\"left\" valign=\"top\">Move down / up</td></tr>"
+            "<tr><td align=\"left\" valign=\"top\"><nobr><b>Up / Down</b></nobr></td>"
+            "<td align=\"left\" valign=\"top\">Previous / next emoji</td></tr>"
+            "<tr><td align=\"left\" valign=\"top\"><nobr><b>Ctrl+PgUp / Ctrl+PgDn</b></nobr></td>"
+            "<td align=\"left\" valign=\"top\">Previous / next category</td></tr>"
+            "<tr><td align=\"left\" valign=\"top\"><nobr><b>Enter</b></nobr></td>"
+            "<td align=\"left\" valign=\"top\">Use selected emoji</td></tr>"
+            "<tr><td align=\"left\" valign=\"top\"><nobr><b>Esc</b></nobr></td>"
+            "<td align=\"left\" valign=\"top\">Close picker</td></tr>"
+            "</table></qt>"));
         url->setPlaceholderText(tr("URL or reference"));
         note = new QPlainTextEdit(body);
         note->setObjectName(QStringLiteral("nodeNote"));
