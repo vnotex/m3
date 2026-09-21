@@ -10,9 +10,15 @@ QToolButton:hover {
 }
 
 QToolButton:checked {
-    border: 3px solid %2;
+    border: 2px solid palette(text);
+    padding: 2px;
+    background-clip: content;
 }
 
 QToolButton:focus {
     border: 2px dashed %2;
+}
+
+QToolButton:checked:focus {
+    border: 2px dashed palette(text);
 }

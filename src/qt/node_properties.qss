@@ -25,3 +25,36 @@ QToolButton#nodeFillColor:checked {
     background: palette(highlight);
     color: palette(highlighted-text);
 }
+
+QToolButton#nodeBold:enabled:hover,
+QToolButton#nodeItalic:enabled:hover,
+QToolButton#nodeResetAppearance:enabled:hover,
+QToolButton#nodeTextColor:enabled:hover,
+QToolButton#nodeFillColor:enabled:hover {
+    border-color: palette(text);
+}
+
+QToolButton#nodeBold:enabled:!checked:hover,
+QToolButton#nodeItalic:enabled:!checked:hover,
+QToolButton#nodeResetAppearance:enabled:!checked:hover,
+QToolButton#nodeTextColor:enabled:!checked:hover,
+QToolButton#nodeFillColor:enabled:!checked:hover {
+    background: palette(midlight);
+}
+
+QToolButton#nodeBold:enabled:pressed,
+QToolButton#nodeItalic:enabled:pressed,
+QToolButton#nodeResetAppearance:enabled:pressed,
+QToolButton#nodeTextColor:enabled:pressed,
+QToolButton#nodeFillColor:enabled:pressed {
+    border: 2px solid palette(text);
+    padding: 4px 6px 2px 8px;
+}
+
+QToolButton#nodeBold:enabled:!checked:pressed,
+QToolButton#nodeItalic:enabled:!checked:pressed,
+QToolButton#nodeResetAppearance:enabled:!checked:pressed,
+QToolButton#nodeTextColor:enabled:!checked:pressed,
+QToolButton#nodeFillColor:enabled:!checked:pressed {
+    background: palette(mid);
+}
