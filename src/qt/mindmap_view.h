@@ -30,6 +30,7 @@ signals:
     void topicEditRequested(const QString &id, const QString &topic);
     void topicEditingChanged(bool editing);
     void nodePicked(const QString &id);
+    void nodeLinkActivated(const QString &nodeId, const QString &url);
     void nodeMoveRequested(const QString &id, const QString &parent, int index);
     void linkPicked(const QString &id);
     void emptyPicked();
@@ -54,6 +55,8 @@ private:
     bool pendingFit = false;
     QPointF panPosition;
     QHash<QString, QString> nodeParents;
+    QString pressedLinkNodeId, pressedLinkUrl;
+    QPoint linkPressPosition;
     QString draggedNodeId, dropTargetId;
     QPoint dragPressPosition;
     bool nodeDragging = false;
@@ -66,6 +69,8 @@ private:
     void updatePanCursor(const QPoint &position);
     QString dropTargetAt(const QPoint &position) const;
     void setDropTarget(const QString &id);
+    void clearNodeLinkPress();
+    bool handleNodeLinkEvent(QEvent *event);
     void clearNodeDrag();
     bool handleNodeDragEvent(QEvent *event);
     bool pick(QMouseEvent *event, bool activate);

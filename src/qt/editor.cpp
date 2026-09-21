@@ -1,6 +1,7 @@
 #include "m3/qt/editor.h"
 #include "mindmap_controller.h"
 #include "mindmap_view.h"
+#include "emoji_line_edit.h"
 #include <QAction>
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -267,8 +268,8 @@ public:
         fields->setSpacing(8);
         fields->setRowWrapPolicy(QFormLayout::WrapLongRows);
         fields->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-        auto line = [this, fields](const char *name, const QString &label, const QString &accessible) {
-            auto *input = new QLineEdit(body);
+        auto line = [this, fields](const char *name, const QString &label, const QString &accessible, QLineEdit *input = nullptr) {
+            if (!input) input = new QLineEdit(body);
             input->setObjectName(QString::fromLatin1(name));
             input->setAccessibleName(accessible);
             input->setMinimumWidth(80);
@@ -278,10 +279,13 @@ public:
             return input;
         };
         tags = line("nodeTags", tr("&Tags"), tr("Tags"));
-        icons = line("nodeIcons", tr("&Icons"), tr("Icons"));
+        icons = new EmojiLineEdit(body);
+        line("nodeIcons", tr("&Icons"), tr("Icons"), icons);
         url = line("nodeUrl", tr("&URL"), tr("URL"));
         tags->setPlaceholderText(tr("Separate with commas"));
-        icons->setPlaceholderText(tr("Names or symbols, comma-separated"));
+        icons->setPlaceholderText(tr("Search emoji names or paste emoji"));
+        icons->setToolTip(tr("Comma-separated icons. Type a name to search; Up/Down and Enter choose an emoji.\n"
+                             "Ctrl+PageUp/PageDown changes category; Escape closes the picker."));
         url->setPlaceholderText(tr("URL or reference"));
         note = new QPlainTextEdit(body);
         note->setObjectName(QStringLiteral("nodeNote"));
@@ -371,7 +375,8 @@ private:
     QScrollArea *scroll;
     QComboBox *fontSize;
     QToolButton *toggle, *bold, *italic, *reset, *textColor, *fillColor, *defaultColor;
-    QLineEdit *tags, *icons, *url;
+    QLineEdit *tags, *url;
+    EmojiLineEdit *icons;
     QPlainTextEdit *note;
     QList<QToolButton *> swatches;
     QString boundId;
@@ -418,9 +423,10 @@ private:
         currentStyle = properties.style;
         subtitle->setText(properties.topic);
         subtitle->setToolTip(QStringLiteral("<qt>%1</qt>").arg(properties.topic.toHtmlEscaped()));
-        auto refreshList = [sameNode](QLineEdit *input, const QStringList &values) {
+        auto refreshList = [this, sameNode](QLineEdit *input, const QStringList &values) {
             const QString text = values.join(QStringLiteral(", "));
             if (!sameNode || (commaValues(input->text()) != values && input->text() != text)) {
+                if (input == icons) icons->dismissPopup();
                 const QSignalBlocker blocker(input);
                 input->setText(text);
             }
@@ -736,6 +742,7 @@ public:
         });
         QObject::connect(controller, &MindMapController::commandSucceeded, editor, [this] { error->clear(); error->hide(); updateActions(); });
         QObject::connect(view, &MindMapView::nodePicked, controller, &MindMapController::selectNode);
+        QObject::connect(view, &MindMapView::nodeLinkActivated, editor, &MindMapEditor::nodeLinkActivated);
         QObject::connect(view, &MindMapView::nodeMoveRequested, controller, &MindMapController::moveNode);
         QObject::connect(view, &MindMapView::linkPicked, controller, &MindMapController::selectLink);
         QObject::connect(view, &MindMapView::emptyPicked, controller, &MindMapController::clearSelection);

@@ -23,9 +23,53 @@
 
 namespace m3::qt {
 namespace {
+class NodeLinkItem final : public QGraphicsItem {
+public:
+    NodeLinkItem(const QString &url, QGraphicsItem *parent)
+        : QGraphicsItem(parent) {
+        setAcceptedMouseButtons(Qt::NoButton);
+        setAcceptHoverEvents(true);
+        setCursor(Qt::PointingHandCursor);
+        setToolTip(QStringLiteral("<qt>%1</qt>").arg(url.toHtmlEscaped()));
+    }
+    QRectF boundingRect() const override { return QRectF(0, 0, 20, 20); }
+    QPainterPath shape() const override { QPainterPath path; path.addRect(boundingRect()); return path; }
+    void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
+        static const QColor foreground = QColor::fromRgb(0x3498db);
+        if (hovered) {
+            QColor fill = foreground;
+            fill.setAlpha(28);
+            p->setPen(Qt::NoPen);
+            p->setBrush(fill);
+            p->drawRoundedRect(boundingRect(), 3, 3);
+        }
+        p->setBrush(Qt::NoBrush);
+        p->setPen(QPen(foreground, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        static const QPainterPath glyph = [] {
+            QPainterPath path;
+            path.moveTo(9, 5);
+            path.lineTo(5, 5);
+            path.lineTo(5, 15);
+            path.lineTo(15, 15);
+            path.lineTo(15, 11);
+            path.moveTo(9, 11);
+            path.lineTo(15, 5);
+            path.lineTo(11, 5);
+            path.moveTo(15, 5);
+            path.lineTo(15, 9);
+            return path;
+        }();
+        p->drawPath(glyph);
+    }
+protected:
+    void hoverEnterEvent(QGraphicsSceneHoverEvent *) override { hovered = true; update(); }
+    void hoverLeaveEvent(QGraphicsSceneHoverEvent *) override { hovered = false; update(); }
+private:
+    bool hovered = false;
+};
 class NodeItem final : public QGraphicsItem {
 public:
-    QString id;
+    QString id, hyperlink;
     bool expanded, hasChildren;
     bool dropTarget = false;
     QRectF rect;
@@ -33,20 +77,33 @@ public:
     QColor backgroundColor;
     QGraphicsTextItem *label;
     NodeItem(NodePresentation node, const QPalette &palette)
-        : id(node.id), expanded(node.expanded), hasChildren(node.hasChildren),
+        : id(node.id), hyperlink(node.hyperlink), expanded(node.expanded), hasChildren(node.hasChildren),
           rect(QPointF(), node.rectangle.size()), colors(palette),
           backgroundColor(node.style.backgroundColor.isValid() ? node.style.backgroundColor : palette.color(QPalette::Button)) {
         setPos(node.rectangle.topLeft());
         setZValue(2);
         setFlag(ItemIsSelectable);
-        label = new QGraphicsTextItem(this);
-        // setDocument borrows; QObject parenting makes the text item sole owner.
-        node.text->setParent(label);
-        label->setDocument(node.text.release());
-        label->setFont(label->document()->defaultFont());
-        label->setDefaultTextColor(node.style.textColor.isValid() ? node.style.textColor : colors.color(QPalette::Text));
-        label->setTextInteractionFlags(Qt::NoTextInteraction);
-        label->setPos(12, 8);
+        auto addText = [this, &node](std::unique_ptr<QTextDocument> text, qreal top) {
+            auto *item = new QGraphicsTextItem(this);
+            // setDocument borrows; QObject parenting makes the text item sole owner.
+            text->setParent(item);
+            item->setDocument(text.release());
+            item->setFont(item->document()->defaultFont());
+            item->setDefaultTextColor(node.style.textColor.isValid() ? node.style.textColor : colors.color(QPalette::Text));
+            item->setTextInteractionFlags(Qt::NoTextInteraction);
+            item->setPos(12, top);
+            return item;
+        };
+        qreal topicTop = 8;
+        if (node.iconText) {
+            topicTop += node.iconText->size().height() + 4;
+            addText(std::move(node.iconText), 8);
+        }
+        label = addText(std::move(node.text), topicTop);
+        if (!hyperlink.isEmpty()) {
+            auto *indicator = new NodeLinkItem(hyperlink, this);
+            indicator->setPos(rect.right() - 32 - (hasChildren ? 18 : 0), rect.center().y() - 10);
+        }
     }
     QRectF affordance() const { return QRectF(rect.right() - 22, rect.center().y() - 8, 18, 16); }
     QRectF boundingRect() const override { return rect.adjusted(-2, -2, 2, 2); }
@@ -267,8 +324,13 @@ void MindMapView::finishTopicEdit(bool commit, bool restoreFocus) {
     topicLabel.clear();
     input->hide();
     input->deleteLater();
+    QPointer<MindMapView> guard(this);
     emit topicEditingChanged(false);
-    if (commit && draft != original) emit topicEditRequested(id, draft);
+    if (!guard) return;
+    if (commit && draft != original) {
+        emit topicEditRequested(id, draft);
+        if (!guard) return;
+    }
     if (commit) ensureNodeVisible(id);
     if (restoreFocus) setFocus(Qt::OtherFocusReason);
 }
@@ -285,12 +347,39 @@ void MindMapView::updateTopicEditorGeometry() {
     topicEditor->setGeometry(x, y, width, height);
 }
 bool MindMapView::event(QEvent *event) {
-    if (handleNodeDragEvent(event)) return true;
+    if (handleNodeLinkEvent(event) || handleNodeDragEvent(event)) return true;
     return QGraphicsView::event(event);
 }
 bool MindMapView::viewportEvent(QEvent *event) {
-    if (handleNodeDragEvent(event)) return true;
+    if (handleNodeLinkEvent(event) || handleNodeDragEvent(event)) return true;
     return QGraphicsView::viewportEvent(event);
+}
+void MindMapView::clearNodeLinkPress() {
+    pressedLinkNodeId.clear();
+    pressedLinkUrl.clear();
+}
+bool MindMapView::handleNodeLinkEvent(QEvent *event) {
+    if (pressedLinkNodeId.isEmpty()) return false;
+    switch (event->type()) {
+    case QEvent::ShortcutOverride:
+    case QEvent::KeyPress: {
+        auto *key = static_cast<QKeyEvent *>(event);
+        if (key->key() != Qt::Key_Escape) return false;
+        if (event->type() == QEvent::KeyPress) clearNodeLinkPress();
+        event->accept();
+        return true;
+    }
+    case QEvent::ContextMenu:
+        event->accept();
+        return true;
+    case QEvent::FocusOut:
+    case QEvent::Hide:
+    case QEvent::UngrabMouse:
+        clearNodeLinkPress();
+        break;
+    default: break;
+    }
+    return false;
 }
 bool MindMapView::handleNodeDragEvent(QEvent *event) {
     if (draggedNodeId.isEmpty()) return false;
@@ -379,24 +468,34 @@ void MindMapView::scrollContentsBy(int dx, int dy) {
     updateTopicEditorGeometry();
 }
 void MindMapView::prepare(NodePresentation &node) const {
-    node.text = std::make_unique<QTextDocument>();
-    node.text->setDocumentMargin(0);
     QFont textFont = font();
     if (node.style.fontSize > 0) textFont.setPixelSize(qRound(node.style.fontSize));
     textFont.setBold(node.style.bold.value_or(node.root));
     if (node.style.italic.has_value()) textFont.setItalic(*node.style.italic);
-    node.text->setDefaultFont(textFont);
-    QTextOption option;
-    option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
-    node.text->setDefaultTextOption(option);
-    node.text->setPlainText(node.topic);
-    node.text->setTextWidth(-1);
-    node.text->setTextWidth(qMin(qreal(240), qMax(qreal(1), node.text->idealWidth())));
+    auto prepareText = [&textFont](const QString &value) {
+        auto text = std::make_unique<QTextDocument>();
+        text->setDocumentMargin(0);
+        text->setDefaultFont(textFont);
+        QTextOption option;
+        option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        text->setDefaultTextOption(option);
+        text->setPlainText(value);
+        text->setTextWidth(-1);
+        text->setTextWidth(qMin(qreal(240), qMax(qreal(1), text->idealWidth())));
+        return text;
+    };
+    node.text = prepareText(node.topic);
+    const QString icons = node.icons.join(QLatin1Char(' '));
+    node.iconText = icons.trimmed().isEmpty() ? nullptr : prepareText(icons);
     const QSizeF textSize = node.text->size();
-    node.rectangle = QRectF(0, 0, qMax(qreal(72), textSize.width() + 24 + (node.hasChildren ? 18 : 0)),
-                            qMax(qreal(36), textSize.height() + 16));
+    const QSizeF iconSize = node.iconText ? node.iconText->size() : QSizeF(0, 0);
+    node.rectangle = QRectF(0, 0, qMax(qreal(72), qMax(textSize.width(), iconSize.width()) + 24 +
+                                    (node.hyperlink.isEmpty() ? 0 : 24) + (node.hasChildren ? 18 : 0)),
+                            qMax(qreal(36), textSize.height() + 16 +
+                                 (node.iconText ? iconSize.height() + 4 : 0)));
 }
 void MindMapView::install(Presentation presentation, bool fit) {
+    clearNodeLinkPress();
     auto replacement = std::make_unique<QGraphicsScene>();
     QHash<QString, QRectF> rectangles;
     QHash<QString, QString> parents;
@@ -478,6 +577,7 @@ void MindMapView::install(Presentation presentation, bool fit) {
     updateTopicEditorGeometry();
 }
 void MindMapView::showError(const QString &message) {
+    clearNodeLinkPress();
     finishTopicEdit(false);
     clearNodeDrag();
     nodeParents.clear();
@@ -574,6 +674,7 @@ void MindMapView::clearNodeDrag() {
 void MindMapView::updatePanCursor(const QPoint &position) {
     if (panning != Qt::NoButton) viewport()->setCursor(Qt::ClosedHandCursor);
     else if (nodeDragging) viewport()->setCursor(dropTargetId.isEmpty() ? Qt::ForbiddenCursor : Qt::DragMoveCursor);
+    else if (dynamic_cast<NodeLinkItem *>(itemAt(position))) viewport()->setCursor(Qt::PointingHandCursor);
     else if (!targetAt(position)) viewport()->setCursor(Qt::OpenHandCursor);
     else viewport()->unsetCursor();
 }
@@ -613,7 +714,42 @@ bool MindMapView::pick(QMouseEvent *event, bool activate) {
     return target == Target::Empty;
 }
 void MindMapView::mousePressEvent(QMouseEvent *event) {
-    if (panning != Qt::NoButton || !draggedNodeId.isEmpty()) { event->accept(); return; }
+    if (panning != Qt::NoButton || !draggedNodeId.isEmpty() || !pressedLinkNodeId.isEmpty()) {
+        event->accept();
+        return;
+    }
+    if (event->button() != Qt::MiddleButton) {
+        QString id, url;
+        {
+            if (auto *indicator = dynamic_cast<NodeLinkItem *>(itemAt(event->position().toPoint()))) {
+                auto *node = static_cast<NodeItem *>(indicator->parentItem());
+                id = node->id;
+                url = node->hyperlink;
+            }
+        }
+        if (!url.isEmpty()) {
+            const QPoint position = event->position().toPoint();
+            event->accept();
+            // Committing can rebuild the scene; keep only values from the original hit.
+            QPointer<MindMapView> guard(this);
+            finishTopicEdit(true);
+            if (!guard) return;
+            setFocus(Qt::MouseFocusReason);
+            if (event->button() == Qt::LeftButton) {
+                for (auto *item : scene()->items()) {
+                    if (auto *node = dynamic_cast<NodeItem *>(item);
+                        node && node->id == id && node->hyperlink == url) {
+                        pressedLinkNodeId = id;
+                        pressedLinkUrl = url;
+                        linkPressPosition = position;
+                        break;
+                    }
+                }
+            }
+            updatePanCursor(position);
+            return;
+        }
+    }
     bool startPan = event->button() == Qt::MiddleButton;
     if (event->button() == Qt::LeftButton || event->button() == Qt::RightButton) {
         const bool empty = pick(event, false);
@@ -630,6 +766,15 @@ void MindMapView::mousePressEvent(QMouseEvent *event) {
     updatePanCursor(event->position().toPoint());
 }
 void MindMapView::mouseMoveEvent(QMouseEvent *event) {
+    if (!pressedLinkNodeId.isEmpty()) {
+        const QPoint position = event->position().toPoint();
+        if (!event->buttons().testFlag(Qt::LeftButton) ||
+            (position - linkPressPosition).manhattanLength() >= QApplication::startDragDistance())
+            clearNodeLinkPress();
+        updatePanCursor(position);
+        event->accept();
+        return;
+    }
     if (panning != Qt::NoButton) {
         if (event->buttons().testFlag(panning)) {
             const QPoint current = event->position().toPoint();
@@ -658,6 +803,31 @@ void MindMapView::mouseMoveEvent(QMouseEvent *event) {
     updatePanCursor(event->position().toPoint());
 }
 void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
+    if (!pressedLinkNodeId.isEmpty()) {
+        const QPoint position = event->position().toPoint();
+        event->accept();
+        if (event->button() != Qt::LeftButton) return;
+        const QString id = pressedLinkNodeId, url = pressedLinkUrl;
+        bool activate = false;
+        if (viewport()->rect().contains(position) &&
+            (position - linkPressPosition).manhattanLength() < QApplication::startDragDistance()) {
+            if (auto *indicator = dynamic_cast<NodeLinkItem *>(itemAt(position))) {
+                auto *node = static_cast<NodeItem *>(indicator->parentItem());
+                activate = node->id == id && node->hyperlink == url;
+            }
+        }
+        clearNodeLinkPress();
+        updatePanCursor(position);
+        // Receivers may replace the scene or delete the editor; nothing follows the signal.
+        if (activate) emit nodeLinkActivated(id, url);
+        return;
+    }
+    if (panning == Qt::NoButton && draggedNodeId.isEmpty() &&
+        dynamic_cast<NodeLinkItem *>(itemAt(event->position().toPoint()))) {
+        event->accept();
+        updatePanCursor(event->position().toPoint());
+        return;
+    }
     if (panning != Qt::NoButton && event->button() == panning) {
         panning = Qt::NoButton; event->accept();
     } else if (!draggedNodeId.isEmpty()) {
@@ -673,7 +843,15 @@ void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
     updatePanCursor(event->position().toPoint());
 }
 void MindMapView::mouseDoubleClickEvent(QMouseEvent *event) {
+    const bool nodeLink = !pressedLinkNodeId.isEmpty() ||
+        dynamic_cast<NodeLinkItem *>(itemAt(event->position().toPoint()));
+    clearNodeLinkPress();
     clearNodeDrag();
+    if (nodeLink) {
+        event->accept();
+        updatePanCursor(event->position().toPoint());
+        return;
+    }
     if (event->button() == Qt::LeftButton) { pick(event, true); event->accept(); }
     else QGraphicsView::mouseDoubleClickEvent(event);
 }
@@ -709,8 +887,10 @@ void MindMapView::showEvent(QShowEvent *event) {
 }
 void MindMapView::changeEvent(QEvent *event) {
     QGraphicsView::changeEvent(event);
-    if (event->type() == QEvent::ActivationChange && !isActiveWindow() && !draggedNodeId.isEmpty())
+    if (event->type() == QEvent::ActivationChange && !isActiveWindow()) {
+        clearNodeLinkPress();
         clearNodeDrag();
+    }
     if (event->type() == QEvent::FontChange || event->type() == QEvent::PaletteChange) {
         setBackgroundBrush(palette().brush(QPalette::Base));
         emit appearanceChanged();

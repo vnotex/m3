@@ -52,6 +52,8 @@ install(FILES LICENSE third_party/nlohmann/LICENSE.MIT DESTINATION ${CMAKE_INSTA
 if(M3_BUILD_QT)
     install(FILES third_party/lucide/LICENSE
         DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/m3 RENAME lucide-LICENSE)
+    install(FILES third_party/unicode/LICENSE
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/m3 RENAME unicode-LICENSE)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
     add_subdirectory(src/qt)
 endif()

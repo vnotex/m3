@@ -23,11 +23,12 @@ struct NodeProperties {
     NodeStyle style;
 };
 struct NodePresentation {
-    QString id, topic;
+    QString id, topic, hyperlink;
+    QStringList icons;
     bool root = false, expanded = true, hasChildren = false;
     QRectF rectangle;
     NodeStyle style;
-    std::unique_ptr<QTextDocument> text;
+    std::unique_ptr<QTextDocument> text, iconText;
 };
 struct LinkPresentation {
     QString id, source, target, topic;

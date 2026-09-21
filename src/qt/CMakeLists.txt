@@ -5,10 +5,16 @@ add_library(m3qt SHARED
     mindmap_controller.cpp
     mindmap_view.h
     mindmap_view.cpp
-    editor.cpp)
+    editor.cpp
+    emoji_line_edit.h
+    emoji_line_edit.cpp)
 qt_add_resources(m3qt m3_property_styles
     PREFIX "/m3/qt"
     FILES node_properties.qss color_swatch.qss)
+qt_add_resources(m3qt m3_emoji_catalog
+    PREFIX "/m3/emoji"
+    BASE "${PROJECT_SOURCE_DIR}/third_party/unicode"
+    FILES ../../third_party/unicode/emoji-test.txt ../../third_party/unicode/LICENSE)
 add_library(m3::qt_editor ALIAS m3qt)
 target_link_libraries(m3qt PUBLIC Qt6::Widgets PRIVATE m3::core)
 target_include_directories(m3qt PUBLIC

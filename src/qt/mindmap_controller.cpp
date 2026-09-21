@@ -111,6 +111,8 @@ Presentation MindMapController::prepare(const M3Mindmap *map, MindMapEditor::Lay
         NodePresentation node;
         node.id = string(record.at("id"));
         node.topic = string(record.at("topic"));
+        node.hyperlink = string(record.at("hyperLink"));
+        for (const auto &icon : record.at("icons")) node.icons.append(string(icon));
         node.root = record.at("id") == data.at("rootId");
         node.expanded = record.at("expanded").get<bool>();
         const auto &children = record.at("children");

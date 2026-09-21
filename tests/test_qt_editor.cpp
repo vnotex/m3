@@ -30,6 +30,7 @@
 #include <QLineF>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListView>
 #include <QMessageBox>
 #include <QMenu>
 #include <QMouseEvent>
@@ -51,6 +52,7 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWheelEvent>
+#include <QWindow>
 #include <algorithm>
 #include <cmath>
 #include <exception>
@@ -1371,7 +1373,368 @@ static void node_drag_case() {
     }
 }
 
+static void hyperlinks_case() {
+    const QString a = QStringLiteral("a"), b = QStringLiteral("b"), alpha = QStringLiteral("Alpha");
+    const QString rawUrl = QString::fromUtf8("opaque:世界/<b>café</b>?q=\"a&b\"#片 段");
+    Json linkedInput = editorFixture();
+    for (auto &entry : linkedInput.at("nodes")) if (entry.at("id") == "a") entry["hyperLink"] = utf8(rawUrl);
+    auto prepare = [&](Editor &editor, bool linked = true) {
+        CHECK(editor.loadJson(encoded(linked ? linkedInput : editorFixture())));
+        CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+        showEditor(editor, QSize(1100, 900));
+        assertFit(editor);
+    };
+    auto indicator = [](Editor &editor, const QString &topic) -> QGraphicsItem * {
+        for (auto *child : ownerItem(textItem(editor, topic))->childItems())
+            if (child->isVisible() && child->cursor().shape() == Qt::PointingHandCursor && !child->toolTip().isEmpty())
+                return child;
+        return nullptr;
+    };
+    auto linkPoint = [&](Editor &editor, const QString &topic) {
+        auto &view = graphics(editor);
+        auto *item = indicator(editor, topic);
+        CHECK(item != nullptr);
+        view.ensureVisible(item);
+        pump();
+        const QPoint point = view.mapFromScene(item->sceneBoundingRect().center());
+        CHECK(view.viewport()->rect().contains(point) && belongsTo(view.itemAt(point), item));
+        return point;
+    };
+    auto urlInput = [](Editor &editor) {
+        auto *input = editor.findChild<QLineEdit *>(QStringLiteral("nodeUrl"));
+        CHECK(input != nullptr && input->isVisible() && input->isEnabled());
+        return input;
+    };
+    auto accessibleUrl = [&](Editor &editor, const QString &value) {
+        // Assistive edits exercise the real panel without canceling the held mouse gesture through a focus change.
+        auto *accessible = QAccessible::queryAccessibleInterface(urlInput(editor));
+        CHECK(accessible != nullptr);
+        accessible->setText(QAccessible::Value, value);
+        pump();
+    };
+    {
+        Editor editor;
+        prepare(editor, false);
+        auto &view = graphics(editor);
+        QSignalSpy activated(&editor, &Editor::nodeLinkActivated);
+        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        const QString rootTopic = qs(record(exported(editor), "nodes", QStringLiteral("r")).at("topic"));
+        CHECK(indicator(editor, rootTopic) != nullptr); // The shared root already has an opaque URL.
+        CHECK(indicator(editor, alpha) == nullptr && indicator(editor, QStringLiteral("Beta")) == nullptr);
+        CHECK(indicator(editor, QStringLiteral("Delta")) == nullptr);
+
+        clickLabel(editor, alpha);
+        auto *url = urlInput(editor);
+        auto *scroll = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"))->findChild<QScrollArea *>();
+        CHECK(scroll != nullptr);
+        scroll->ensureWidgetVisible(url);
+        url->setFocus(Qt::OtherFocusReason);
+        QTest::keyClick(url, Qt::Key_A, Qt::ControlModifier);
+        QApplication::clipboard()->setText(rawUrl);
+        QTest::keyClick(url, Qt::Key_V, Qt::ControlModifier);
+        pump();
+        CHECK(record(exported(editor), "nodes", a).at("hyperLink") == utf8(rawUrl));
+        CHECK(changed.size() == 1 && activated.isEmpty());
+        auto *item = indicator(editor, alpha);
+        CHECK(item != nullptr && !item->sceneBoundingRect().intersects(textItem(editor, alpha)->sceneBoundingRect()));
+        QTextDocument tooltip;
+        tooltip.setHtml(item->toolTip());
+        CHECK(tooltip.toPlainText() == rawUrl);
+
+        clickLabel(editor, QStringLiteral("Beta"));
+        const QPoint point = linkPoint(editor, alpha);
+        const Json before = exported(editor);
+        const QTransform zoom = view.transform();
+        const QPointF center = view.mapToScene(view.viewport()->rect().center());
+        changed.clear(); selected.clear();
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        CHECK(activated.isEmpty() && changed.isEmpty() && selected.isEmpty());
+        CHECK(exported(editor) == before && editor.selectedNodeId() == b);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        pump();
+        CHECK(activated.size() == 1 && activated.front().at(0).toString() == a && activated.front().at(1).toString() == rawUrl);
+        CHECK(exported(editor) == before && changed.isEmpty() && selected.isEmpty());
+        CHECK(editor.selectedNodeId() == b && editor.selectedLinkId().isEmpty() && activeTopicInput(editor) == nullptr);
+        CHECK(view.transform() == zoom && view.mapToScene(view.viewport()->rect().center()) == center);
+
+        QTest::mouseClick(view.viewport(), Qt::RightButton, Qt::NoModifier, point);
+        QTest::mouseClick(view.viewport(), Qt::MiddleButton, Qt::NoModifier, point);
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, labelPoint(editor, alpha));
+        CHECK(activated.size() == 1);
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        movePointer(view, point + QPoint(QApplication::startDragDistance() + 1, 0), Qt::LeftButton);
+        movePointer(view, point, Qt::LeftButton);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        pump();
+        CHECK(activated.size() == 1 && exported(editor) == before && changed.isEmpty());
+
+        CHECK(editor.selectNode(b));
+        selected.clear();
+        // Qt delivers a second press before the double-click event, then a final release.
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        CHECK(activated.size() == 2);
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        pump();
+        CHECK(activated.size() == 2 && activeTopicInput(editor) == nullptr);
+        CHECK(exported(editor) == before && changed.isEmpty() && selected.isEmpty() && editor.selectedNodeId() == b);
+        CHECK(view.transform() == zoom);
+
+        clickLabel(editor, alpha);
+        CHECK(editor.selectedNodeId() == a && activated.size() == 2);
+        clickLabel(editor, alpha, true);
+        CHECK(activeTopicInput(editor) != nullptr && activated.size() == 2);
+        topicKey(editor, Qt::Key_Escape);
+        const QRectF nodeRect = topicRect(editor, alpha);
+        const QPoint expansion = view.mapFromScene(QPointF(nodeRect.right() - 15, nodeRect.center().y()));
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, expansion);
+        pump();
+        CHECK(!record(exported(editor), "nodes", a).at("expanded").get<bool>());
+        CHECK(texts(editor, QStringLiteral("Delta")).isEmpty() && indicator(editor, alpha) != nullptr);
+        CHECK(activated.size() == 2 && activeTopicInput(editor) == nullptr);
+    }
+    {
+        Editor editor;
+        prepare(editor);
+        CHECK(editor.selectNode(a));
+        auto &view = graphics(editor);
+        QSignalSpy activated(&editor, &Editor::nodeLinkActivated);
+        QPoint point = linkPoint(editor, alpha);
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        const QString editedUrl = QString::fromUtf8("custom:更新?x=<tag>&y=é");
+        accessibleUrl(editor, editedUrl);
+        CHECK(record(exported(editor), "nodes", a).at("hyperLink") == utf8(editedUrl));
+        point = linkPoint(editor, alpha);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        CHECK(activated.isEmpty());
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        CHECK(activated.size() == 1 && activated.front().at(0).toString() == a && activated.front().at(1).toString() == editedUrl);
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        accessibleUrl(editor, QString());
+        CHECK(record(exported(editor), "nodes", a).at("hyperLink") == "" && indicator(editor, alpha) == nullptr);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        CHECK(activated.size() == 1);
+
+        accessibleUrl(editor, rawUrl);
+        point = linkPoint(editor, alpha);
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        // Identical IDs and URLs in a fresh scene must not inherit the old scene's press.
+        CHECK(editor.loadJson(encoded(linkedInput)));
+        pump();
+        point = linkPoint(editor, alpha);
+        const Json replaced = exported(editor);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        CHECK(activated.size() == 1 && exported(editor) == replaced);
+
+        // These events end a gesture even if release later returns to the same indicator.
+        for (QEvent::Type cancel : {QEvent::KeyPress, QEvent::FocusOut, QEvent::UngrabMouse, QEvent::Hide}) {
+            view.setFocus(Qt::OtherFocusReason);
+            pump();
+            point = linkPoint(editor, alpha);
+            QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+            if (cancel == QEvent::KeyPress) QTest::keyClick(view.viewport(), Qt::Key_Escape);
+            else if (cancel == QEvent::FocusOut) {
+                QFocusEvent event(QEvent::FocusOut, Qt::OtherFocusReason);
+                QCoreApplication::sendEvent(&view, &event);
+            } else if (cancel == QEvent::Hide) {
+                editor.hide();
+                showEditor(editor, QSize(1100, 900));
+            } else {
+                QEvent event(cancel);
+                QCoreApplication::sendEvent(view.viewport(), &event);
+            }
+            point = linkPoint(editor, alpha);
+            QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+            CHECK(activated.size() == 1 && exported(editor) == replaced && activeTopicInput(editor) == nullptr);
+        }
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        CHECK(activated.size() == 2 && activated.back().at(1).toString() == rawUrl);
+    }
+    {
+        Editor editor;
+        prepare(editor);
+        auto &view = graphics(editor);
+        QSignalSpy activated(&editor, &Editor::nodeLinkActivated);
+        clickLabel(editor, QStringLiteral("Beta"), true);
+        topicInput(editor).setPlainText(QStringLiteral("Zeta"));
+        const QPoint point = linkPoint(editor, alpha);
+        CHECK(!topicInput(editor).geometry().contains(point));
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        CHECK(activeTopicInput(editor) == nullptr && record(exported(editor), "nodes", b).at("topic") == "Zeta");
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, linkPoint(editor, alpha));
+        CHECK(activated.size() == 1 && activated.front().at(0).toString() == a && activated.front().at(1).toString() == rawUrl);
+
+        bool replaced = false;
+        QObject::connect(&editor, &Editor::nodeLinkActivated, &editor, [&](const QString &id, const QString &url) {
+            CHECK(id == a && url == rawUrl);
+            CHECK(editor.newDocument(QStringLiteral("Reentrant replacement")));
+            replaced = true;
+            CHECK(id == a && url == rawUrl);
+        });
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, linkPoint(editor, alpha));
+        pump();
+        CHECK(replaced && activated.size() == 2);
+        CHECK(record(exported(editor), "nodes", QStringLiteral("root")).at("topic") == "Reentrant replacement");
+        CHECK(indicator(editor, QStringLiteral("Reentrant replacement")) == nullptr);
+    }
+    {
+        auto editor = std::make_unique<Editor>();
+        QPointer<Editor> alive(editor.get());
+        prepare(*editor);
+        QSignalSpy activated(editor.get(), &Editor::nodeLinkActivated);
+        bool delivered = false;
+        QObject::connect(editor.get(), &Editor::nodeLinkActivated, [&](const QString &id, const QString &url) {
+            CHECK(id == a && url == rawUrl);
+            delivered = true;
+            editor.reset();
+            CHECK(id == a && url == rawUrl);
+        });
+        auto *viewport = graphics(*editor).viewport();
+        const QPoint point = linkPoint(*editor, alpha);
+        const QPoint global = viewport->mapToGlobal(point);
+        QTest::mousePress(viewport, Qt::LeftButton, Qt::NoModifier, point);
+        CHECK(!delivered);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(point), QPointF(global),
+                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(viewport, &release);
+        pump();
+        CHECK(delivered && alive.isNull() && activated.size() == 1);
+        CHECK(activated.front().at(0).toString() == a && activated.front().at(1).toString() == rawUrl);
+    }
+}
+
+static void emoji_category_popup_case() {
+    Editor editor;
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    showEditor(editor, QSize(1100, 900));
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    auto *panel = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
+    auto *icons = panel->findChild<QLineEdit *>(QStringLiteral("nodeIcons"));
+    auto *url = panel->findChild<QLineEdit *>(QStringLiteral("nodeUrl"));
+    auto *scroll = panel->findChild<QScrollArea *>();
+    CHECK(icons && url && scroll);
+    scroll->ensureWidgetVisible(icons);
+    icons->setFocus();
+    pump();
+    auto *popup = icons->findChild<QWidget *>(QStringLiteral("emojiPopup"));
+    CHECK(popup && popup->isVisible());
+    const Json before = exported(editor);
+    // Exercise the native-window stage that QWidget-only mouse tests bypass.
+    const QPoint border = popup->rect().topLeft();
+    QMouseEvent windowPress(QEvent::MouseButtonPress, QPointF(border), QPointF(popup->mapToGlobal(border)),
+                            Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(popup->windowHandle(), &windowPress);
+    QMouseEvent windowRelease(QEvent::MouseButtonRelease, QPointF(border), QPointF(popup->mapToGlobal(border)),
+                              Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(popup->windowHandle(), &windowRelease);
+    pump();
+    CHECK(popup->isVisible());
+    // Native tool activation can reach the owner before button/focus state settles.
+    QEvent deactivate(QEvent::WindowDeactivate);
+    QApplication::sendEvent(&editor, &deactivate);
+    pump();
+    CHECK(popup->isVisible());
+    auto *categories = icons->findChild<QComboBox *>(QStringLiteral("emojiCategories"));
+    auto *choices = icons->findChild<QListView *>(QStringLiteral("emojiChoices"));
+    CHECK(categories && choices);
+    auto checkFilledRow = [&] {
+        choices->scrollToTop();
+        pump();
+        CHECK(choices->model()->rowCount() > 1);
+        const QRect first = choices->visualRect(choices->model()->index(0, 0));
+        QRect previous;
+        int columns = 0;
+        for (int row = 0; row < choices->model()->rowCount(); ++row) {
+            const QRect cell = choices->visualRect(choices->model()->index(row, 0));
+            if (cell.top() != first.top()) break;
+            CHECK(choices->viewport()->rect().contains(cell));
+            if (columns) CHECK(previous.right() + 1 == cell.left());
+            previous = cell;
+            ++columns;
+        }
+        CHECK(columns > 0 && columns < choices->model()->rowCount());
+        const int gutter = choices->verticalScrollBar()->isVisible() ? 0 : choices->verticalScrollBar()->sizeHint().width();
+        const int unused = choices->viewport()->rect().right() - previous.right();
+        // Only the native scrollbar gutter and integer division remainder may remain.
+        CHECK(unused <= gutter + 2 * choices->frameWidth() + columns);
+        CHECK(choices->horizontalScrollBar()->maximum() == 0);
+    };
+    checkFilledRow();
+    const QSize originalPopupSize = popup->size();
+    for (int width : {337, 517}) {
+        popup->resize(width, originalPopupSize.height());
+        checkFilledRow();
+    }
+    const QFont originalFont = icons->font();
+    QFont largerFont = originalFont;
+    largerFont.setPointSizeF(qMax(qreal(12), originalFont.pointSizeF() + 4));
+    icons->setFont(largerFont);
+    checkFilledRow();
+    icons->setFont(originalFont);
+    popup->resize(originalPopupSize);
+    const QString originalIcons = icons->text();
+    icons->setText(QStringLiteral("heart"));
+    checkFilledRow();
+    icons->setText(QStringLiteral("tree"));
+    checkFilledRow();
+    CHECK(!choices->verticalScrollBar()->isVisible());
+    icons->setText(QStringLiteral("rocket"));
+    pump();
+    CHECK(!choices->verticalScrollBar()->isVisible() && choices->horizontalScrollBar()->maximum() == 0);
+    icons->setText(QStringLiteral("no-such-emoji-xyz"));
+    pump();
+    CHECK(choices->model()->rowCount() == 0 && choices->horizontalScrollBar()->maximum() == 0);
+    icons->setText(originalIcons);
+    checkFilledRow();
+    CHECK(exported(editor) == before);
+    auto hasEmoji = [&](const QString &name) {
+        for (int row = 0; row < choices->model()->rowCount(); ++row)
+            if (choices->model()->index(row, 0).data().toString() == name) return true;
+        return false;
+    };
+    CHECK(hasEmoji(QStringLiteral("red apple")) && hasEmoji(QStringLiteral("grinning face")));
+    QTest::mouseClick(categories, Qt::LeftButton);
+    pump();
+    CHECK(popup->isVisible() && categories->view()->isVisible());
+    const int food = categories->findText(QStringLiteral("Food & Drink"));
+    CHECK(food >= 0);
+    const QModelIndex foodIndex = categories->model()->index(food, 0);
+    categories->view()->scrollTo(foodIndex);
+    pump();
+    const QPoint foodPoint = categories->view()->visualRect(foodIndex).center();
+    QTest::mouseMove(categories->view()->viewport(), foodPoint);
+    QTest::mouseClick(categories->view()->viewport(), Qt::LeftButton, Qt::NoModifier, foodPoint);
+    pump();
+    CHECK(popup->isVisible());
+    CHECK(!categories->view()->isVisible());
+    CHECK(icons->hasFocus());
+    CHECK(categories->currentIndex() == food);
+    CHECK(hasEmoji(QStringLiteral("red apple")) && !hasEmoji(QStringLiteral("grinning face")));
+    CHECK(exported(editor) == before);
+    QTest::keyClicks(icons, "apple");
+    pump();
+    CHECK(popup->isVisible() && hasEmoji(QStringLiteral("red apple")) && !hasEmoji(QStringLiteral("banana")));
+    QTest::mouseClick(categories, Qt::LeftButton);
+    pump();
+    QTest::keyClick(categories->view(), Qt::Key_Escape);
+    pump();
+    CHECK(popup->isVisible() && !categories->view()->isVisible() && icons->hasFocus());
+    QTest::keyClick(icons, Qt::Key_Tab);
+    pump();
+    CHECK(!popup->isVisible() && !icons->hasFocus());
+    icons->setFocus();
+    pump();
+    CHECK(popup->isVisible());
+    QTest::mouseClick(url, Qt::LeftButton);
+    pump();
+    CHECK(!popup->isVisible());
+}
+
 static void properties_case() {
+    emoji_category_popup_case();
     Editor editor;
     Json input = editorFixture();
     for (auto &entry : input.at("nodes")) if (entry.at("id") == "a")
@@ -3167,6 +3530,7 @@ int main(int argc, char **argv) {
         else if (name == "navigation") navigation_case();
         else if (name == "node_drag") node_drag_case();
         else if (name == "properties") properties_case();
+        else if (name == "hyperlinks") hyperlinks_case();
         else if (name == "controls") controls_case();
         else if (name == "inline_edit") inline_edit_case();
         else if (name == "configuration") configuration_case();

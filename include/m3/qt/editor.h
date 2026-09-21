@@ -38,7 +38,15 @@
 // Topics/labels are plain Unicode text. Embedded NULs are rejected.
 // A selected node has a floating properties card; links/empty selection hide it.
 // Appearance, tags, icons, URL and note edits persist immediately without changing
-// selection or zoom. Tags/icons accept comma-separated entries; URLs are inert.
+// selection or zoom. Tags/icons accept comma-separated entries. Icons display as
+// literal Unicode text above the topic, wrapping within the node; names are not
+// mapped to an icon library. The Icons field opens a searchable, categorized
+// Unicode 15.1 emoji picker on focus; a choice replaces the current entry or a
+// selection within it, never adjacent entries.
+// Direct typing still saves immediately; glyph availability depends on host fonts.
+// Empty icons reserve no space. Nonempty URLs
+// show an indicator beside the topic. Activating it emits nodeLinkActivated with
+// the node ID and unchanged URL; the host decides whether and how to open it.
 // Collapsing the card leaves only its top-right toggle, without changing selection.
 // The expanded/collapsed preference is local to this editor and survives selection
 // and document changes; links/empty selection hide either form without resetting it.
@@ -126,6 +134,7 @@ public:
 signals:
     void documentChanged();
     void selectionChanged(const QString &nodeId, const QString &linkId);
+    void nodeLinkActivated(const QString &nodeId, const QString &url);
     void errorOccurred(const QString &message);
 private:
     class Private;
