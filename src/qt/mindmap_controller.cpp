@@ -113,6 +113,11 @@ Presentation MindMapController::prepare(const M3Mindmap *map, MindMapEditor::Lay
         node.topic = string(record.at("topic"));
         node.hyperlink = string(record.at("hyperLink"));
         for (const auto &icon : record.at("icons")) node.icons.append(string(icon));
+        node.tags.reserve(record.at("tags").size());
+        for (const auto &tag : record.at("tags")) {
+            auto value = string(tag);
+            if (!value.trimmed().isEmpty()) node.tags.push_back({std::move(value), {}, {}});
+        }
         node.root = record.at("id") == data.at("rootId");
         node.expanded = record.at("expanded").get<bool>();
         const auto &children = record.at("children");

@@ -22,9 +22,15 @@ struct NodeProperties {
     bool root = false;
     NodeStyle style;
 };
+struct NodeTagPresentation {
+    QString value;
+    QRectF rectangle;
+    std::unique_ptr<QTextDocument> text;
+};
 struct NodePresentation {
     QString id, topic, hyperlink;
     QStringList icons;
+    std::vector<NodeTagPresentation> tags;
     bool root = false, expanded = true, hasChildren = false;
     QRectF rectangle;
     NodeStyle style;

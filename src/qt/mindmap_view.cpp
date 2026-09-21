@@ -23,6 +23,11 @@
 
 namespace m3::qt {
 namespace {
+constexpr qreal tagHorizontalPadding = 6;
+constexpr qreal tagVerticalPadding = 3;
+constexpr qreal tagGap = 4;
+constexpr qreal topicTagGap = 6;
+constexpr qreal tagCornerRadius = 4;
 class NodeLinkItem final : public QGraphicsItem {
 public:
     NodeLinkItem(const QString &url, QGraphicsItem *parent)
@@ -73,6 +78,7 @@ public:
     bool expanded, hasChildren;
     bool dropTarget = false;
     QRectF rect;
+    std::vector<QRectF> tagRectangles;
     QPalette colors;
     QColor backgroundColor;
     QGraphicsTextItem *label;
@@ -83,23 +89,31 @@ public:
         setPos(node.rectangle.topLeft());
         setZValue(2);
         setFlag(ItemIsSelectable);
-        auto addText = [this, &node](std::unique_ptr<QTextDocument> text, qreal top) {
+        auto addText = [this](std::unique_ptr<QTextDocument> text, const QPointF &position, const QColor &color) {
             auto *item = new QGraphicsTextItem(this);
             // setDocument borrows; QObject parenting makes the text item sole owner.
             text->setParent(item);
             item->setDocument(text.release());
-            item->setFont(item->document()->defaultFont());
-            item->setDefaultTextColor(node.style.textColor.isValid() ? node.style.textColor : colors.color(QPalette::Text));
+            item->setDefaultTextColor(color);
             item->setTextInteractionFlags(Qt::NoTextInteraction);
-            item->setPos(12, top);
+            item->setPos(position);
             return item;
         };
+        const QColor textColor = node.style.textColor.isValid() ? node.style.textColor : colors.color(QPalette::Text);
         qreal topicTop = 8;
         if (node.iconText) {
             topicTop += node.iconText->size().height() + 4;
-            addText(std::move(node.iconText), 8);
+            addText(std::move(node.iconText), QPointF(12, 8), textColor);
         }
-        label = addText(std::move(node.text), topicTop);
+        label = addText(std::move(node.text), QPointF(12, topicTop), textColor);
+        tagRectangles.reserve(node.tags.size());
+        for (auto &tag : node.tags) {
+            tagRectangles.push_back(tag.rectangle);
+            auto *item = addText(std::move(tag.text),
+                                 tag.rectangle.topLeft() + QPointF(tagHorizontalPadding, tagVerticalPadding),
+                                 colors.color(QPalette::Text));
+            item->setAcceptedMouseButtons(Qt::NoButton);
+        }
         if (!hyperlink.isEmpty()) {
             auto *indicator = new NodeLinkItem(hyperlink, this);
             indicator->setPos(rect.right() - 32 - (hasChildren ? 18 : 0), rect.center().y() - 10);
@@ -113,6 +127,10 @@ public:
                        dropTarget || isSelected() ? 3 : 1, dropTarget ? Qt::DashLine : Qt::SolidLine));
         p->setBrush(backgroundColor);
         p->drawRoundedRect(rect, 8, 8);
+        p->setPen(QPen(colors.color(QPalette::Mid), 1));
+        p->setBrush(colors.color(QPalette::Base));
+        for (const auto &rectangle : tagRectangles)
+            p->drawRoundedRect(rectangle.adjusted(0.5, 0.5, -0.5, -0.5), tagCornerRadius, tagCornerRadius);
         if (hasChildren) {
             const QPointF center = affordance().center();
             p->setPen(QPen(colors.color(QPalette::ButtonText), 1));
@@ -472,27 +490,57 @@ void MindMapView::prepare(NodePresentation &node) const {
     if (node.style.fontSize > 0) textFont.setPixelSize(qRound(node.style.fontSize));
     textFont.setBold(node.style.bold.value_or(node.root));
     if (node.style.italic.has_value()) textFont.setItalic(*node.style.italic);
-    auto prepareText = [&textFont](const QString &value) {
+    auto prepareText = [](const QString &value, const QFont &font, qreal maximumWidth) {
         auto text = std::make_unique<QTextDocument>();
         text->setDocumentMargin(0);
-        text->setDefaultFont(textFont);
+        text->setDefaultFont(font);
         QTextOption option;
         option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
         text->setDefaultTextOption(option);
         text->setPlainText(value);
         text->setTextWidth(-1);
-        text->setTextWidth(qMin(qreal(240), qMax(qreal(1), text->idealWidth())));
+        text->setTextWidth(qMin(maximumWidth, qMax(qreal(1), text->idealWidth())));
         return text;
     };
-    node.text = prepareText(node.topic);
+    node.text = prepareText(node.topic, textFont, 240);
     const QString icons = node.icons.join(QLatin1Char(' '));
-    node.iconText = icons.trimmed().isEmpty() ? nullptr : prepareText(icons);
+    node.iconText = icons.trimmed().isEmpty() ? nullptr : prepareText(icons, textFont, 240);
     const QSizeF textSize = node.text->size();
     const QSizeF iconSize = node.iconText ? node.iconText->size() : QSizeF(0, 0);
-    node.rectangle = QRectF(0, 0, qMax(qreal(72), qMax(textSize.width(), iconSize.width()) + 24 +
+    qreal contentWidth = qMax(textSize.width(), iconSize.width());
+    const qreal topicTop = 8 + (node.iconText ? iconSize.height() + 4 : 0);
+    qreal contentBottom = topicTop + textSize.height();
+    if (!node.tags.empty()) {
+        QFont tagFont = font();
+        tagFont.setWeight(QFont::Normal);
+        tagFont.setItalic(false);
+        if (tagFont.pixelSize() > 0) tagFont.setPixelSize(qMax(1, qRound(tagFont.pixelSize() * 0.85)));
+        else tagFont.setPointSizeF(qMax(qreal(1), tagFont.pointSizeF() * 0.85));
+        qreal naturalTagsWidth = 0;
+        for (auto &tag : node.tags) {
+            tag.text = prepareText(tag.value, tagFont, 240 - 2 * tagHorizontalPadding);
+            const QSizeF size = tag.text->size() + QSizeF(2 * tagHorizontalPadding, 2 * tagVerticalPadding);
+            tag.rectangle = QRectF(QPointF(), size);
+            if (naturalTagsWidth > 0) naturalTagsWidth += tagGap;
+            naturalTagsWidth += size.width();
+        }
+        contentWidth = qMax(contentWidth, qMin(qreal(240), naturalTagsWidth));
+        qreal rowTop = contentBottom + topicTagGap, rowWidth = 0, rowHeight = 0;
+        for (auto &tag : node.tags) {
+            if (rowWidth > 0 && rowWidth + tagGap + tag.rectangle.width() > contentWidth) {
+                rowTop += rowHeight + tagGap;
+                rowWidth = rowHeight = 0;
+            }
+            if (rowWidth > 0) rowWidth += tagGap;
+            tag.rectangle.moveTopLeft(QPointF(12 + rowWidth, rowTop));
+            rowWidth += tag.rectangle.width();
+            rowHeight = qMax(rowHeight, tag.rectangle.height());
+        }
+        contentBottom = rowTop + rowHeight;
+    }
+    node.rectangle = QRectF(0, 0, qMax(qreal(72), contentWidth + 24 +
                                     (node.hyperlink.isEmpty() ? 0 : 24) + (node.hasChildren ? 18 : 0)),
-                            qMax(qreal(36), textSize.height() + 16 +
-                                 (node.iconText ? iconSize.height() + 4 : 0)));
+                            qMax(qreal(36), contentBottom + 8));
 }
 void MindMapView::install(Presentation presentation, bool fit) {
     clearNodeLinkPress();

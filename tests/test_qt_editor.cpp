@@ -821,6 +821,11 @@ static void render_case() {
     const QString wrapped = QString::fromUtf8("Long Unicode 世界 — café naïve Καλημέρα repeated words wrap without clipping\nSecond line: 日本語 and <angle brackets> stay plain");
     setTopic(input, "a", wrapped);
     setTopic(input, "b", QStringLiteral("<b>plain</b>"));
+    const QString longTag(80, QLatin1Char('W'));
+    const QStringList addedTags{QStringLiteral("two words"), QStringLiteral("<b>tag</b>"),
+                               QString::fromUtf8("世界"), longTag};
+    for (auto &node : input.at("nodes")) if (node.at("id") == "a")
+        node["tags"] = Json::array({"two words", "<b>tag</b>", "世界", std::string(80, 'W')});
     for (auto &link : input.at("crossLinks")) {
         if (link.at("id") == "l2") link["topic"] = "<i>plain link</i>";
         if (link.at("id") == "l3") { link["topic"] = "Self loop"; link["directed"] = true; }
@@ -846,7 +851,32 @@ static void render_case() {
     showEditor(editor);
     const Json semantic = exported(editor);
     const QString rootTopic = qs(record(semantic, "nodes", QStringLiteral("r")).at("topic"));
+    auto checkTags = [&](const QString &topic, const QStringList &values) {
+        auto *label = textItem(editor, topic);
+        auto *owner = ownerItem(label);
+        QList<QGraphicsTextItem *> badges;
+        for (const auto &value : std::set<QString>(values.begin(), values.end()))
+            for (auto *badge : texts(editor, value)) if (ownerItem(badge) == owner) badges.append(badge);
+        std::sort(badges.begin(), badges.end(), [](const auto *a, const auto *b) {
+            const QRectF first = a->sceneBoundingRect(), second = b->sceneBoundingRect();
+            return first.top() == second.top() ? first.left() < second.left() : first.top() < second.top();
+        });
+        CHECK(badges.size() == values.size());
+        for (qsizetype i = 0; i < badges.size(); ++i) {
+            const QRectF rectangle = badges[i]->sceneBoundingRect();
+            CHECK(badges[i]->toPlainText() == values[i]);
+            CHECK(rectangle.top() > label->sceneBoundingRect().bottom());
+            CHECK(owner->sceneBoundingRect().contains(rectangle));
+            for (qsizetype j = 0; j < i; ++j) CHECK(!rectangle.intersects(badges[j]->sceneBoundingRect()));
+        }
+    };
     auto checkNodes = [&] {
+        checkTags(rootTopic, {QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("x")});
+        checkTags(wrapped, addedTags);
+        const QRectF firstTag = textItem(editor, addedTags.front())->sceneBoundingRect();
+        const QRectF lastTag = textItem(editor, longTag)->sceneBoundingRect();
+        CHECK(lastTag.top() > firstTag.bottom());
+        CHECK(lastTag.height() > 2 * firstTag.height());
         std::vector<QRectF> rectangles;
         for (const QString &topic : {rootTopic, wrapped, QStringLiteral("<b>plain</b>"), QStringLiteral("Delta")}) {
             auto *text = textItem(editor, topic);
@@ -1891,10 +1921,16 @@ static void properties_case() {
     CHECK(exported(editor) == expected && changed.isEmpty());
     CHECK(view.transform() == zoom);
 
+    auto badgeCount = [&](const QString &value) {
+        auto *owner = ownerItem(textItem(editor, QStringLiteral("Alpha")));
+        const auto matches = texts(editor, value);
+        return std::count_if(matches.begin(), matches.end(), [&](auto *badge) { return ownerItem(badge) == owner; });
+    };
     // Each edit changes only its native field; arbitrary style/image/link data survive.
     paste(tags, QString::fromUtf8("todo, 世界, todo"));
     jsonNode(expected, "a")["tags"] = Json::array({"todo", "世界", "todo"});
     CHECK(exported(editor) == expected && changed.size() == 1);
+    CHECK(badgeCount(QStringLiteral("todo")) == 2 && badgeCount(QString::fromUtf8("世界")) == 1);
     QTest::keyClicks(tags, ", ");
     CHECK(tags->text().endsWith(QStringLiteral(", ")) && tags->cursorPosition() == tags->text().size());
     CHECK(exported(editor) == expected && changed.size() == 1);
@@ -1903,6 +1939,8 @@ static void properties_case() {
     jsonNode(expected, "a")["tags"][0] = "xtodo";
     CHECK(tags->cursorPosition() == 1 && tags->text().endsWith(QStringLiteral(", ")));
     CHECK(exported(editor) == expected && changed.size() == 2);
+    CHECK(badgeCount(QStringLiteral("xtodo")) == 1 && badgeCount(QStringLiteral("todo")) == 1);
+    CHECK(badgeCount(QString::fromUtf8("世界")) == 1);
     paste(icons, QStringLiteral("star, flag, star"));
     jsonNode(expected, "a")["icons"] = Json::array({"star", "flag", "star"});
     paste(url, QString::fromUtf8("opaque:世界?q=1"));
@@ -2303,6 +2341,48 @@ static void properties_case() {
         CHECK(automatic->isChecked());
         CHECK(exported(colorsEditor) == colorsExpected && colorChanges.size() == 4);
     }
+    // Clearing the last badges restores the untagged shape without moving the camera.
+    {
+        Editor tagged, untagged;
+        Json emptyTags = editorFixture();
+        jsonNode(emptyTags, "r")["tags"] = Json::array();
+        CHECK(tagged.loadJson(encoded(editorFixture())) && untagged.loadJson(encoded(emptyTags)));
+        untagged.setFont(tagged.font());
+        CHECK(tagged.setLayoutDirection(Editor::LayoutDirection::Right));
+        CHECK(untagged.setLayoutDirection(Editor::LayoutDirection::Right));
+        showEditor(untagged, QSize(1100, 900));
+        showEditor(tagged, QSize(1100, 900));
+        CHECK(tagged.selectNode(QStringLiteral("r")));
+        auto *field = tagged.findChild<QLineEdit *>(QStringLiteral("nodeTags"));
+        auto *tagPanel = tagged.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
+        CHECK(field && tagPanel);
+        auto *tagScroll = tagPanel->findChild<QScrollArea *>();
+        CHECK(tagScroll);
+        tagScroll->ensureWidgetVisible(field);
+        field->setFocus();
+        pump();
+        CHECK(field->isVisible() && field->hasFocus());
+        Json cleared = exported(tagged);
+        const QString topic = qs(jsonNode(cleared, "r").at("topic"));
+        const QSizeF taggedSize = topicRect(tagged, topic).size();
+        auto &canvas = graphics(tagged);
+        const QTransform transform = canvas.transform();
+        const QPointF center = canvas.mapToScene(canvas.viewport()->rect().center());
+        QSignalSpy edits(&tagged, &Editor::documentChanged), selections(&tagged, &Editor::selectionChanged);
+        QTest::keyClick(field, Qt::Key_A, Qt::ControlModifier);
+        QTest::keyClick(field, Qt::Key_Delete);
+        pump();
+        jsonNode(cleared, "r")["tags"] = Json::array();
+        CHECK(exported(tagged) == cleared && edits.size() == 1);
+        CHECK(tagged.selectedNodeId() == QStringLiteral("r") && tagged.selectedLinkId().isEmpty() && selections.isEmpty());
+        CHECK(canvas.transform() == transform && canvas.mapToScene(canvas.viewport()->rect().center()) == center);
+        auto *topicLabel = textItem(tagged, topic);
+        auto *owner = ownerItem(topicLabel);
+        for (auto *item : owner->childItems()) if (auto *text = dynamic_cast<QGraphicsTextItem *>(item))
+            CHECK(text == topicLabel || text->sceneBoundingRect().bottom() <= topicLabel->sceneBoundingRect().top());
+        CHECK(topicRect(tagged, topic).size() == topicRect(untagged, topic).size());
+        CHECK(topicRect(tagged, topic).height() < taggedSize.height());
+    }
 }
 
 static void focus_root_case() {
@@ -2565,6 +2645,28 @@ static void navigation_case() {
 }
 
 static void inline_edit_case() {
+    {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        clickLabel(editor, QStringLiteral("y"));
+        CHECK(editor.selectedNodeId() == QStringLiteral("r") && graphics(editor).hasFocus());
+        Json expected = exported(editor);
+        const Json tags = record(expected, "nodes", QStringLiteral("r")).at("tags");
+        const QString topic = qs(record(expected, "nodes", QStringLiteral("r")).at("topic"));
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        QTest::keyClick(graphics(editor).viewport(), Qt::Key_F2);
+        pump();
+        CHECK(topicInput(editor).toPlainText() == topic);
+        const QString renamed = QStringLiteral("Renamed tagged root");
+        topicInput(editor).setPlainText(renamed);
+        topicKey(editor, Qt::Key_Return, Qt::ControlModifier);
+        setTopic(expected, "r", renamed);
+        CHECK(exported(editor) == expected && changed.size() == 1);
+        CHECK(record(exported(editor), "nodes", QStringLiteral("r")).at("tags") == tags);
+        CHECK(ownerItem(textItem(editor, QStringLiteral("y"))) == ownerItem(textItem(editor, renamed)));
+    }
     {
         Editor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
@@ -3585,8 +3687,10 @@ static void collapse_scene() {
         for (auto &entry : expanded.at("nodes")) if (entry.at("id") == "a") entry["expanded"] = true;
         QSignalSpy centeredChanges(&centered, &Editor::documentChanged), centeredSelection(&centered, &Editor::selectionChanged);
         auto parentCentered = [&] {
-            return QLineF(centeredView.mapFromScene(topicRect(centered, QStringLiteral("Alpha")).center()),
-                          centeredView.viewport()->rect().center()).length() <= 2.0;
+            // Compare continuous viewport coordinates, not two independently rounded integer points.
+            const QPointF midpoint(centeredView.viewport()->width() / 2.0, centeredView.viewport()->height() / 2.0);
+            return QLineF(centeredView.viewportTransform().map(topicRect(centered, QStringLiteral("Alpha")).center()),
+                          midpoint).length() <= 2.0;
         };
         auto childrenVisible = [&] {
             for (const auto &topic : {QStringLiteral("Delta"), QStringLiteral("Second child"), QStringLiteral("Third child")})
