@@ -325,7 +325,10 @@ public:
         });
         auto *collapse = new QShortcut(QKeySequence(Qt::Key_Escape), this);
         collapse->setContext(Qt::WidgetWithChildrenShortcut);
-        connect(collapse, &QShortcut::activated, this, [this] { toggle->setChecked(false); });
+        connect(collapse, &QShortcut::activated, this, [this] {
+            toggle->setChecked(false);
+            if (view) view->setFocus(Qt::OtherFocusReason);
+        });
         connect(fontSize, &QComboBox::currentIndexChanged, this, [this] {
             const double size = fontSize->currentData().toDouble();
             applyStyle({{QStringLiteral("fontSize"), size > 0 ? QJsonValue(size) : QJsonValue(QJsonValue::Null)}});

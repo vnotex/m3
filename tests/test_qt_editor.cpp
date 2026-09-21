@@ -2082,7 +2082,7 @@ static void properties_case() {
     CHECK(editor.selectedNodeId() == QStringLiteral("r") && selected.isEmpty());
     CHECK(exported(editor) == beforeResize && changed.isEmpty());
     CHECK(view.transform() == expandZoom && view.mapToScene(view.viewport()->rect().center()) == expandCenter);
-    // Escape collapses only the panel, keeps focus on its toggle, and never expands it.
+    // Escape collapses only the panel, returns focus to the selected node, and never expands it.
     editor.activateWindow();
     pump();
     for (QWidget *control : {static_cast<QWidget *>(tags), static_cast<QWidget *>(note), static_cast<QWidget *>(toggle)}) {
@@ -2090,12 +2090,15 @@ static void properties_case() {
         control->setFocus();
         QTest::keyClick(control, Qt::Key_Escape);
         compact();
-        CHECK(toggle->hasFocus());
+        CHECK(view.hasFocus());
+        toggle->setFocus();
         QTest::keyClick(toggle, Qt::Key_Escape);
         compact();
+        CHECK(view.hasFocus());
         CHECK(editor.selectedNodeId() == QStringLiteral("r") && selected.isEmpty());
         CHECK(exported(editor) == beforeResize && changed.isEmpty());
         CHECK(view.transform() == expandZoom && view.mapToScene(view.viewport()->rect().center()) == expandCenter);
+        toggle->setFocus();
         QTest::keyClick(toggle, Qt::Key_Space);
         pump();
         CHECK(scroll->isVisible() && note->isVisible());
@@ -2111,7 +2114,8 @@ static void properties_case() {
     CHECK(!size->view()->isVisible() && scroll->isVisible());
     QTest::keyClick(size, Qt::Key_Escape);
     compact();
-    CHECK(toggle->hasFocus());
+    CHECK(view.hasFocus());
+    toggle->setFocus();
     QTest::keyClick(toggle, Qt::Key_Space);
     reveal(icons);
     icons->setFocus();
@@ -2122,9 +2126,19 @@ static void properties_case() {
     CHECK(!picker->isVisible() && scroll->isVisible() && icons->hasFocus());
     QTest::keyClick(icons, Qt::Key_Escape);
     compact();
-    CHECK(toggle->hasFocus());
+    CHECK(view.hasFocus());
     CHECK(editor.selectedNodeId() == QStringLiteral("r") && selected.isEmpty());
     CHECK(exported(editor) == beforeResize && changed.isEmpty());
+    // The next node shortcut works without moving focus back to the canvas.
+    QTest::keyClick(QApplication::focusWidget(), Qt::Key_F2);
+    pump();
+    CHECK(topicInput(editor).toPlainText() == rootTopic);
+    CHECK(editor.selectedNodeId() == QStringLiteral("r") && selected.isEmpty());
+    topicKey(editor, Qt::Key_Escape);
+    CHECK(activeTopicInput(editor) == nullptr && view.hasFocus());
+    compact();
+    CHECK(exported(editor) == beforeResize && changed.isEmpty());
+    toggle->setFocus();
     QTest::keyClick(toggle, Qt::Key_Space);
     pump();
     // Canvas Escape retains its existing selection-clearing behavior.
