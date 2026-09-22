@@ -140,6 +140,15 @@ QByteArray MindMapController::toJson() {
     try { return snapshot(model.get()); }
     catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
+QString MindMapController::toMarkdown() {
+    try {
+        char *raw = nullptr;
+        const auto result = m3_mindmap_to_markdown(model.get(), &raw);
+        Text text(raw, m3_string_free);
+        requireStatus(result);
+        return QString::fromUtf8(text.get());
+    } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
+}
 Presentation MindMapController::prepare(const M3Mindmap *map, MindMapEditor::LayoutDirection requested) {
     const auto bytes = snapshot(map);
     const auto data = Json::parse(bytes.constData(), bytes.constData() + bytes.size());

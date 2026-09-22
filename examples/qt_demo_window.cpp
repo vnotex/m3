@@ -19,6 +19,9 @@ DemoWindow::DemoWindow(QWidget *parent)
     auto *open = file->addAction(tr("&Open...")); open->setShortcut(QKeySequence::Open);
     auto *saveAction = file->addAction(tr("&Save")); saveAction->setShortcut(QKeySequence::Save);
     auto *saveAsAction = file->addAction(tr("Save &As...")); saveAsAction->setShortcut(QKeySequence::SaveAs);
+    file->addSeparator();
+    auto *markdownAction = file->addAction(tr("Export &Markdown..."));
+    connect(markdownAction, &QAction::triggered, this, [this] { exportMarkdown(); });
     connect(create, &QAction::triggered, this, [this] { newFile(); });
     connect(open, &QAction::triggered, this, [this] {
         const QString path = QFileDialog::getOpenFileName(this, tr("Open mind map"), filename, tr("JSON files (*.json);;All files (*)"));
@@ -86,6 +89,35 @@ bool DemoWindow::saveFile(const QString &path) {
     setWindowModified(false); updateTitle();
     statusBar()->showMessage(tr("Saved %1").arg(filename));
     return true;
+}
+bool DemoWindow::exportMarkdownFile(const QString &path) {
+    if (path.isEmpty()) return report(tr("An output path is required"));
+    const QString markdown = editor->toMarkdown();
+    if (markdown.isEmpty()) return report(editor->lastError());
+    const QByteArray bytes = markdown.toUtf8();
+    QSaveFile output(path);
+    if (!output.open(QIODevice::WriteOnly)) return report(output.errorString());
+    if (output.write(bytes) != bytes.size()) { output.cancelWriting(); return report(output.errorString()); }
+    if (!output.commit()) return report(output.errorString());
+    statusBar()->showMessage(tr("Exported %1").arg(QFileInfo(path).absoluteFilePath()));
+    return true;
+}
+bool DemoWindow::exportMarkdown() {
+    QFileDialog dialog(this, tr("Export mind map as Markdown"));
+    dialog.setAcceptMode(QFileDialog::AcceptSave);
+    dialog.setFileMode(QFileDialog::AnyFile);
+    dialog.setNameFilter(tr("Markdown files (*.md)"));
+    dialog.setDefaultSuffix(QStringLiteral("md"));
+    if (!filename.isEmpty()) {
+        const QFileInfo current(filename);
+        dialog.setDirectory(current.absolutePath());
+        dialog.selectFile(current.completeBaseName() + QStringLiteral(".md"));
+    } else {
+        dialog.selectFile(QStringLiteral("Untitled.md"));
+    }
+    if (dialog.exec() != QDialog::Accepted) return false;
+    const QStringList paths = dialog.selectedFiles();
+    return !paths.isEmpty() && !paths.front().isEmpty() && exportMarkdownFile(paths.front());
 }
 bool DemoWindow::save() { return filename.isEmpty() ? saveAs() : saveFile(filename); }
 bool DemoWindow::saveAs() {

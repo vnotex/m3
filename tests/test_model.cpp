@@ -1,6 +1,7 @@
 #include "test_support.h"
 #include <future>
 #include <exception>
+#include <utility>
 static void roundtrip() {
     M3Mindmap *raw = nullptr;
     ok(m3_mindmap_create("r", "Root", &raw));
@@ -39,6 +40,223 @@ static void roundtrip() {
     rich.reset();
     CHECK(Json::parse(owned.get()) == exported);
     CHECK(Json::parse(owned_node.get()) == exported["nodes"][0]);
+}
+
+static Text markdown_text(const Map &map) {
+    char *raw = nullptr;
+    const auto status = m3_mindmap_to_markdown(map.get(), &raw);
+    Text text(raw, m3_string_free);
+    ok(status);
+    CHECK(text);
+    return text;
+}
+
+static size_t markdown_occurrences(const std::string &text, const std::string &needle) {
+    size_t count = 0, position = 0;
+    while ((position = text.find(needle, position)) != std::string::npos) {
+        ++count;
+        position += needle.size();
+    }
+    return count;
+}
+
+static void markdown() {
+    auto minimal = load(Json::parse(R"({"schemaVersion":1,"rootId":"r","nodes":[
+      {"id":"r","topic":"Roadmap","children":["a"]},
+      {"id":"a","topic":"Build 世界","note":"line one\nline two"}]})"));
+    auto minimal_text = markdown_text(minimal);
+    CHECK(std::string(minimal_text.get()) ==
+        "# <a id=\"m3-node-72\"></a>Roadmap\n\n"
+        "## <a id=\"m3-node-61\"></a>Build 世界\n\n"
+        "**Note:** line one<br>line two\n");
+    auto blank = load(Json::parse(R"({"schemaVersion":1,"rootId":"r","nodes":[{"id":"r"}]})"));
+    auto blank_text = markdown_text(blank);
+    CHECK(std::string(blank_text.get()) == "# <a id=\"m3-node-72\"></a>(untitled)\n");
+
+    auto input = fixture();
+    for (auto &n : input["nodes"]) {
+        if (n["id"] == "a") n["expanded"] = false;
+        if (n["id"] == "r") {
+            n["icons"].push_back("star");
+            n["style"]["exportSentinel"] = "visual-only-node";
+        }
+    }
+    input["crossLinks"][0]["style"] = {{"exportSentinel", "visual-only-link"}};
+    auto map = load(input);
+    const auto before = document(map);
+
+    char *invalid = reinterpret_cast<char *>(1);
+    CHECK(m3_mindmap_to_markdown(nullptr, &invalid) == M3_ERR_INVALID_ARGUMENT);
+    CHECK(invalid == nullptr && *m3_last_error());
+    CHECK(m3_mindmap_to_markdown(map.get(), nullptr) == M3_ERR_INVALID_ARGUMENT);
+    CHECK(*m3_last_error());
+    auto owned = markdown_text(map);
+    CHECK(!*m3_last_error());
+    const std::string text = owned.get();
+    CHECK(document(map) == before);
+    CHECK(text.rfind("# <a id=\"m3-node-72\"></a>Racine 世界 🌍\n\n", 0) == 0);
+    CHECK(text.back() == '\n' && text[text.size() - 2] != '\n');
+    CHECK(text.find('\r') == std::string::npos);
+    CHECK(markdown_occurrences(text, "<a id=\"") == 5);
+    size_t position = 0;
+    for (const char *heading : {
+        "# <a id=\"m3-node-72\"></a>Racine 世界 🌍\n\n",
+        "## <a id=\"m3-node-61\"></a>(untitled)\n\n",
+        "### <a id=\"m3-node-64\"></a>(untitled)\n\n",
+        "## <a id=\"m3-node-62\"></a>(untitled)\n\n",
+        "## <a id=\"m3-node-63\"></a>(untitled)\n\n"}) {
+        const auto found = text.find(heading, position);
+        CHECK(found != std::string::npos);
+        position = found + std::string(heading).size();
+    }
+    const std::string metadata =
+        "**Note:** Note café\n\n"
+        "**URL:** [opaque:anything](<opaque:anything>)\n\n"
+        "**Tag:** x\n\n**Tag:** y\n\n**Tag:** x\n\n"
+        "**Icon:** star\n\n**Icon:** flag\n\n**Icon:** star\n\n"
+        "**Image URL:** [memory:絵](<memory:%E7%B5%B5>)\n\n"
+        "![Image](<memory:%E7%B5%B5>)\n\n"
+        "**Image size:** " + Json(0.0).dump() + " × " + Json(12.0).dump() + "\n\n";
+    CHECK(text.find(metadata + "## <a id=\"m3-node-61\">") != std::string::npos);
+    CHECK(text.find("visual-only-node") == std::string::npos);
+    CHECK(text.find("visual-only-link") == std::string::npos);
+    const std::string section = "---\n\n## Cross-links\n\n";
+    CHECK(text.compare(position, section.size(), section) == 0);
+    position += section.size();
+    for (const char *entry : {
+        "- [(untitled)](#m3-node-61) → [(untitled)](#m3-node-62)\n\n"
+        "    **ID:** l1\n\n    **Label:** Related\n\n    **Icon:** reference\n\n",
+        "- [(untitled)](#m3-node-64) ↔ [(untitled)](#m3-node-63)\n\n"
+        "    **ID:** l2\n\n    **Label:** Other\n\n    **Icon:** pin\n\n",
+        "- [(untitled)](#m3-node-61) ↔ [(untitled)](#m3-node-61)\n\n"
+        "    **ID:** l3\n\n",
+        "- [(untitled)](#m3-node-62) → [(untitled)](#m3-node-63)\n\n"
+        "    **ID:** l4\n"}) {
+        const std::string expected = entry;
+        CHECK(text.compare(position, expected.size(), expected) == 0);
+        position += expected.size();
+    }
+    CHECK(position == text.size());
+
+    ok(m3_mindmap_update_node(map.get(), "r", R"({"topic":"After snapshot"})"));
+    auto changed = markdown_text(map);
+    CHECK(std::string(changed.get()).rfind("# <a id=\"m3-node-72\"></a>After snapshot\n", 0) == 0);
+    CHECK(std::string(owned.get()) == text);
+    map.reset();
+    CHECK(std::string(owned.get()) == text);
+}
+
+static void markdown_edges() {
+    const std::string literal = "  世界 &copy; <br> > " R"(\`*_{}[]()#+-.!|~)"
+        "\r\nCR\rLF\nTAB\t\x01\x1f\x7f" "  ";
+    const std::string escaped = "  世界 &amp;copy; &lt;br&gt; &gt; "
+        R"(\\\`\*\_\{\}\[\]\(\)\#\+\-\.\!\|\~)"
+        "<br>CR<br>LF<br>TAB&#9;&#1;&#31;&#127;  ";
+    const std::string root_id = "r\"<&🌍";
+    const std::string root_anchor = "m3-node-72223c26f09f8c8d";
+    const std::string deep_id = "葉.[x]";
+    const std::string deep_anchor = "m3-node-e891892e5b785d";
+    const std::string url = "../a b?x=&copy;&q=<\"\\世界>\t\r\n\x1f\x7f%20(keep)";
+    const std::string url_text = R"(\.\./a b?x=&amp;copy;&amp;q=&lt;"\\世界&gt;)"
+        "&#9;<br>&#31;&#127;%20\\(keep\\)";
+    const std::string destination =
+        "../a%20b?x=&amp;copy;&amp;q=%3C%22%5C%E4%B8%96%E7%95%8C%3E%09%0D%0A%1F%7F%20(keep)";
+    Json nodes = Json::array({{{"id", root_id}, {"topic", literal}, {"note", literal},
+        {"children", {"n1", "a"}}}});
+    for (size_t depth = 1; depth <= 5; ++depth) {
+        nodes.push_back({{"id", "n" + std::to_string(depth)}, {"topic", "D" + std::to_string(depth)},
+            {"children", {"n" + std::to_string(depth + 1)}}});
+    }
+    nodes.push_back({{"id", "n6"}, {"topic", ""}, {"note", literal}, {"hyperLink", url},
+        {"tags", {literal, "", literal}}, {"icons", {literal, "", literal}},
+        {"image", {{"url", ""}, {"width", 0}, {"height", 0}}}, {"children", {"n7", "s7"}}});
+    nodes.push_back({{"id", "n7"}, {"topic", "D7"}, {"note", "seventh"},
+        {"image", {{"url", url}, {"width", 1.5}, {"height", 2.25}}}, {"children", {deep_id}}});
+    nodes.push_back({{"id", deep_id}, {"topic", "Deep 世界"}, {"note", "eighth"}});
+    nodes.push_back({{"id", "s7"}, {"topic", "Sibling"}, {"note", "sibling"}});
+    nodes.push_back({{"id", "a"}, {"topic", literal}, {"note", "back at heading"}});
+    // The first two sorted links share endpoints; the remaining links close a cycle.
+    const Json cross_links = Json::array({
+        {{"id", "z"}, {"source", deep_id}, {"target", root_id}, {"directed", true}},
+        {{"id", "b"}, {"source", "n6"}, {"target", deep_id}, {"directed", true}},
+        {{"id", "a" + literal}, {"source", root_id}, {"target", "n6"}, {"directed", false},
+            {"topic", literal}, {"icon", literal}},
+        {{"id", "A"}, {"source", root_id}, {"target", "n6"}, {"directed", true}}});
+    auto map = load({{"schemaVersion", 1}, {"rootId", root_id}, {"nodes", nodes}, {"crossLinks", cross_links}});
+    const auto before = document(map);
+    auto owned = markdown_text(map);
+    const std::string text = owned.get();
+    CHECK(document(map) == before);
+    CHECK(text.rfind("# <a id=\"" + root_anchor + "\"></a>" + escaped + "\n\n**Note:** " + escaped + "\n\n", 0) == 0);
+    CHECK(markdown_occurrences(text, "<a id=\"") == nodes.size());
+    CHECK(markdown_occurrences(text, "<a id=\"" + root_anchor + "\">") == 1);
+    CHECK(markdown_occurrences(text, "<a id=\"m3-node-61\">") == 1);
+    CHECK(text.find("#######") == std::string::npos);
+    CHECK(text.find('\r') == std::string::npos && text.find('\t') == std::string::npos);
+    CHECK(text.find("\n \n") == std::string::npos && text.find("\n    \n") == std::string::npos);
+    CHECK(text.find("## <a id=\"m3-node-6e31\"></a>D1\n\n"
+        "### <a id=\"m3-node-6e32\"></a>D2\n\n"
+        "#### <a id=\"m3-node-6e33\"></a>D3\n\n"
+        "##### <a id=\"m3-node-6e34\"></a>D4\n\n"
+        "###### <a id=\"m3-node-6e35\"></a>D5\n\n"
+        "- <a id=\"m3-node-6e36\"></a>(untitled)\n\n") != std::string::npos);
+    const std::string sixth =
+        "- <a id=\"m3-node-6e36\"></a>(untitled)\n\n"
+        "    **Note:** " + escaped + "\n\n"
+        "    **URL:** [" + url_text + "](<" + destination + ">)\n\n"
+        "    **Tag:** " + escaped + "\n\n    **Tag:** (empty)\n\n    **Tag:** " + escaped + "\n\n"
+        "    **Icon:** " + escaped + "\n\n    **Icon:** (empty)\n\n    **Icon:** " + escaped + "\n\n"
+        "    **Image URL:** (empty)\n\n"
+        "    **Image size:** " + Json(0.0).dump() + " × " + Json(0.0).dump() + "\n\n"
+        "    - <a id=\"m3-node-6e37\"></a>D7\n\n";
+    CHECK(text.find(sixth) != std::string::npos);
+    const std::string seventh =
+        "    - <a id=\"m3-node-6e37\"></a>D7\n\n        **Note:** seventh\n\n"
+        "        **Image URL:** [" + url_text + "](<" + destination + ">)\n\n"
+        "        ![Image](<" + destination + ">)\n\n"
+        "        **Image size:** " + Json(1.5).dump() + " × " + Json(2.25).dump() + "\n\n"
+        "        - <a id=\"" + deep_anchor + "\"></a>Deep 世界\n\n";
+    CHECK(text.find(seventh) != std::string::npos);
+    CHECK(text.find("        - <a id=\"" + deep_anchor + "\"></a>Deep 世界\n\n"
+        "            **Note:** eighth\n\n"
+        "    - <a id=\"m3-node-7337\"></a>Sibling\n\n"
+        "        **Note:** sibling\n\n"
+        "## <a id=\"m3-node-61\"></a>" + escaped + "\n\n"
+        "**Note:** back at heading\n\n---\n\n## Cross-links\n\n") != std::string::npos);
+    const auto links_at = text.find("---\n\n## Cross-links\n\n");
+    CHECK(links_at != std::string::npos);
+    const std::string expected_links =
+        "---\n\n## Cross-links\n\n"
+        "- [" + escaped + "](#" + root_anchor + ") → [(untitled)](#m3-node-6e36)\n\n"
+        "    **ID:** A\n\n"
+        "- [" + escaped + "](#" + root_anchor + ") ↔ [(untitled)](#m3-node-6e36)\n\n"
+        "    **ID:** a" + escaped + "\n\n    **Label:** " + escaped + "\n\n    **Icon:** " + escaped + "\n\n"
+        "- [(untitled)](#m3-node-6e36) → [Deep 世界](#" + deep_anchor + ")\n\n"
+        "    **ID:** b\n\n"
+        "- [Deep 世界](#" + deep_anchor + ") → [" + escaped + "](#" + root_anchor + ")\n\n"
+        "    **ID:** z\n";
+    CHECK(text.substr(links_at) == expected_links);
+
+    constexpr size_t count = 1024;
+    Json chain_nodes = Json::array();
+    for (size_t i = 0; i < count; ++i) {
+        Json current = {{"id", "n" + std::to_string(i)}, {"topic", "Chain " + std::to_string(i)}};
+        if (i + 1 < count) current["children"] = {"n" + std::to_string(i + 1)};
+        chain_nodes.push_back(std::move(current));
+    }
+    auto chain = load({{"schemaVersion", 1}, {"rootId", "n0"}, {"nodes", chain_nodes},
+        {"crossLinks", Json::array({{{"id", "back"}, {"source", "n1023"}, {"target", "n0"}, {"directed", true}}})}});
+    auto chain_owned = markdown_text(chain);
+    const std::string chain_text = chain_owned.get();
+    CHECK(markdown_occurrences(chain_text, "<a id=\"") == count);
+    CHECK(chain_text.rfind("# <a id=\"m3-node-6e30\"></a>Chain 0\n\n", 0) == 0);
+    const std::string deepest = "\n" + std::string((count - 1 - 6) * 4, ' ') +
+        "- <a id=\"m3-node-6e31303233\"></a>Chain 1023\n\n"
+        "---\n\n## Cross-links\n\n"
+        "- [Chain 1023](#m3-node-6e31303233) → [Chain 0](#m3-node-6e30)\n\n"
+        "    **ID:** back\n";
+    const auto deepest_at = chain_text.find(deepest);
+    CHECK(deepest_at != std::string::npos && deepest_at + deepest.size() == chain_text.size());
 }
 
 static void validation() {
@@ -524,6 +742,8 @@ int main(int argc, char **argv) {
         CHECK(argc == 2);
         const std::string name = argv[1];
         if (name == "roundtrip") roundtrip();
+        else if (name == "markdown") markdown();
+        else if (name == "markdown_edges") markdown_edges();
         else if (name == "validation") validation();
         else if (name == "mind_elixir") mind_elixir();
         else if (name == "mind_elixir_validation") mind_elixir_validation();

@@ -18,7 +18,7 @@ if(M3_BUILD_SHARED)
 else()
     add_library(m3core STATIC src/api.cpp)
 endif()
-target_sources(m3core PRIVATE src/model.cpp src/json_codec.cpp src/layout.cpp)
+target_sources(m3core PRIVATE src/model.cpp src/json_codec.cpp src/markdown_codec.cpp src/layout.cpp)
 add_library(m3::core ALIAS m3core)
 set_target_properties(m3core PROPERTIES EXPORT_NAME core
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO

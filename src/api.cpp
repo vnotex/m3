@@ -1,4 +1,5 @@
 #include "json_codec.h"
+#include "markdown_codec.h"
 #include "layout.h"
 #include <cstdio>
 #include <cstring>
@@ -19,12 +20,12 @@ template<class F> M3Status boundary(F &&f) noexcept {
 }
 void argument(bool valid) { m3::require(valid, M3_ERR_INVALID_ARGUMENT, "Invalid argument"); }
 void id_argument(const char *id) { argument(id && *id && m3::valid_utf8(id)); }
-char *snapshot(const m3::Json &j) {
-    auto s = j.dump();
+char *snapshot(const std::string &s) {
     auto p = std::make_unique<char[]>(s.size() + 1);
     std::memcpy(p.get(), s.c_str(), s.size() + 1);
     return p.release();
 }
+char *snapshot(const m3::Json &j) { return snapshot(j.dump()); }
 }
 extern "C" {
 const char *m3_last_error(void) { return error_text; }
@@ -53,6 +54,10 @@ M3Status m3_mindmap_from_json(const char *json, M3Mindmap **out_map) {
 M3Status m3_mindmap_to_json(const M3Mindmap *map, char **out_json) {
     if (out_json) *out_json = nullptr;
     return boundary([&] { argument(map && out_json); *out_json = snapshot(m3::encode_document(map->model)); });
+}
+M3Status m3_mindmap_to_markdown(const M3Mindmap *map, char **out_markdown) {
+    if (out_markdown) *out_markdown = nullptr;
+    return boundary([&] { argument(map && out_markdown); *out_markdown = snapshot(m3::encode_markdown(map->model)); });
 }
 M3Status m3_mindmap_get_node_json(const M3Mindmap *map, const char *id, char **out_json) {
     if (out_json) *out_json = nullptr;

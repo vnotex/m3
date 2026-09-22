@@ -8,6 +8,7 @@ public:
     bool newFile();
     bool openFile(const QString &path);
     bool saveFile(const QString &path);
+    bool exportMarkdownFile(const QString &path);
     QString currentFilePath() const;
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -17,6 +18,7 @@ private:
     bool mayReplace();
     bool save();
     bool saveAs();
+    bool exportMarkdown();
     void updateTitle();
     bool report(const QString &message);
 };

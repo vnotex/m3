@@ -21,8 +21,10 @@
 // New editors contain the selected root "root" / "Central topic". New/load
 // replace it atomically, select the new root, and fit once; failed imports retain
 // the document and selection. Import accepts native JSON, optional-field nested
-// trees, and Mind Elixir. Export is a copied native JSON snapshot, including
-// opaque metadata, or empty on error.
+// trees, and Mind Elixir. toJson is a copied native JSON snapshot, including
+// opaque metadata, or empty on error. toMarkdown is a separate copied text
+// projection of the committed model, empty on error; it never changes the
+// selection, layout, or document and does not commit an inline draft.
 // Mutations return false/empty on semantic failure. After a successful mutation,
 // a drawing failure is reported without claiming rollback: the error scene is
 // retried on the next refresh. documentChanged fires once per semantic success;
@@ -116,6 +118,9 @@ public:
     bool newDocument(const QString &topic = QStringLiteral("Central topic"));
     bool loadJson(const QByteArray &json);
     QByteArray toJson() const;
+    // Copied Markdown text of the committed model, empty on error. No selection,
+    // layout, or document changes; an active inline draft remains uncommitted.
+    QString toMarkdown() const;
     QString lastError() const;
     QString addNode(const QString &parentId, const QString &topic, int index = -1);
     bool renameNode(const QString &id, const QString &topic);

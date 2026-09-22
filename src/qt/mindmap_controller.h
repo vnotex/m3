@@ -15,6 +15,7 @@ public:
     bool newDocument(const QString &topic);
     bool loadJson(const QByteArray &json);
     QByteArray toJson();
+    QString toMarkdown();
     QString lastError() const { return error; }
     QString addNode(const QString &parent, const QString &topic, int index);
     bool renameNode(const QString &id, const QString &topic);

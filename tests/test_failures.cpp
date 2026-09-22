@@ -83,6 +83,9 @@ static void outputs() {
     output_failures<char>("export", [&](char **out) {
         return m3_mindmap_to_json(map.get(),out);
     }, m3_string_free);
+    output_failures<char>("Markdown export", [&](char **out) {
+        return m3_mindmap_to_markdown(map.get(),out);
+    }, m3_string_free, true);
     output_failures<char>("node snapshot", [&](char **out) {
         return m3_mindmap_get_node_json(map.get(),"r",out);
     }, m3_string_free);

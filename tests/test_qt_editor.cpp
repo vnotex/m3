@@ -528,6 +528,60 @@ static void showDemo(DemoWindow &window) {
 }
 #endif
 
+static void markdown_case() {
+    QString retained;
+    {
+        Editor editor;
+        Json input = editorFixture();
+        setTopic(input, "r", QString::fromUtf8("Literal *世界* <br>"));
+        for (auto &entry : input.at("nodes")) if (entry.at("id") == "a") entry["expanded"] = false;
+        CHECK(editor.loadJson(encoded(input)));
+        showEditor(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        QSignalSpy selected(&editor, &Editor::selectionChanged);
+        const QByteArray baseline = editor.toJson();
+        CHECK(texts(editor, QStringLiteral("Delta")).isEmpty());
+        CHECK(editor.selectNode(QStringLiteral("b")));
+        graphics(editor).scale(1.2, 1.2);
+        const auto transform = graphics(editor).transform();
+        const auto selectionCount = selected.size();
+        const Editor &snapshot = editor;
+        retained = snapshot.toMarkdown();
+        CHECK(retained.contains(QString::fromUtf8("Literal \\*世界\\* &lt;br&gt;")));
+        CHECK(retained.contains(QStringLiteral("### <a id=\"m3-node-64\"></a>Delta")));
+        CHECK(retained.contains(QString::fromUtf8("**Note:** Note café")));
+        CHECK(retained.contains(QStringLiteral("- [Alpha](#m3-node-61) → [Beta](#m3-node-62)")));
+        CHECK(editor.toJson() == baseline && changed.isEmpty());
+        CHECK(editor.selectedNodeId() == QStringLiteral("b") && editor.selectedLinkId().isEmpty());
+        CHECK(selected.size() == selectionCount && graphics(editor).transform() == transform);
+        CHECK(editor.selectLink(QStringLiteral("l1")));
+        const auto linkSelectionCount = selected.size();
+        const auto linkTransform = graphics(editor).transform();
+        CHECK(snapshot.toMarkdown() == retained);
+        CHECK(editor.selectedNodeId().isEmpty() && editor.selectedLinkId() == QStringLiteral("l1"));
+        CHECK(selected.size() == linkSelectionCount && graphics(editor).transform() == linkTransform);
+        CHECK(editor.toJson() == baseline && changed.isEmpty());
+
+        CHECK(editor.selectNode(QStringLiteral("r")));
+        shortcut(editor, Qt::Key_F2);
+        auto *draft = &topicInput(editor);
+        draft->setPlainText(QString::fromUtf8("Accepted 世界"));
+        const auto draftSelections = selected.size();
+        const auto draftTransform = graphics(editor).transform();
+        CHECK(snapshot.toMarkdown() == retained);
+        CHECK(activeTopicInput(editor) == draft && draft->hasFocus());
+        CHECK(draft->toPlainText() == QString::fromUtf8("Accepted 世界"));
+        CHECK(editor.toJson() == baseline && changed.isEmpty());
+        CHECK(selected.size() == draftSelections && graphics(editor).transform() == draftTransform);
+        topicKey(editor, Qt::Key_Return);
+        CHECK(activeTopicInput(editor) == nullptr && changed.size() == 1);
+        CHECK(snapshot.toMarkdown().contains(QString::fromUtf8("# <a id=\"m3-node-72\"></a>Accepted 世界\n")));
+        CHECK(!snapshot.toMarkdown().contains(QStringLiteral("Literal")));
+    }
+    CHECK(retained.contains(QString::fromUtf8("Literal \\*世界\\* &lt;br&gt;")));
+    CHECK(!retained.contains(QStringLiteral("Accepted")));
+}
+
 static void document_case() {
     Editor editor;
     const Json initial = exported(editor);
@@ -3966,6 +4020,103 @@ static void controls_case() {
 }
 
 #ifdef M3_QT_TEST_DEMO
+static void demo_markdown_case() {
+    QTemporaryDir directory;
+    CHECK(directory.isValid());
+    const QString inputPath = directory.filePath(QStringLiteral("original.map.json"));
+    const QString outputStem = directory.filePath(QStringLiteral("exported"));
+    const QString outputPath = outputStem + QStringLiteral(".md");
+    const QString unrelatedPath = directory.filePath(QStringLiteral("unrelated.txt"));
+    const QByteArray original = encoded(editorFixture());
+    const QByteArray sentinel("Keep unrelated bytes.\n");
+    writeFile(inputPath, original);
+    writeFile(unrelatedPath, sentinel);
+    DemoWindow window;
+    showDemo(window);
+    auto &editor = embedded(window);
+    auto &action = textAction(window, {QStringLiteral("Export Markdown")});
+    CHECK(action.shortcut().isEmpty());
+    const QString untitledTitle = window.windowTitle();
+    const auto sample = exported(editor);
+    const QString cleanPath = directory.filePath(QStringLiteral("clean.md"));
+    dialogs({[&](QDialog *dialog) {
+        auto *file = qobject_cast<QFileDialog *>(dialog);
+        CHECK(file != nullptr && file->acceptMode() == QFileDialog::AcceptSave);
+        CHECK(file->fileMode() == QFileDialog::AnyFile);
+        CHECK(file->defaultSuffix() == QStringLiteral("md"));
+        CHECK(!file->testOption(QFileDialog::DontConfirmOverwrite));
+        CHECK(file->selectedFiles().size() == 1);
+        CHECK(QFileInfo(file->selectedFiles().front()).fileName() == QStringLiteral("Untitled.md"));
+        auto *name = file->findChild<QLineEdit *>(QStringLiteral("fileNameEdit"));
+        CHECK(name != nullptr);
+        name->setText(cleanPath);
+        fileResponse(cleanPath, true)(dialog);
+    }}, [&] { action.trigger(); });
+    CHECK(readFile(cleanPath).contains("**Note:** Preserve this note"));
+    CHECK(readFile(cleanPath).contains("## Cross-links"));
+    CHECK(!window.isWindowModified() && window.currentFilePath().isEmpty());
+    CHECK(window.windowTitle() == untitledTitle && exported(editor) == sample);
+
+    CHECK(window.openFile(inputPath));
+    CHECK(editor.selectNode(QStringLiteral("r")));
+    shortcut(editor, Qt::Key_F2);
+    topicInput(editor).setPlainText(QString::fromUtf8("Markdown smoke 世界"));
+    topicKey(editor, Qt::Key_Return);
+    CHECK(activeTopicInput(editor) == nullptr && window.isWindowModified());
+    const auto live = exported(editor);
+    const QString current = window.currentFilePath(), title = window.windowTitle();
+    const QString selectedNode = editor.selectedNodeId(), selectedLink = editor.selectedLinkId();
+    QSignalSpy changed(&editor, &Editor::documentChanged);
+    QSignalSpy selected(&editor, &Editor::selectionChanged);
+    const auto unchanged = [&] {
+        CHECK(exported(editor) == live && window.currentFilePath() == current);
+        CHECK(window.isWindowModified() && window.windowTitle() == title);
+        CHECK(editor.selectedNodeId() == selectedNode && editor.selectedLinkId() == selectedLink);
+        CHECK(changed.isEmpty() && selected.isEmpty());
+        CHECK(readFile(inputPath) == original && readFile(unrelatedPath) == sentinel);
+    };
+    dialogs({[&](QDialog *dialog) {
+        auto *file = qobject_cast<QFileDialog *>(dialog);
+        CHECK(file != nullptr && file->selectedFiles().size() == 1);
+        CHECK(sameFile(file->selectedFiles().front(), directory.filePath(QStringLiteral("original.map.md"))));
+        CHECK(file->selectedNameFilter() == QStringLiteral("Markdown files (*.md)"));
+        auto *name = file->findChild<QLineEdit *>(QStringLiteral("fileNameEdit"));
+        CHECK(name != nullptr);
+        name->setText(outputStem);
+        const QByteArray screenshot = qgetenv("M3_QT_SCREENSHOT");
+        if (!screenshot.isEmpty()) CHECK(file->grab().save(QString::fromLocal8Bit(screenshot)));
+        // Invoke the dialog override through its metaobject, including suffix and overwrite handling.
+        CHECK(QMetaObject::invokeMethod(file, "accept", Qt::DirectConnection));
+    }}, [&] { action.trigger(); });
+    const QByteArray bytes = readFile(outputPath);
+    CHECK(!QFileInfo::exists(outputStem));
+    CHECK(bytes.startsWith("# <a id=\"m3-node-72\"></a>Markdown smoke 世界\n"));
+    CHECK(bytes.contains("**Note:** Note café"));
+    CHECK(bytes.contains("- [Alpha](#m3-node-61) → [Beta](#m3-node-62)"));
+    CHECK(bytes.endsWith('\n') && !bytes.endsWith("\n\n") && !bytes.contains('\r'));
+    unchanged();
+    const QString exportStatus = window.statusBar()->currentMessage();
+    CHECK(!exportStatus.isEmpty());
+    dialogs({fileResponse(QString(), false)}, [&] { action.trigger(); });
+    CHECK(window.statusBar()->currentMessage() == exportStatus && readFile(outputPath) == bytes);
+    unchanged();
+
+    for (const QString &badPath : {QString(), directory.path()}) {
+        window.statusBar()->clearMessage();
+        CHECK(!window.exportMarkdownFile(badPath));
+        CHECK(!window.statusBar()->currentMessage().isEmpty());
+        CHECK(readFile(outputPath) == bytes);
+        unchanged();
+    }
+    CHECK(window.exportMarkdownFile(outputPath));
+    CHECK(readFile(outputPath) == bytes);
+    unchanged();
+    hostAction(window, QKeySequence::Save).trigger();
+    CHECK(!window.isWindowModified() && window.currentFilePath() == current);
+    CHECK(fileDocument(inputPath) == live && readFile(outputPath) == bytes);
+    CHECK(readFile(unrelatedPath) == sentinel);
+}
+
 static void demo_files_case() {
     QTemporaryDir directory;
     CHECK(directory.isValid());
@@ -4322,7 +4473,8 @@ int main(int argc, char **argv) {
         QApplication::setQuitOnLastWindowClosed(false);
         CHECK(argc == 2);
         const std::string name = argv[1];
-        if (name == "document") document_case();
+        if (name == "markdown") markdown_case();
+        else if (name == "document") document_case();
         else if (name == "tree_edits") { tree_edits_case(); tree_edits_scene(); }
         else if (name == "collapse") { collapse_case(); collapse_scene(); }
         else if (name == "graph_edits") { graph_edits_case(); graph_edits_scene(); }
@@ -4337,6 +4489,7 @@ int main(int argc, char **argv) {
         else if (name == "shortcuts") shortcuts_case();
         else if (name == "lifetime") lifetime_case();
 #ifdef M3_QT_TEST_DEMO
+        else if (name == "demo_markdown") demo_markdown_case();
         else if (name == "demo_files") demo_files_case();
         else if (name == "demo_prompts") demo_prompts_case();
 #endif

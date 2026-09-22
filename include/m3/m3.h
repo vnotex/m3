@@ -17,7 +17,7 @@ typedef struct M3Mindmap M3Mindmap;
  * Styles are opaque objects.
  * Node/link IDs are immutable, case-sensitive, separate namespaces.
  *
- * Document schema (all text is opaque; no URL fetching or Markdown processing):
+ * JSON document schema (text is opaque; no URL fetching or Markdown processing):
  *   {"schemaVersion":1,"rootId":"r","nodes":[{"id":"r"}],"crossLinks":[]}
  * schemaVersion/rootId/nodes are required; crossLinks defaults to []. Every node
  * is reachable from the root by ordered children IDs, with exactly one parent
@@ -33,8 +33,8 @@ typedef struct M3Mindmap M3Mindmap;
  * Endpoint order is preserved even for undirected links.
  * Styles permit arbitrary nested JSON; other native records reject unknown keys.
  * Decoded NUL characters in keys/values and invalid UTF-8 are not representable.
- * Export includes all fields, nodes in root-first child preorder, links in ID
- * byte order. Whitespace, object-key order and numeric spelling are not stable.
+ * JSON export includes all fields, nodes in root-first child preorder, links in
+ * ID byte order. Whitespace, object-key order and numeric spelling are not stable.
  * Geometry never changes the persisted semantic document.
  *
  * Malformed JSON/duplicate members return JSON; schema/type/hierarchy failures
@@ -67,10 +67,24 @@ M3_API M3Status m3_mindmap_create(const char *root_id, const char *topic, M3Mind
  * true, and icon/style use native defaults. Unmapped foreign fields are ignored,
  * including direction/root/parent, note/image, link delta1/delta2 and extensions;
  * no source metadata or layout is retained. Parser restrictions still apply to
- * ignored fields. Export always uses native schemaVersion 1. Node insertion,
+ * ignored fields. JSON export always uses native schemaVersion 1. Node insertion,
  * node patches and link mutations continue accepting only native records. */
 M3_API M3Status m3_mindmap_from_json(const char *json_utf8, M3Mindmap **out_map);
 M3_API M3Status m3_mindmap_to_json(const M3Mindmap *map, char **out_json);
+/* Markdown text projection, not a round-trip format. Visits every node in stored
+ * child order, including collapsed descendants: depths 0-5 use headings H1-H6,
+ * deeper nodes use nested lists. Stable ID-derived HTML anchors identify nodes.
+ * Includes topics, notes, URLs, ordered tags/icons (including empty/duplicate
+ * entries), image URLs/embeddings/dimensions, and ID-sorted cross-links with
+ * endpoint topics, direction, IDs, labels and icons. Omits styles, expansion
+ * state, layout and geometry. Empty topics display (untitled).
+ * Stored Markdown/HTML is escaped as literal text; line breaks become <br>.
+ * URL destinations are escaped, not resolved, fetched or scheme-validated.
+ * UTF-8 without BOM, structural LF newlines and exactly one final LF; even a
+ * blank map produces text. The independent NUL-terminated snapshot survives
+ * edits/destruction and must be released with m3_string_free. Both arguments
+ * are required; a non-null output slot is set to NULL even on failure. */
+M3_API M3Status m3_mindmap_to_markdown(const M3Mindmap *map, char **out_markdown);
 M3_API void m3_mindmap_destroy(M3Mindmap *map);
 M3_API M3Status m3_mindmap_get_node_json(const M3Mindmap *map, const char *node_id, char **out_json);
 /* Insert one leaf at [0, child_count] or M3_APPEND. */
