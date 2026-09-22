@@ -172,6 +172,123 @@ QRectF placeLabel(const QRectF &initial, const std::vector<QRectF> &occupied) {
     }
     return best;
 }
+// Cross-links are drawn after layout: node rectangles are immutable obstacles.
+class LinkRouter {
+public:
+    explicit LinkRouter(const std::vector<QRectF> &nodes) : nodes(nodes) {}
+    QPainterPath route(const QPainterPath &preferred, const QRectF &source,
+                       const QRectF &target, size_t lane = 0) const {
+        if (clear(preferred, source, target)) return preferred;
+        // Separate detour lanes without inflating obstacles enough to seal
+        // narrow sibling gaps. Retry closer corners when a lane is obstructed.
+        for (qreal padding : {qreal(10 + 6 * lane), qreal(6), qreal(0)}) {
+            const auto points = shortestPath(preferred.pointAtPercent(0), preferred.pointAtPercent(1),
+                                             source, target, padding);
+            if (points.empty()) continue;
+            QPainterPath rounded(points.front());
+            for (size_t i = 1; i + 1 < points.size(); ++i) {
+                const QPointF incoming = points[i - 1] - points[i], outgoing = points[i + 1] - points[i];
+                const qreal before = std::hypot(incoming.x(), incoming.y());
+                const qreal after = std::hypot(outgoing.x(), outgoing.y());
+                const qreal radius = std::min({qreal(6), before / 2, after / 2});
+                if (radius == 0) continue;
+                rounded.lineTo(points[i] + incoming * (radius / before));
+                rounded.quadTo(points[i], points[i] + outgoing * (radius / after));
+            }
+            rounded.lineTo(points.back());
+            if (clear(rounded, source, target)) return rounded;
+            QPainterPath path(points.front());
+            for (size_t i = 1; i < points.size(); ++i) path.lineTo(points[i]);
+            return path;
+        }
+        // Overlapping rectangles can make a boundary attachment unreachable.
+        return preferred;
+    }
+private:
+    const std::vector<QRectF> &nodes;
+    bool clear(const QPainterPath &path, const QRectF &source, const QRectF &target) const {
+        QPainterPathStroker stroker;
+        stroker.setCapStyle(Qt::RoundCap);
+        stroker.setJoinStyle(Qt::RoundJoin);
+        stroker.setWidth(8); // Keep the selectable stroke clear as well as the ink.
+        const QPainterPath stroke = stroker.createStroke(path);
+        for (const auto &node : nodes) {
+            const QRectF obstacle = node == source || node == target
+                ? node.adjusted(5, 5, -5, -5) : node.adjusted(-2, -2, 2, 2);
+            if (stroke.intersects(obstacle)) return false;
+        }
+        return true;
+    }
+    static bool crosses(const QPointF &from, const QPointF &to, const QRectF &rect) {
+        // Clip the segment against the OPEN rectangle. A tangent/corner touch
+        // is legal; bounding-box intersection or a path's implicit fill is not.
+        qreal enter = 0, leave = 1;
+        auto clip = [&](qreal position, qreal delta, qreal low, qreal high) {
+            const qreal epsilon = 16 * std::numeric_limits<qreal>::epsilon() *
+                std::max({qreal(1), std::abs(low), std::abs(high), std::abs(position)});
+            low += epsilon;
+            high -= epsilon;
+            if (delta == 0) return position > low && position < high;
+            qreal first = (low - position) / delta, last = (high - position) / delta;
+            if (first > last) std::swap(first, last);
+            enter = std::max(enter, first);
+            leave = std::min(leave, last);
+            return enter < leave;
+        };
+        return clip(from.x(), to.x() - from.x(), rect.left(), rect.right()) &&
+               clip(from.y(), to.y() - from.y(), rect.top(), rect.bottom());
+    }
+    std::vector<QPointF> shortestPath(const QPointF &from, const QPointF &to,
+                                     const QRectF &source, const QRectF &target, qreal padding) const {
+        std::vector<QPointF> vertices{from, to};
+        std::vector<QRectF> obstacles;
+        vertices.reserve(2 + 4 * nodes.size());
+        obstacles.reserve(nodes.size());
+        for (const auto &node : nodes) {
+            // Endpoint attachments lie on the original boundary, not inside an
+            // inflated obstacle. Their padded corners still provide exit routes.
+            const qreal clearance = std::min(qreal(6), padding);
+            obstacles.push_back(node == source || node == target ? node : node.adjusted(-clearance, -clearance, clearance, clearance));
+            const qreal gap = padding + 2;
+            const QRectF corners = node.adjusted(-gap, -gap, gap, gap);
+            for (const auto &corner : {corners.topLeft(), corners.topRight(), corners.bottomRight(), corners.bottomLeft()})
+                vertices.push_back(corner);
+        }
+        const size_t count = vertices.size();
+        std::vector<qreal> distance(count, std::numeric_limits<qreal>::infinity());
+        std::vector<size_t> previous(count, count);
+        std::vector<bool> visited(count, false);
+        distance[0] = 0;
+        // Lazy visibility edges avoid a dense adjacency matrix. Fixed vertex
+        // order and strict comparisons break equal-distance ties deterministically.
+        for (size_t step = 0; step < count; ++step) {
+            size_t current = count;
+            qreal best = std::numeric_limits<qreal>::infinity();
+            for (size_t i = 0; i < count; ++i)
+                if (!visited[i] && distance[i] < best) { best = distance[i]; current = i; }
+            if (current == count) return {};
+            if (current == 1) {
+                std::vector<QPointF> result;
+                for (size_t i = 1; i != count; i = previous[i]) result.push_back(vertices[i]);
+                std::reverse(result.begin(), result.end());
+                return result;
+            }
+            visited[current] = true;
+            for (size_t next = 0; next < count; ++next) {
+                if (visited[next]) continue;
+                const QPointF delta = vertices[next] - vertices[current];
+                const qreal candidate = best + std::hypot(delta.x(), delta.y());
+                if (candidate >= distance[next]) continue;
+                if (std::any_of(obstacles.begin(), obstacles.end(), [&](const QRectF &obstacle) {
+                    return crosses(vertices[current], vertices[next], obstacle);
+                })) continue;
+                distance[next] = candidate;
+                previous[next] = current;
+            }
+        }
+        return {};
+    }
+};
 class LinkItem final : public QGraphicsItem {
 public:
     QString id;
@@ -179,7 +296,7 @@ public:
     QPolygonF arrow;
     QPalette colors;
     LinkItem(const LinkPresentation &link, QPainterPath path, const QFont &font, const QPalette &palette,
-             std::vector<QRectF> &occupied)
+             std::vector<QRectF> &occupied, const LinkRouter &router, const QRectF &source, const QRectF &target)
         : id(link.id), curve(std::move(path)), colors(palette) {
         setZValue(1);
         setFlag(ItemIsSelectable);
@@ -194,6 +311,8 @@ public:
             }
         }
         QPainterPathStroker stroker;
+        stroker.setCapStyle(Qt::RoundCap);
+        stroker.setJoinStyle(Qt::RoundJoin);
         stroker.setWidth(8);
         hit = stroker.createStroke(curve);
         if (!arrow.isEmpty()) { QPainterPath outline; outline.addPolygon(arrow); hit = hit.united(outline); }
@@ -216,6 +335,7 @@ public:
                 leader.moveTo(anchor);
                 leader.lineTo(QPointF(std::clamp(anchor.x(), placed.left(), placed.right()),
                                       std::clamp(anchor.y(), placed.top(), placed.bottom())));
+                leader = router.route(leader, source, target);
                 hit = hit.united(stroker.createStroke(leader));
             }
             QPainterPath textShape;
@@ -547,10 +667,13 @@ void MindMapView::install(Presentation presentation, bool fit) {
     auto replacement = std::make_unique<QGraphicsScene>();
     QHash<QString, QRectF> rectangles;
     QHash<QString, QString> parents;
+    std::vector<QRectF> nodes;
+    nodes.reserve(presentation.nodes.size());
     std::vector<QRectF> occupied;
     occupied.reserve(presentation.nodes.size() + presentation.links.size());
     for (const auto &node : presentation.nodes) {
         rectangles.insert(node.id, node.rectangle);
+        nodes.push_back(node.rectangle);
         occupied.push_back(node.rectangle.adjusted(-2, -2, 2, 2));
     }
     for (const auto &edge : presentation.treeEdges) {
@@ -565,6 +688,7 @@ void MindMapView::install(Presentation presentation, bool fit) {
         auto *item = replacement->addPath(path, QPen(palette().color(QPalette::Mid), 1));
         item->setAcceptedMouseButtons(Qt::NoButton);
     }
+    const LinkRouter router(nodes);
     using Pair = std::pair<QString, QString>;
     std::map<Pair, std::vector<const LinkPresentation *>> groups;
     for (const auto &link : presentation.links)
@@ -591,7 +715,8 @@ void MindMapView::install(Presentation presentation, bool fit) {
                 path.moveTo(from);
                 path.quadTo((from + to) / 2 + normal * offset, to);
             }
-            replacement->addItem(new LinkItem(link, std::move(path), font(), palette(), occupied));
+            path = router.route(path, source, target, i);
+            replacement->addItem(new LinkItem(link, std::move(path), font(), palette(), occupied, router, source, target));
         }
     }
     QGraphicsTextItem *replacementLabel = nullptr;

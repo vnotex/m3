@@ -831,6 +831,8 @@ static void render_case() {
         if (link.at("id") == "l3") { link["topic"] = "Self loop"; link["directed"] = true; }
         if (link.at("id") == "l4") { link["source"] = "a"; link["target"] = "b"; link["topic"] = "Parallel route"; }
     }
+    input["crossLinks"].push_back({{"id", "reverse"}, {"source", "b"}, {"target", "a"},
+                                   {"directed", true}, {"topic", "Reverse route"}});
     Editor editor;
     QFont font(QStringLiteral("Arial"));
     font.setPixelSize(15);
@@ -903,8 +905,21 @@ static void render_case() {
         for (const auto &link : semantic.at("crossLinks")) {
             const QString topic = qs(link.at("topic"));
             if (topic.isEmpty()) continue;
+            auto *item = ownerItem(textItem(editor, topic));
+            const QPainterPath linkShape = item->mapToScene(item->shape());
+            auto endpointRect = [&](const char *key) {
+                const QString text = qs(record(semantic, "nodes", qs(link.at(key))).at("topic"));
+                return text.isEmpty() ? emptyNodeRect(editor) : topicRect(editor, text);
+            };
+            const QRectF source = endpointRect("source"), target = endpointRect("target");
             const QRectF label = textItem(editor, topic)->sceneBoundingRect();
-            for (const auto &node : nodes) CHECK(!label.intersects(node));
+            for (const auto &node : nodes) {
+                CHECK(!label.intersects(node));
+                // The public hit shape includes the curve, arrow, label, and leader.
+                // Only attachments may overlap an endpoint's border hit allowance.
+                const QRectF interior = node == source || node == target ? node.adjusted(8, 8, -8, -8) : node;
+                CHECK(!linkShape.intersects(interior));
+            }
             for (const auto &other : labels) CHECK(!label.intersects(other));
             labels.push_back(label);
             clickLabel(editor, topic);
@@ -1034,6 +1049,75 @@ static void render_case() {
         for (int x = endpointRegion.left(); x <= endpointRegion.right(); ++x)
             if (directed.pixel(x, y) != undirected.pixel(x, y)) ++arrowDifference;
     CHECK(arrowDifference > 5);
+}
+
+static void routing_case() {
+    Json input = Json::parse(R"({"schemaVersion":1,"rootId":"r","nodes":[
+        {"id":"r","topic":"Root","children":["a","b","c","d","e"]},
+        {"id":"a","topic":"Start"},
+        {"id":"b","topic":"Wide upper obstacle\nwith several lines\nand tags","tags":["large badge","another badge"]},
+        {"id":"c","topic":"Loop","children":["f"]},
+        {"id":"d","topic":"Wide lower obstacle\nwith several lines"},
+        {"id":"e","topic":"End"},{"id":"f","topic":"Child"}],
+        "crossLinks":[
+        {"id":"across","source":"a","target":"e","directed":true,"topic":"Across siblings"},
+        {"id":"return","source":"e","target":"a","directed":true,"topic":"Return"},
+        {"id":"loop1","source":"c","target":"c","directed":true,"topic":"Small loop"},
+        {"id":"loop2","source":"c","target":"c","directed":true,"topic":"Middle loop"},
+        {"id":"loop3","source":"c","target":"c","directed":true,"topic":"Outer loop"},
+        {"id":"child","source":"f","target":"a","directed":false,"topic":"Child link"}]})");
+    Editor editor;
+    QFont font(QStringLiteral("Arial"));
+    font.setPixelSize(15);
+    editor.setFont(font);
+    CHECK(editor.loadJson(encoded(input)));
+    showEditor(editor);
+    auto verify = [&](bool collapsed) {
+        editor.clearSelection();
+        assertFit(editor);
+        const Json doc = exported(editor);
+        std::vector<QRectF> nodes;
+        for (const auto &node : doc.at("nodes")) {
+            if (collapsed && node.at("id") == "f") continue;
+            nodes.push_back(topicRect(editor, qs(node.at("topic"))));
+        }
+        for (const auto &link : doc.at("crossLinks")) {
+            const QString label = qs(link.at("topic"));
+            if (collapsed && link.at("id") == "child") {
+                CHECK(texts(editor, label).isEmpty());
+                continue;
+            }
+            auto *item = ownerItem(textItem(editor, label));
+            const QPainterPath shape = item->mapToScene(item->shape());
+            const QRectF source = topicRect(editor, qs(record(doc, "nodes", qs(link.at("source"))).at("topic")));
+            const QRectF target = topicRect(editor, qs(record(doc, "nodes", qs(link.at("target"))).at("topic")));
+            for (const auto &node : nodes) {
+                if (shape.intersects(node == source || node == target ? node.adjusted(8, 8, -8, -8) : node))
+                    throw std::runtime_error("Link " + utf8(label) + " crosses node at " +
+                                             std::to_string(node.x()) + "," + std::to_string(node.y()));
+            }
+            clickLabel(editor, label);
+            CHECK(editor.selectedLinkId() == qs(link.at("id")));
+            editor.clearSelection();
+            // Crowded self-loops may share an approach corridor; their labels
+            // above must still select each link independently.
+            if (link.at("source") != link.at("target")) {
+                const QPoint curve = curvePoint(editor, label, nodes);
+                QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, curve);
+                CHECK(editor.selectedLinkId() == qs(link.at("id")));
+            }
+        }
+    };
+    for (const auto direction : {Editor::LayoutDirection::Right, Editor::LayoutDirection::Left}) {
+        CHECK(editor.setLayoutDirection(direction));
+        verify(false);
+        CHECK(editor.setExpanded(QStringLiteral("c"), false));
+        verify(true);
+        CHECK(editor.setExpanded(QStringLiteral("c"), true));
+        verify(false);
+    }
+    CHECK(editor.renameNode(QStringLiteral("d"), QStringLiteral("Resized lower obstacle\nExtra line\nExtra line\nExtra line")));
+    verify(false);
 }
 
 static void empty_space_panning_case() {
@@ -3786,7 +3870,7 @@ int main(int argc, char **argv) {
         else if (name == "tree_edits") { tree_edits_case(); tree_edits_scene(); }
         else if (name == "collapse") { collapse_case(); collapse_scene(); }
         else if (name == "graph_edits") { graph_edits_case(); graph_edits_scene(); }
-        else if (name == "render") render_case();
+        else if (name == "render") { render_case(); routing_case(); }
         else if (name == "navigation") navigation_case();
         else if (name == "node_drag") node_drag_case();
         else if (name == "properties") properties_case();
