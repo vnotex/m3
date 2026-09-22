@@ -50,7 +50,7 @@ Use a separate build directory for a different generator/toolchain. `--config`/C
 - `include/m3/m3.h`, `include/m3/m3_layout.h`, `include/m3/qt/editor.h`: authoritative ownership, persistence, layout and widget behavior contracts; read these before changing public behavior.
 - `src/qt/mindmap_controller.cpp`, `src/qt/presentation.h`: semantic-to-render boundary and selection/error lifecycle.
 - `CMakeLists.txt`, `src/qt/CMakeLists.txt`, `cmake/m3Config.cmake.in`: targets, resources, installs and package components.
-- `.github/workflows/ci.yml`: complete build/install/consumer validation recipes. `examples/qt_demo.cpp` is the application entry point; `examples/qt_demo_window.cpp` owns file actions. `README.md` contains only the project tagline.
+- `.github/workflows/ci.yml`: complete build/install/consumer validation recipes. `examples/qt_demo.cpp` is the application entry point; `examples/qt_demo_window.cpp` owns file actions. `README.md` provides the project overview, screenshot, build instructions and library integration guidance.
 
 ## Runtime/Tooling Preferences
 - Require CMake >=3.18 and a C++17 compiler; the `ctest --test-dir` examples need CMake/CTest >=3.20. C API consumers/tests use C99. This is a native CMake project, not a Node/Bun project; no JavaScript package manager is involved.
