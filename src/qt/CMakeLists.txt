@@ -6,6 +6,8 @@ add_library(m3qt SHARED
     mindmap_view.h
     mindmap_view.cpp
     editor.cpp
+    html_export.h
+    html_export.cpp
     emoji_line_edit.h
     emoji_line_edit.cpp)
 qt_add_resources(m3qt m3_property_styles

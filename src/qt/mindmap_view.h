@@ -3,6 +3,7 @@
 #include "presentation.h"
 #include <QGraphicsView>
 #include <QHash>
+#include <QImage>
 #include <QKeySequence>
 #include <QPointer>
 
@@ -19,6 +20,7 @@ public:
     void finishTopicEdit(bool commit, bool restoreFocus = false);
     void prepare(NodePresentation &node) const;
     void install(Presentation presentation, bool fit);
+    QImage renderImage(Presentation presentation) const;
     void showError(const QString &message);
     void setSelection(const QString &node, const QString &link);
     void ensureNodeVisible(const QString &id);

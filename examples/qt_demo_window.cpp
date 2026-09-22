@@ -22,6 +22,8 @@ DemoWindow::DemoWindow(QWidget *parent)
     file->addSeparator();
     auto *markdownAction = file->addAction(tr("Export &Markdown..."));
     connect(markdownAction, &QAction::triggered, this, [this] { exportMarkdown(); });
+    auto *htmlAction = file->addAction(tr("Export &HTML..."));
+    connect(htmlAction, &QAction::triggered, this, [this] { exportHtml(); });
     connect(create, &QAction::triggered, this, [this] { newFile(); });
     connect(open, &QAction::triggered, this, [this] {
         const QString path = QFileDialog::getOpenFileName(this, tr("Open mind map"), filename, tr("JSON files (*.json);;All files (*)"));
@@ -118,6 +120,35 @@ bool DemoWindow::exportMarkdown() {
     if (dialog.exec() != QDialog::Accepted) return false;
     const QStringList paths = dialog.selectedFiles();
     return !paths.isEmpty() && !paths.front().isEmpty() && exportMarkdownFile(paths.front());
+}
+bool DemoWindow::exportHtmlFile(const QString &path) {
+    if (path.isEmpty()) return report(tr("An output path is required"));
+    const QString html = editor->toHtml();
+    if (html.isEmpty()) return report(editor->lastError());
+    const QByteArray bytes = html.toUtf8();
+    QSaveFile output(path);
+    if (!output.open(QIODevice::WriteOnly)) return report(output.errorString());
+    if (output.write(bytes) != bytes.size()) { output.cancelWriting(); return report(output.errorString()); }
+    if (!output.commit()) return report(output.errorString());
+    statusBar()->showMessage(tr("Exported %1").arg(QFileInfo(path).absoluteFilePath()));
+    return true;
+}
+bool DemoWindow::exportHtml() {
+    QFileDialog dialog(this, tr("Export mind map as HTML"));
+    dialog.setAcceptMode(QFileDialog::AcceptSave);
+    dialog.setFileMode(QFileDialog::AnyFile);
+    dialog.setNameFilter(tr("HTML files (*.html *.htm)"));
+    dialog.setDefaultSuffix(QStringLiteral("html"));
+    if (!filename.isEmpty()) {
+        const QFileInfo current(filename);
+        dialog.setDirectory(current.absolutePath());
+        dialog.selectFile(current.completeBaseName() + QStringLiteral(".html"));
+    } else {
+        dialog.selectFile(QStringLiteral("Untitled.html"));
+    }
+    if (dialog.exec() != QDialog::Accepted) return false;
+    const QStringList paths = dialog.selectedFiles();
+    return !paths.isEmpty() && !paths.front().isEmpty() && exportHtmlFile(paths.front());
 }
 bool DemoWindow::save() { return filename.isEmpty() ? saveAs() : saveFile(filename); }
 bool DemoWindow::saveAs() {

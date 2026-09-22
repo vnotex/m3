@@ -121,6 +121,10 @@ public:
     // Copied Markdown text of the committed model, empty on error. No selection,
     // layout, or document changes; an active inline draft remains uncommitted.
     QString toMarkdown() const;
+    // Copied standalone HTML: top-left switch between the current-layout visible
+    // map (shown initially) and full articles. Committed data only; no editor state
+    // changes. Empty on error; the snapshot survives edits and widget destruction.
+    QString toHtml() const;
     QString lastError() const;
     QString addNode(const QString &parentId, const QString &topic, int index = -1);
     bool renameNode(const QString &id, const QString &topic);

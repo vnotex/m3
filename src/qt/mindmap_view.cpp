@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <stdexcept>
 
 namespace m3::qt {
 namespace {
@@ -380,6 +381,75 @@ QPointF boundary(const QRectF &rect, const QPointF &towards) {
     const qreal y = delta.y() == 0 ? std::numeric_limits<qreal>::infinity() : rect.height() / (2 * std::abs(delta.y()));
     return rect.center() + delta * std::min(x, y);
 }
+std::unique_ptr<QGraphicsScene> buildScene(Presentation presentation, const QFont &font, const QPalette &palette) {
+    auto replacement = std::make_unique<QGraphicsScene>();
+    QHash<QString, QRectF> rectangles;
+    std::vector<QRectF> nodes;
+    nodes.reserve(presentation.nodes.size());
+    std::vector<QRectF> occupied;
+    occupied.reserve(presentation.nodes.size() + presentation.links.size());
+    for (const auto &node : presentation.nodes) {
+        rectangles.insert(node.id, node.rectangle);
+        nodes.push_back(node.rectangle);
+        occupied.push_back(node.rectangle.adjusted(-2, -2, 2, 2));
+    }
+    for (const auto &edge : presentation.treeEdges) {
+        const QRectF parent = rectangles.value(edge.source), child = rectangles.value(edge.target);
+        QPainterPath path;
+        if (presentation.outline) {
+            const qreal trunk = parent.left() + 16;
+            path.moveTo(trunk, parent.bottom());
+            path.lineTo(trunk, child.center().y());
+            path.lineTo(child.left(), child.center().y());
+        } else {
+            const bool right = child.center().x() > parent.center().x();
+            const QPointF from(right ? parent.right() : parent.left(), parent.center().y());
+            const QPointF to(right ? child.left() : child.right(), child.center().y());
+            const qreal middle = (from.x() + to.x()) / 2;
+            path.moveTo(from);
+            path.cubicTo(QPointF(middle, from.y()), QPointF(middle, to.y()), to);
+        }
+        auto *item = replacement->addPath(path, QPen(palette.color(QPalette::Mid), 1));
+        item->setAcceptedMouseButtons(Qt::NoButton);
+    }
+    const LinkRouter router(nodes);
+    using Pair = std::pair<QString, QString>;
+    std::map<Pair, std::vector<const LinkPresentation *>> groups;
+    for (const auto &link : presentation.links)
+        groups[{std::min(link.source, link.target), std::max(link.source, link.target)}].push_back(&link);
+    for (const auto &group : groups) {
+        const auto &links = group.second;
+        const QRectF canonicalFrom = rectangles.value(group.first.first), canonicalTo = rectangles.value(group.first.second);
+        QPointF normal = canonicalTo.center() - canonicalFrom.center();
+        const qreal length = std::hypot(normal.x(), normal.y());
+        if (length > 0) normal = QPointF(-normal.y(), normal.x()) / length;
+        for (size_t i = 0; i < links.size(); ++i) {
+            const auto &link = *links[i];
+            const QRectF source = rectangles.value(link.source), target = rectangles.value(link.target);
+            QPainterPath path;
+            if (link.source == link.target) {
+                const qreal radius = 36 + 18 * i;
+                const QPointF from(source.right(), source.center().y()), to(source.center().x(), source.top());
+                path.moveTo(from);
+                const QPointF corner(source.right() + radius, source.top() - radius);
+                path.cubicTo(corner, corner, to);
+            } else {
+                const QPointF from = boundary(source, target.center()), to = boundary(target, source.center());
+                const qreal offset = 24 * (qreal(i) - (qreal(links.size()) - 1) / 2 + 1);
+                path.moveTo(from);
+                path.quadTo((from + to) / 2 + normal * offset, to);
+            }
+            path = router.route(path, source, target, i);
+            replacement->addItem(new LinkItem(link, std::move(path), font, palette, occupied, router, source, target));
+        }
+    }
+    for (auto &node : presentation.nodes) {
+        auto *item = new NodeItem(std::move(node), palette);
+        replacement->addItem(item);
+    }
+    replacement->setSceneRect(replacement->itemsBoundingRect().adjusted(-32, -32, 32, 32));
+    return replacement;
+}
 QPointF sceneCenter(const QGraphicsView &view, const QSize &viewportSize) {
     // centerOn uses width/height divided by two, not QRect's inclusive integer center.
     const QPointF midpoint(viewportSize.width() / 2.0, viewportSize.height() / 2.0);
@@ -730,76 +800,16 @@ void MindMapView::prepare(NodePresentation &node) const {
 }
 void MindMapView::install(Presentation presentation, bool fit) {
     clearNodeLinkPress();
-    auto replacement = std::make_unique<QGraphicsScene>();
-    QHash<QString, QRectF> rectangles;
     QHash<QString, QString> parents;
-    std::vector<QRectF> nodes;
-    nodes.reserve(presentation.nodes.size());
-    std::vector<QRectF> occupied;
-    occupied.reserve(presentation.nodes.size() + presentation.links.size());
-    for (const auto &node : presentation.nodes) {
-        rectangles.insert(node.id, node.rectangle);
-        nodes.push_back(node.rectangle);
-        occupied.push_back(node.rectangle.adjusted(-2, -2, 2, 2));
-    }
-    for (const auto &edge : presentation.treeEdges) {
-        parents.insert(edge.target, edge.source);
-        const QRectF parent = rectangles.value(edge.source), child = rectangles.value(edge.target);
-        QPainterPath path;
-        if (presentation.outline) {
-            const qreal trunk = parent.left() + 16;
-            path.moveTo(trunk, parent.bottom());
-            path.lineTo(trunk, child.center().y());
-            path.lineTo(child.left(), child.center().y());
-        } else {
-            const bool right = child.center().x() > parent.center().x();
-            const QPointF from(right ? parent.right() : parent.left(), parent.center().y());
-            const QPointF to(right ? child.left() : child.right(), child.center().y());
-            const qreal middle = (from.x() + to.x()) / 2;
-            path.moveTo(from);
-            path.cubicTo(QPointF(middle, from.y()), QPointF(middle, to.y()), to);
-        }
-        auto *item = replacement->addPath(path, QPen(palette().color(QPalette::Mid), 1));
-        item->setAcceptedMouseButtons(Qt::NoButton);
-    }
-    const LinkRouter router(nodes);
-    using Pair = std::pair<QString, QString>;
-    std::map<Pair, std::vector<const LinkPresentation *>> groups;
-    for (const auto &link : presentation.links)
-        groups[{std::min(link.source, link.target), std::max(link.source, link.target)}].push_back(&link);
-    for (const auto &group : groups) {
-        const auto &links = group.second;
-        const QRectF canonicalFrom = rectangles.value(group.first.first), canonicalTo = rectangles.value(group.first.second);
-        QPointF normal = canonicalTo.center() - canonicalFrom.center();
-        const qreal length = std::hypot(normal.x(), normal.y());
-        if (length > 0) normal = QPointF(-normal.y(), normal.x()) / length;
-        for (size_t i = 0; i < links.size(); ++i) {
-            const auto &link = *links[i];
-            const QRectF source = rectangles.value(link.source), target = rectangles.value(link.target);
-            QPainterPath path;
-            if (link.source == link.target) {
-                const qreal radius = 36 + 18 * i;
-                const QPointF from(source.right(), source.center().y()), to(source.center().x(), source.top());
-                path.moveTo(from);
-                const QPointF corner(source.right() + radius, source.top() - radius);
-                path.cubicTo(corner, corner, to);
-            } else {
-                const QPointF from = boundary(source, target.center()), to = boundary(target, source.center());
-                const qreal offset = 24 * (qreal(i) - (qreal(links.size()) - 1) / 2 + 1);
-                path.moveTo(from);
-                path.quadTo((from + to) / 2 + normal * offset, to);
-            }
-            path = router.route(path, source, target, i);
-            replacement->addItem(new LinkItem(link, std::move(path), font(), palette(), occupied, router, source, target));
-        }
-    }
+    for (const auto &edge : presentation.treeEdges) parents.insert(edge.target, edge.source);
+    auto replacement = buildScene(std::move(presentation), font(), palette());
     QGraphicsTextItem *replacementLabel = nullptr;
-    for (auto &node : presentation.nodes) {
-        auto *item = new NodeItem(std::move(node), palette());
-        replacement->addItem(item);
-        if (topicEditor && item->id == editedId) replacementLabel = item->label;
-    }
-    replacement->setSceneRect(replacement->itemsBoundingRect().adjusted(-32, -32, 32, 32));
+    if (topicEditor)
+        for (auto *item : replacement->items())
+            if (auto *node = dynamic_cast<NodeItem *>(item); node && node->id == editedId) {
+                replacementLabel = node->label;
+                break;
+            }
     const QPointF center = sceneCenter(*this, viewport()->size());
     if (topicEditor) {
         if (fit || !replacementLabel || replacementLabel->toPlainText() != originalTopic) {
@@ -822,6 +832,29 @@ void MindMapView::install(Presentation presentation, bool fit) {
     pendingFit = pendingFit || fit;
     if (pendingFit && isVisible()) fitContents();
     updateTopicEditorGeometry();
+}
+QImage MindMapView::renderImage(Presentation presentation) const {
+    auto detached = buildScene(std::move(presentation), font(), palette());
+    const QRectF bounds = detached->sceneRect();
+    if (!std::isfinite(bounds.x()) || !std::isfinite(bounds.y()) ||
+        !std::isfinite(bounds.width()) || !std::isfinite(bounds.height()) ||
+        bounds.width() <= 0 || bounds.height() <= 0)
+        throw std::runtime_error("Invalid map bounds for HTML export");
+    const qreal width = std::ceil(bounds.width()), height = std::ceil(bounds.height());
+    // Divide before multiplying: even finite scene dimensions can overflow an area.
+    const qreal scale = std::min({qreal(1), 16384 / width, 16384 / height,
+                                 std::sqrt(16777216 / width) / std::sqrt(height)});
+    const QSize size(std::max(1, static_cast<int>(std::floor(width * scale))),
+                     std::max(1, static_cast<int>(std::floor(height * scale))));
+    QImage image(size, QImage::Format_ARGB32_Premultiplied);
+    if (image.isNull()) throw std::runtime_error("Could not allocate HTML map image");
+    image.fill(palette().color(QPalette::Base));
+    QPainter painter;
+    if (!painter.begin(&image)) throw std::runtime_error("Could not render HTML map image");
+    painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
+    detached->render(&painter, QRectF(QPointF(), QSizeF(size)), bounds, Qt::KeepAspectRatio);
+    if (!painter.end()) throw std::runtime_error("Could not render HTML map image");
+    return image;
 }
 void MindMapView::showError(const QString &message) {
     clearNodeLinkPress();

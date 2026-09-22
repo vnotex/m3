@@ -1,5 +1,6 @@
 #include "mindmap_controller.h"
 #include "mindmap_view.h"
+#include "html_export.h"
 #include <QHash>
 #include <QRegularExpression>
 #include <QStringList>
@@ -147,6 +148,14 @@ QString MindMapController::toMarkdown() {
         Text text(raw, m3_string_free);
         requireStatus(result);
         return QString::fromUtf8(text.get());
+    } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
+}
+QString MindMapController::toHtml() {
+    try {
+        const auto document = snapshot(model.get());
+        auto presentation = prepare(model.get(), direction);
+        const auto image = view.renderImage(std::move(presentation));
+        return encodeHtml(document, image);
     } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
 Presentation MindMapController::prepare(const M3Mindmap *map, MindMapEditor::LayoutDirection requested) {

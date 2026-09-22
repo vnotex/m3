@@ -800,6 +800,7 @@ bool MindMapEditor::newDocument(const QString &topic) { return d->controller->ne
 bool MindMapEditor::loadJson(const QByteArray &json) { return d->controller->loadJson(json); }
 QByteArray MindMapEditor::toJson() const { return d->controller->toJson(); }
 QString MindMapEditor::toMarkdown() const { return d->controller->toMarkdown(); }
+QString MindMapEditor::toHtml() const { return d->controller->toHtml(); }
 QString MindMapEditor::lastError() const { return d->controller->lastError(); }
 QString MindMapEditor::addNode(const QString &parent, const QString &topic, int index) { return d->controller->addNode(parent, topic, index); }
 bool MindMapEditor::renameNode(const QString &id, const QString &topic) { return d->controller->renameNode(id, topic); }

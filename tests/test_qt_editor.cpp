@@ -61,6 +61,8 @@
 #include <QUrl>
 #include <QWheelEvent>
 #include <QWindow>
+#include <QXmlStreamReader>
+#include <QMap>
 #include <algorithm>
 #include <cmath>
 #include <exception>
@@ -527,6 +529,308 @@ static void showDemo(DemoWindow &window) {
     pump();
 }
 #endif
+
+struct HtmlElement {
+    QString tag, text;
+    QMap<QString, QString> attributes;
+    int parent = -1;
+};
+struct HtmlPage {
+    std::vector<HtmlElement> elements;
+    explicit HtmlPage(const QString &html) {
+        CHECK(!html.isEmpty());
+        QXmlStreamReader reader(html);
+        std::vector<int> stack;
+        while (!reader.atEnd()) {
+            reader.readNext();
+            if (reader.isStartElement()) {
+                HtmlElement element;
+                element.tag = reader.name().toString();
+                if (element.tag == QStringLiteral("br")) element.text = QStringLiteral("\n");
+                element.parent = stack.empty() ? -1 : stack.back();
+                for (const auto &attribute : reader.attributes())
+                    element.attributes.insert(attribute.name().toString(), attribute.value().toString());
+                elements.push_back(std::move(element));
+                stack.push_back(static_cast<int>(elements.size()) - 1);
+            } else if (reader.isCharacters() && !stack.empty()) {
+                elements[stack.back()].text += reader.text();
+            } else if (reader.isEndElement()) {
+                CHECK(!stack.empty());
+                const int child = stack.back();
+                stack.pop_back();
+                if (!stack.empty()) elements[stack.back()].text += elements[child].text;
+            }
+        }
+        CHECK(!reader.hasError() && stack.empty());
+    }
+    std::vector<int> tags(const QString &tag) const {
+        std::vector<int> matches;
+        for (size_t i = 0; i < elements.size(); ++i)
+            if (elements[i].tag == tag) matches.push_back(static_cast<int>(i));
+        return matches;
+    }
+    QStringList articleIds() const {
+        QStringList ids;
+        for (const int i : tags(QStringLiteral("article"))) ids.append(elements[i].attributes.value(QStringLiteral("id")));
+        return ids;
+    }
+    QStringList values(const QString &tag) const {
+        QStringList result;
+        for (const int i : tags(tag)) result.append(elements[i].text);
+        return result;
+    }
+    QImage image() const {
+        const auto images = tags(QStringLiteral("img"));
+        CHECK(images.size() == 1);
+        const auto &attributes = elements[images.front()].attributes;
+        const QString source = attributes.value(QStringLiteral("src"));
+        const QString prefix = QStringLiteral("data:image/png;base64,");
+        CHECK(source.startsWith(prefix));
+        const QImage image = QImage::fromData(QByteArray::fromBase64(source.mid(prefix.size()).toLatin1()), "PNG");
+        CHECK(!image.isNull());
+        CHECK(image.width() == attributes.value(QStringLiteral("width")).toInt());
+        CHECK(image.height() == attributes.value(QStringLiteral("height")).toInt());
+        return image;
+    }
+};
+static void htmlAppearance(Editor &editor) {
+    QFont font(QStringLiteral("Arial"));
+    font.setPixelSize(16);
+    editor.setFont(font);
+    QPalette palette;
+    palette.setColor(QPalette::Base, Qt::white);
+    palette.setColor(QPalette::Text, QColor(20, 25, 30));
+    palette.setColor(QPalette::Button, QColor(234, 240, 248));
+    palette.setColor(QPalette::ButtonText, QColor(20, 25, 30));
+    palette.setColor(QPalette::Mid, QColor(100, 110, 125));
+    palette.setColor(QPalette::Dark, QColor(55, 65, 80));
+    editor.setPalette(palette);
+}
+static QRect htmlImageRegion(const QImage &image, const QRectF &bounds, const QRectF &region) {
+    const qreal scale = std::min(image.width() / bounds.width(), image.height() / bounds.height());
+    return QRectF((region.topLeft() - bounds.topLeft()) * scale, region.size() * scale).toAlignedRect();
+}
+static void compareHtmlScene(Editor &editor, const QImage &image) {
+    auto &view = graphics(editor);
+    const QRectF source = view.scene()->itemsBoundingRect().adjusted(-32, -32, 32, 32);
+    QImage live(image.size(), QImage::Format_ARGB32_Premultiplied);
+    live.fill(view.palette().color(QPalette::Base));
+    QPainter painter(&live);
+    painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
+    view.scene()->render(&painter, QRectF(QPointF(), QSizeF(image.size())), source, Qt::KeepAspectRatio);
+    CHECK(painter.end());
+    CHECK(live.convertToFormat(QImage::Format_RGB32) == image.convertToFormat(QImage::Format_RGB32));
+}
+static void html_case() {
+    QString retained;
+    const QString root = QString::fromUtf8("Literal <script>世界</script>");
+    {
+        Editor editor;
+        htmlAppearance(editor);
+        Json input = editorFixture();
+        setTopic(input, "r", root);
+        for (auto &node : input.at("nodes")) {
+            if (node.at("id") == "a") node["expanded"] = false;
+            if (node.at("id") == "r") {
+                node["tags"] = Json::array({"x", "", "x"});
+                node["icons"] = Json::array({"star", "", "star"});
+                node["hyperLink"] = "https://example.com/?a=1&b=%22quoted%22";
+            }
+        }
+        for (auto &link : input.at("crossLinks")) {
+            if (link.at("id") == "l3") link["topic"] = "Self";
+            if (link.at("id") == "l4") { link["source"] = "a"; link["target"] = "b"; link["topic"] = "Parallel"; }
+        }
+        CHECK(editor.loadJson(encoded(input)));
+        showEditor(editor, QSize(500, 400));
+        editor.clearSelection();
+        QTest::mouseMove(graphics(editor).viewport(), QPoint(1, 1));
+        pump();
+        retained = editor.toHtml();
+        const HtmlPage page(retained);
+        const QImage image = page.image();
+        compareHtmlScene(editor, image);
+        CHECK(page.values(QStringLiteral("title")) == QStringList{root});
+        CHECK(page.articleIds() == QStringList({"m3-node-72", "m3-node-61", "m3-node-64", "m3-node-62", "m3-node-63"}));
+        CHECK(page.values(QStringLiteral("h3")).contains(QStringLiteral("Delta")));
+        const auto articles = page.tags(QStringLiteral("article"));
+        const int alphaLi = page.elements[articles[1]].parent;
+        const int deltaLi = page.elements[articles[2]].parent;
+        CHECK(page.elements[page.elements[deltaLi].parent].parent == alphaLi);
+        const auto paragraphs = page.values(QStringLiteral("p"));
+        CHECK(paragraphs.count(QStringLiteral("Tag: x")) == 2);
+        CHECK(paragraphs.count(QStringLiteral("Tag: (empty)")) == 1);
+        CHECK(paragraphs.count(QStringLiteral("Icon: star")) == 2);
+        CHECK(paragraphs.count(QStringLiteral("Icon: (empty)")) == 1);
+        const auto sizes = paragraphs.filter(QStringLiteral("Image size: "));
+        CHECK(sizes.size() == 1);
+        const auto dimensions = sizes.front().mid(12).split(QString::fromUtf8(" × "));
+        CHECK(dimensions.size() == 2 && dimensions[0].toDouble() == 0 && dimensions[1].toDouble() == 12);
+        CHECK(paragraphs.contains(QString::fromUtf8("Note: Note café")));
+        const auto native = exported(editor);
+        for (const auto &link : native.at("crossLinks"))
+            CHECK(paragraphs.count(QStringLiteral("ID: ") + qs(link.at("id"))) == 1);
+        bool hiddenEndpoint = false;
+        for (const int i : page.tags(QStringLiteral("a")))
+            if (page.elements[i].text == QStringLiteral("Delta")) {
+                CHECK(page.elements[i].attributes.value(QStringLiteral("href")) == QStringLiteral("#m3-node-64"));
+                hiddenEndpoint = true;
+            }
+        CHECK(hiddenEndpoint && texts(editor, QStringLiteral("Delta")).isEmpty());
+        const QRectF bounds = graphics(editor).scene()->itemsBoundingRect().adjusted(-32, -32, 32, 32);
+        for (const QString &label : {root, QStringLiteral("Alpha"), QStringLiteral("Beta"),
+                                     QStringLiteral("Related"), QStringLiteral("Self"), QStringLiteral("Parallel")})
+            CHECK(paintedPixels(image, htmlImageRegion(image, bounds, textItem(editor, label)->sceneBoundingRect())) > 5);
+        CHECK(image.width() > graphics(editor).viewport()->width());
+        const QByteArray baseline = editor.toJson();
+        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        auto unchangedExport = [&] {
+            auto &view = graphics(editor);
+            auto *scene = view.scene();
+            const auto transform = view.transform();
+            const QRectF sceneRect = view.sceneRect();
+            const int horizontal = view.horizontalScrollBar()->value(), vertical = view.verticalScrollBar()->value();
+            const QString node = editor.selectedNodeId(), link = editor.selectedLinkId();
+            const auto selections = selected.size();
+            CHECK(HtmlPage(editor.toHtml()).image() == image);
+            CHECK(view.scene() == scene && view.transform() == transform && view.sceneRect() == sceneRect);
+            CHECK(view.horizontalScrollBar()->value() == horizontal && view.verticalScrollBar()->value() == vertical);
+            CHECK(editor.selectedNodeId() == node && editor.selectedLinkId() == link);
+            CHECK(editor.toJson() == baseline && changed.isEmpty() && selected.size() == selections);
+        };
+        CHECK(editor.selectNode(QStringLiteral("b")));
+        graphics(editor).scale(2, 2);
+        graphics(editor).setSceneRect(bounds.adjusted(-800, -800, 800, 800));
+        graphics(editor).horizontalScrollBar()->setValue(150);
+        graphics(editor).verticalScrollBar()->setValue(100);
+        unchangedExport();
+        CHECK(editor.selectLink(QStringLiteral("l1")));
+        unchangedExport();
+        CHECK(editor.selectNode(QStringLiteral("r")));
+        shortcut(editor, Qt::Key_F2);
+        auto *draft = &topicInput(editor);
+        draft->setPlainText(QStringLiteral("UNCOMMITTED DRAFT"));
+        unchangedExport();
+        CHECK(editor.toHtml() == retained);
+        CHECK(activeTopicInput(editor) == draft && draft->hasFocus());
+        CHECK(draft->toPlainText() == QStringLiteral("UNCOMMITTED DRAFT"));
+        topicKey(editor, Qt::Key_Escape);
+        CHECK(editor.setExpanded(QStringLiteral("a"), true));
+        CHECK(!texts(editor, QStringLiteral("Delta")).isEmpty());
+        CHECK(HtmlPage(editor.toHtml()).image() != image);
+        CHECK(editor.renameNode(QStringLiteral("r"), QStringLiteral("Later edit")));
+    }
+    const HtmlPage saved(retained);
+    CHECK(saved.values(QStringLiteral("title")) == QStringList{root});
+    CHECK(!saved.values(QStringLiteral("h3")).contains(QStringLiteral("Later edit")));
+}
+
+static void html_edges_case() {
+    Editor editor;
+    htmlAppearance(editor);
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    showEditor(editor);
+    editor.clearSelection();
+    const auto hierarchy = HtmlPage(editor.toHtml()).articleIds();
+    QImage previous;
+    for (const auto direction : {Editor::LayoutDirection::Left, Editor::LayoutDirection::Right, Editor::LayoutDirection::Outline}) {
+        CHECK(editor.setLayoutDirection(direction));
+        QTest::mouseMove(graphics(editor).viewport(), QPoint(1, 1));
+        pump();
+        const HtmlPage page(editor.toHtml());
+        const QImage image = page.image();
+        compareHtmlScene(editor, image);
+        CHECK(page.articleIds() == hierarchy && image != previous);
+        const QRectF root = topicRect(editor, QString::fromUtf8("Racine 世界 🌍"));
+        const QRectF alpha = topicRect(editor, QStringLiteral("Alpha"));
+        if (direction == Editor::LayoutDirection::Left) CHECK(alpha.right() < root.left());
+        else if (direction == Editor::LayoutDirection::Right) CHECK(alpha.left() > root.right());
+        else CHECK(alpha.top() > root.bottom() && alpha.left() > root.left());
+        previous = image;
+    }
+    auto chain = [](int count, bool collapsed) {
+        Json result{{"schemaVersion", 1}, {"rootId", "n0"}, {"nodes", Json::array()}};
+        for (int i = 0; i < count; ++i) {
+            Json node{{"id", "n" + std::to_string(i)}, {"topic", "Node " + std::to_string(i)}};
+            if (i + 1 < count) node["children"] = Json::array({"n" + std::to_string(i + 1)});
+            if (i == 0 && collapsed) node["expanded"] = false;
+            result["nodes"].push_back(std::move(node));
+        }
+        return result;
+    };
+    CHECK(editor.loadJson(encoded(chain(1024, true))));
+    const HtmlPage deep(editor.toHtml());
+    const auto ids = deep.articleIds();
+    CHECK(ids.size() == 1024 && ids.back() == QStringLiteral("m3-node-6e31303233"));
+    CHECK(texts(editor, QStringLiteral("Node 1023")).isEmpty());
+    CHECK(deep.values(QStringLiteral("h3")).contains(QStringLiteral("Node 1023")));
+    CHECK(editor.loadJson(encoded(chain(400, false))));
+    CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Outline));
+    const QRectF source = graphics(editor).scene()->itemsBoundingRect().adjusted(-32, -32, 32, 32);
+    CHECK(source.height() > 16384);
+    const QImage bounded = HtmlPage(editor.toHtml()).image();
+    CHECK(bounded.width() > 0 && bounded.height() > 0);
+    CHECK(bounded.width() <= 16384 && bounded.height() <= 16384);
+    CHECK(qint64(bounded.width()) * bounded.height() <= 16777216);
+    CHECK(bounded.height() < source.height());
+    const QRect last = htmlImageRegion(bounded, source, topicRect(editor, QStringLiteral("Node 399")));
+    CHECK(bounded.rect().contains(last));
+    CHECK(paintedPixels(bounded, last) > 5);
+
+    const QString literal = QString::fromUtf8("</article><script>window.injected=1</script> & 世界\r\nnext\rlast\tend");
+    const QStringList urls{
+        QStringLiteral("JaVaScRiPt:alert(1)"), QStringLiteral("java\tscript:alert(1)"),
+        QStringLiteral("data:text/html,<script>alert(1)</script>"), QStringLiteral("https://example.com/\" onclick=\"alert(1)"),
+        QStringLiteral("/relative"), QStringLiteral("https:///missing-host"),
+        QStringLiteral("https://example.com/?a=1&b=%22safe%22"), QStringLiteral("HTTP://example.com/path"),
+        QStringLiteral("mailto:user@example.com?subject=Hi&body=World")};
+    Json unsafe{{"schemaVersion", 1}, {"rootId", "root"}, {"nodes", Json::array()}, {"crossLinks", Json::array()}};
+    Json root{{"id", "root"}, {"topic", ""}, {"expanded", false}, {"children", Json::array()},
+              {"note", utf8(literal)}, {"tags", Json::array({"<b>tag</b>", "", "<b>tag</b>"})}};
+    for (qsizetype i = 0; i < urls.size(); ++i) {
+        const auto id = QString::fromUtf8("世界-") + QString::number(i);
+        root["children"].push_back(utf8(id));
+        unsafe["nodes"].push_back({{"id", utf8(id)}, {"topic", "Duplicate"}, {"hyperLink", utf8(urls[i])},
+                                   {"image", {{"url", utf8(urls[i])}, {"width", 0}, {"height", 0}}}});
+    }
+    unsafe["nodes"].push_back(std::move(root));
+    unsafe["crossLinks"].push_back({{"id", "quoted\"<id>"}, {"source", "世界-0"}, {"target", "世界-1"},
+                                  {"directed", true}, {"topic", utf8(literal)}, {"icon", "<svg onload='x'>"}});
+    CHECK(editor.loadJson(encoded(unsafe)));
+    const HtmlPage safe(editor.toHtml());
+    CHECK(safe.values(QStringLiteral("title")) == QStringList{QStringLiteral("(untitled)")});
+    CHECK(safe.values(QStringLiteral("h3")).count(QStringLiteral("Duplicate")) == urls.size());
+    QString normalized = literal;
+    normalized.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    normalized.replace(u'\r', u'\n');
+    const auto paragraphs = safe.values(QStringLiteral("p"));
+    CHECK(paragraphs.contains(QStringLiteral("Note: ") + normalized));
+    CHECK(paragraphs.contains(QStringLiteral("Label: ") + normalized));
+    CHECK(paragraphs.count(QStringLiteral("Tag: <b>tag</b>")) == 2);
+    CHECK(paragraphs.contains(QStringLiteral("Icon: <svg onload='x'>")));
+    CHECK(paragraphs.contains(QStringLiteral("ID: quoted\"<id>")));
+    const auto anchors = safe.articleIds();
+    CHECK(std::set<QString>(anchors.begin(), anchors.end()).size() == static_cast<size_t>(urls.size() + 1));
+    QStringList activated;
+    for (const int i : safe.tags(QStringLiteral("a"))) {
+        const auto &element = safe.elements[i];
+        const QString href = element.attributes.value(QStringLiteral("href"));
+        if (href.startsWith(u'#')) CHECK(anchors.contains(href.mid(1)));
+        else activated.append(href);
+    }
+    CHECK(activated.size() == 6);
+    for (qsizetype i = 0; i < urls.size(); ++i) {
+        CHECK(paragraphs.contains(QStringLiteral("URL: ") + urls[i]));
+        CHECK(paragraphs.contains(QStringLiteral("Image URL: ") + urls[i]));
+        if (i >= 6) CHECK(activated.count(QUrl(urls[i], QUrl::StrictMode).toString(QUrl::FullyEncoded)) == 2);
+    }
+    CHECK(safe.tags(QStringLiteral("script")).size() == 1);
+    for (const QString &tag : {QStringLiteral("iframe"), QStringLiteral("object"), QStringLiteral("embed"), QStringLiteral("svg")})
+        CHECK(safe.tags(tag).empty());
+    for (const auto &element : safe.elements)
+        for (auto it = element.attributes.begin(); it != element.attributes.end(); ++it)
+            CHECK(!it.key().startsWith(QStringLiteral("on"), Qt::CaseInsensitive));
+}
 
 static void markdown_case() {
     QString retained;
@@ -4020,6 +4324,79 @@ static void controls_case() {
 }
 
 #ifdef M3_QT_TEST_DEMO
+static void demo_html_case() {
+    QTemporaryDir directory;
+    CHECK(directory.isValid());
+    const QString inputPath = directory.filePath(QStringLiteral("original.map.json"));
+    const QString outputStem = directory.filePath(QStringLiteral("combined"));
+    const QString outputPath = outputStem + QStringLiteral(".html");
+    const QByteArray original = encoded(editorFixture());
+    writeFile(inputPath, original);
+    DemoWindow window;
+    showDemo(window);
+    auto &editor = embedded(window);
+    auto &action = textAction(window, {QStringLiteral("Export HTML")});
+    dialogs({[&](QDialog *dialog) {
+        auto *file = qobject_cast<QFileDialog *>(dialog);
+        CHECK(file != nullptr && file->selectedFiles().size() == 1);
+        CHECK(QFileInfo(file->selectedFiles().front()).fileName() == QStringLiteral("Untitled.html"));
+        file->reject();
+    }}, [&] { action.trigger(); });
+    CHECK(window.openFile(inputPath));
+    CHECK(editor.renameNode(QStringLiteral("r"), QString::fromUtf8("HTML saved 世界")));
+    CHECK(editor.setExpanded(QStringLiteral("a"), false));
+    const auto live = editor.toJson();
+    const QString current = window.currentFilePath(), title = window.windowTitle();
+    const QString node = editor.selectedNodeId(), link = editor.selectedLinkId();
+    QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+    const auto unchanged = [&] {
+        CHECK(editor.toJson() == live && window.currentFilePath() == current && window.windowTitle() == title);
+        CHECK(window.isWindowModified() && editor.selectedNodeId() == node && editor.selectedLinkId() == link);
+        CHECK(changed.isEmpty() && selected.isEmpty() && readFile(inputPath) == original);
+    };
+    dialogs({[&](QDialog *dialog) {
+        auto *file = qobject_cast<QFileDialog *>(dialog);
+        CHECK(file != nullptr && file->acceptMode() == QFileDialog::AcceptSave);
+        CHECK(file->fileMode() == QFileDialog::AnyFile && !file->testOption(QFileDialog::DontConfirmOverwrite));
+        CHECK(file->selectedFiles().size() == 1);
+        CHECK(sameFile(file->selectedFiles().front(), directory.filePath(QStringLiteral("original.map.html"))));
+        auto *name = file->findChild<QLineEdit *>(QStringLiteral("fileNameEdit"));
+        CHECK(name != nullptr);
+        name->setText(outputStem);
+        CHECK(QMetaObject::invokeMethod(file, "accept", Qt::DirectConnection));
+    }}, [&] { action.trigger(); });
+    const QByteArray bytes = readFile(outputPath);
+    CHECK(!QFileInfo::exists(outputStem));
+    const HtmlPage page(QString::fromUtf8(bytes));
+    CHECK(page.values(QStringLiteral("title")) == QStringList{QString::fromUtf8("HTML saved 世界")});
+    CHECK(page.values(QStringLiteral("h3")).contains(QStringLiteral("Delta")));
+    CHECK(page.image() == HtmlPage(editor.toHtml()).image());
+    unchanged();
+    const QString status = window.statusBar()->currentMessage();
+    dialogs({fileResponse(QString(), false)}, [&] { action.trigger(); });
+    CHECK(readFile(outputPath) == bytes && window.statusBar()->currentMessage() == status);
+    unchanged();
+    for (const auto &badPath : {QString(), directory.path()}) {
+        window.statusBar()->clearMessage();
+        CHECK(!window.exportHtmlFile(badPath));
+        CHECK(!window.statusBar()->currentMessage().isEmpty() && readFile(outputPath) == bytes);
+        unchanged();
+    }
+    writeFile(outputPath, QByteArray("sentinel export\n"));
+    shortcut(editor, Qt::Key_F2);
+    auto *draft = &topicInput(editor);
+    draft->setPlainText(QStringLiteral("UNCOMMITTED DRAFT"));
+    CHECK(window.exportHtmlFile(outputPath));
+    CHECK(readFile(outputPath) == bytes);
+    CHECK(activeTopicInput(editor) == draft && draft->hasFocus());
+    CHECK(draft->toPlainText() == QStringLiteral("UNCOMMITTED DRAFT"));
+    unchanged();
+    topicKey(editor, Qt::Key_Escape);
+    hostAction(window, QKeySequence::Save).trigger();
+    CHECK(!window.isWindowModified() && window.currentFilePath() == current);
+    CHECK(fileDocument(inputPath) == exported(editor) && readFile(outputPath) == bytes);
+}
+
 static void demo_markdown_case() {
     QTemporaryDir directory;
     CHECK(directory.isValid());
@@ -4473,7 +4850,9 @@ int main(int argc, char **argv) {
         QApplication::setQuitOnLastWindowClosed(false);
         CHECK(argc == 2);
         const std::string name = argv[1];
-        if (name == "markdown") markdown_case();
+        if (name == "html") html_case();
+        else if (name == "html_edges") html_edges_case();
+        else if (name == "markdown") markdown_case();
         else if (name == "document") document_case();
         else if (name == "tree_edits") { tree_edits_case(); tree_edits_scene(); }
         else if (name == "collapse") { collapse_case(); collapse_scene(); }
@@ -4489,6 +4868,7 @@ int main(int argc, char **argv) {
         else if (name == "shortcuts") shortcuts_case();
         else if (name == "lifetime") lifetime_case();
 #ifdef M3_QT_TEST_DEMO
+        else if (name == "demo_html") demo_html_case();
         else if (name == "demo_markdown") demo_markdown_case();
         else if (name == "demo_files") demo_files_case();
         else if (name == "demo_prompts") demo_prompts_case();
