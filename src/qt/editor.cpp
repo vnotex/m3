@@ -38,6 +38,7 @@
 #include <QToolButton>
 #include <QLabel>
 #include <QVBoxLayout>
+#include <QUrl>
 namespace m3::qt {
 namespace {
 QString loadStyleSheet(const QString &path) {
@@ -767,6 +768,13 @@ public:
         QObject::connect(controller, &MindMapController::commandSucceeded, editor, [this] { error->clear(); error->hide(); updateActions(); });
         QObject::connect(view, &MindMapView::nodePicked, controller, &MindMapController::selectNode);
         QObject::connect(view, &MindMapView::nodeLinkActivated, editor, &MindMapEditor::nodeLinkActivated);
+        QObject::connect(view, &MindMapView::fileDropped, editor, [this, editor](const QString &nodeId, const QString &filePath) {
+            const QString resolvedUrl = editor->resolveDroppedFileUrl(filePath);
+            if (resolvedUrl.isEmpty()) return;
+            const QJsonObject patch{{QStringLiteral("hyperLink"), resolvedUrl}};
+            const QByteArray json = QJsonDocument(patch).toJson(QJsonDocument::Compact);
+            controller->updateNodeProperties(nodeId, json);
+        });
         QObject::connect(view, &MindMapView::nodeMoveRequested, controller, &MindMapController::moveNode);
         QObject::connect(view, &MindMapView::linkPicked, controller, &MindMapController::selectLink);
         QObject::connect(view, &MindMapView::emptyPicked, controller, &MindMapController::clearSelection);
@@ -784,6 +792,9 @@ MindMapEditor::MindMapEditor(const EditorConfig &config, QWidget *parent)
 MindMapEditor::~MindMapEditor() {
     // Disarm the input before QWidget teardown can send it a committing FocusOut.
     delete d->view;
+}
+QString MindMapEditor::resolveDroppedFileUrl(const QString &filePath) const {
+    return QUrl::fromLocalFile(filePath).toString(QUrl::FullyEncoded);
 }
 bool MindMapEditor::newDocument(const QString &topic) { return d->controller->newDocument(topic); }
 bool MindMapEditor::loadJson(const QByteArray &json) { return d->controller->loadJson(json); }

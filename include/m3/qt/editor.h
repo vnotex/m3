@@ -50,6 +50,8 @@
 // Empty icons reserve no space. Nonempty URLs
 // show an indicator beside the topic. Activating it emits nodeLinkActivated with
 // the node ID and unchanged URL; the host decides whether and how to open it.
+// Dropping one local file onto a canvas node sets or replaces its URL through
+// resolveDroppedFileUrl, without changing selection.
 // Collapsing the card leaves only its top-right toggle, without changing selection.
 // The expanded/collapsed preference is local to this editor and survives selection
 // and document changes; links/empty selection hide either form without resetting it.
@@ -140,6 +142,15 @@ signals:
     void selectionChanged(const QString &nodeId, const QString &linkId);
     void nodeLinkActivated(const QString &nodeId, const QString &url);
     void errorOccurred(const QString &message);
+protected:
+    // Called once per eligible canvas drop with the decoded absolute local path,
+    // never on hover, URL-field edits, loading, or activation. The default returns
+    // a fully encoded file URL. Subclasses may use QDir::relativeFilePath with
+    // their own base directory. The result is stored unchanged as hyperLink:
+    // no trimming, re-encoding, or scheme/existence validation. Empty skips the
+    // mutation, preserving any existing URL. This is a synchronous conversion
+    // hook, not an asynchronous operation or document-mutation callback.
+    virtual QString resolveDroppedFileUrl(const QString &filePath) const;
 private:
     class Private;
     std::unique_ptr<Private> d;

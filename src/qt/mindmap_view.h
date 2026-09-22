@@ -31,6 +31,7 @@ signals:
     void topicEditingChanged(bool editing);
     void nodePicked(const QString &id);
     void nodeLinkActivated(const QString &nodeId, const QString &url);
+    void fileDropped(const QString &nodeId, const QString &filePath);
     void nodeMoveRequested(const QString &id, const QString &parent, int index);
     void linkPicked(const QString &id);
     void emptyPicked();
@@ -42,6 +43,10 @@ protected:
     bool viewportEvent(QEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
     void scrollContentsBy(int dx, int dy) override;
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dragMoveEvent(QDragMoveEvent *event) override;
+    void dragLeaveEvent(QDragLeaveEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;

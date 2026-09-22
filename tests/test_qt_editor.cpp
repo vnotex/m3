@@ -15,6 +15,10 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDragLeaveEvent>
+#include <QDropEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -34,6 +38,7 @@
 #include <QListView>
 #include <QMessageBox>
 #include <QMenu>
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPalette>
@@ -53,6 +58,7 @@
 #include <QToolButton>
 #include <QToolTip>
 #include <QVBoxLayout>
+#include <QUrl>
 #include <QWheelEvent>
 #include <QWindow>
 #include <algorithm>
@@ -1745,6 +1751,216 @@ static void hyperlinks_case() {
         pump();
         CHECK(delivered && alive.isNull() && activated.size() == 1);
         CHECK(activated.front().at(0).toString() == a && activated.front().at(1).toString() == rawUrl);
+    }
+
+    QTemporaryDir directory;
+    CHECK(directory.isValid());
+    const QString path = directory.filePath(QString::fromUtf8("café #1%.txt"));
+    QFile file(path);
+    CHECK(file.open(QIODevice::WriteOnly));
+    file.close();
+    const QString missingPath = directory.filePath(QStringLiteral("missing #2%.txt"));
+    const QString fileUrl = QUrl::fromLocalFile(path).toString(QUrl::FullyEncoded);
+    const QString missingUrl = QUrl::fromLocalFile(missingPath).toString(QUrl::FullyEncoded);
+    QMimeData localFile;
+    localFile.setUrls({QUrl::fromLocalFile(path)});
+    const Qt::DropActions actions = Qt::CopyAction | Qt::MoveAction;
+    auto enterFile = [](Editor &editor, const QMimeData &mime, Qt::DropActions allowed, const QPoint &point, bool accepted = true) {
+        QDragEnterEvent event(point, allowed, &mime, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(graphics(editor).viewport(), &event);
+        CHECK(event.isAccepted() == accepted);
+        if (accepted) CHECK(event.dropAction() == Qt::CopyAction);
+    };
+    auto moveFile = [](Editor &editor, const QMimeData &mime, Qt::DropActions allowed, const QPoint &point, bool accepted = true) {
+        QDragMoveEvent event(point, allowed, &mime, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(graphics(editor).viewport(), &event);
+        CHECK(event.isAccepted() == accepted);
+        if (accepted) CHECK(event.dropAction() == Qt::CopyAction);
+    };
+    auto dropFile = [](Editor &editor, const QMimeData &mime, Qt::DropActions allowed, const QPoint &point, bool accepted = true) {
+        QDropEvent event(QPointF(point), allowed, &mime, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(graphics(editor).viewport(), &event);
+        CHECK(event.isAccepted() == accepted);
+        if (accepted) CHECK(event.dropAction() == Qt::CopyAction);
+        pump();
+    };
+    auto withUrl = [](Json doc, const QString &id, const QString &url) {
+        for (auto &entry : doc.at("nodes")) if (entry.at("id") == utf8(id)) entry["hyperLink"] = utf8(url);
+        return doc;
+    };
+    class RelativeEditor : public Editor {
+    public:
+        QString base;
+        mutable QStringList received;
+        bool veto = false;
+    protected:
+        QString resolveDroppedFileUrl(const QString &filePath) const override {
+            received.append(filePath);
+            return veto ? QString() : QDir(base).relativeFilePath(filePath);
+        }
+    };
+    {
+        Editor editor;
+        prepare(editor, false);
+        CHECK(editor.selectNode(b));
+        auto &view = graphics(editor);
+        const Json before = exported(editor);
+        const QTransform transform = view.transform();
+        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        QSignalSpy activated(&editor, &Editor::nodeLinkActivated), errors(&editor, &Editor::errorOccurred);
+        enterFile(editor, localFile, actions, blankPoint(view));
+        moveFile(editor, localFile, actions, labelPoint(editor, alpha));
+        CHECK(exported(editor) == before && editor.selectedNodeId() == b);
+        CHECK(changed.isEmpty() && selected.isEmpty() && activated.isEmpty() && errors.isEmpty());
+        dropFile(editor, localFile, actions, labelPoint(editor, alpha));
+        CHECK(exported(editor) == withUrl(before, a, fileUrl));
+        CHECK(editor.selectedNodeId() == b && editor.selectedLinkId().isEmpty());
+        CHECK(changed.size() == 1 && selected.isEmpty() && activated.isEmpty() && errors.isEmpty());
+        CHECK(view.transform() == transform);
+        CHECK(editor.selectNode(a));
+        CHECK(urlInput(editor)->text() == fileUrl);
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, linkPoint(editor, alpha));
+        CHECK(activated.size() == 1 && activated.back().at(0).toString() == a && activated.back().at(1).toString() == fileUrl);
+        selected.clear();
+        enterFile(editor, localFile, actions, blankPoint(view));
+        moveFile(editor, localFile, actions, labelPoint(editor, alpha));
+        dropFile(editor, localFile, actions, labelPoint(editor, alpha));
+        CHECK(changed.size() == 1 && exported(editor) == withUrl(before, a, fileUrl));
+        QMimeData missingFile;
+        missingFile.setUrls({QUrl::fromLocalFile(missingPath)});
+        enterFile(editor, missingFile, actions, blankPoint(view));
+        moveFile(editor, missingFile, actions, linkPoint(editor, alpha));
+        dropFile(editor, missingFile, actions, linkPoint(editor, alpha));
+        CHECK(exported(editor) == withUrl(before, a, missingUrl) && urlInput(editor)->text() == missingUrl);
+        CHECK(changed.size() == 2 && selected.isEmpty() && errors.isEmpty() && activated.size() == 1);
+        CHECK(editor.selectedNodeId() == a && view.transform() == transform);
+    }
+    {
+        RelativeEditor editor;
+        editor.base = directory.path();
+        prepare(editor, false);
+        CHECK(editor.selectNode(a));
+        // Loading, ordinary field edits, and activation must bypass the resolver.
+        accessibleUrl(editor, rawUrl);
+        QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, linkPoint(editor, alpha));
+        CHECK(editor.received.isEmpty());
+        CHECK(editor.selectNode(b));
+        const Json before = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        QSignalSpy activated(&editor, &Editor::nodeLinkActivated), errors(&editor, &Editor::errorOccurred);
+        enterFile(editor, localFile, actions, blankPoint(graphics(editor)));
+        moveFile(editor, localFile, actions, labelPoint(editor, alpha));
+        CHECK(editor.received.isEmpty() && exported(editor) == before);
+        dropFile(editor, localFile, actions, labelPoint(editor, alpha));
+        const QString relative = QDir(directory.path()).relativeFilePath(path);
+        CHECK(editor.received == QStringList{path});
+        CHECK(exported(editor) == withUrl(before, a, relative));
+        CHECK(changed.size() == 1 && selected.isEmpty() && activated.isEmpty() && errors.isEmpty());
+        QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, linkPoint(editor, alpha));
+        CHECK(activated.size() == 1 && activated.back().at(0).toString() == a && activated.back().at(1).toString() == relative);
+        CHECK(editor.received.size() == 1);
+        editor.veto = true;
+        const Json resolved = exported(editor);
+        changed.clear();
+        enterFile(editor, localFile, actions, blankPoint(graphics(editor)));
+        moveFile(editor, localFile, actions, labelPoint(editor, alpha));
+        CHECK(editor.received.size() == 1);
+        dropFile(editor, localFile, actions, labelPoint(editor, alpha));
+        CHECK(editor.received == (QStringList{path, path}));
+        CHECK(exported(editor) == resolved && editor.selectedNodeId() == b);
+        CHECK(changed.isEmpty() && selected.isEmpty() && errors.isEmpty() && activated.size() == 1);
+    }
+    {
+        RelativeEditor editor;
+        editor.base = directory.path();
+        prepare(editor, false);
+        CHECK(editor.selectNode(b));
+        auto &view = graphics(editor);
+        const Json before = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        QSignalSpy activated(&editor, &Editor::nodeLinkActivated), errors(&editor, &Editor::errorOccurred);
+        QMimeData textOnly, remote, empty, multiple, invalid, relative, nul, emptyPath;
+        textOnly.setText(path);
+        remote.setUrls({QUrl(QStringLiteral("https://example.test/file.txt"))});
+        empty.setUrls({});
+        multiple.setUrls({QUrl::fromLocalFile(path), QUrl::fromLocalFile(missingPath)});
+        invalid.setUrls({QUrl(QStringLiteral("file://[invalid"))});
+        relative.setUrls({QUrl::fromLocalFile(QStringLiteral("relative.txt"))});
+        nul.setUrls({QUrl::fromLocalFile(path + QChar::Null)});
+        emptyPath.setUrls({QUrl(QStringLiteral("file:"))});
+        for (const QMimeData *mime : {&textOnly, &remote, &empty, &multiple, &invalid, &relative, &nul, &emptyPath}) {
+            enterFile(editor, *mime, actions, labelPoint(editor, alpha), false);
+            CHECK(editor.received.isEmpty() && exported(editor) == before);
+        }
+        enterFile(editor, localFile, Qt::MoveAction, labelPoint(editor, alpha), false);
+        const std::vector<std::function<QPoint()>> rejectedPoints{
+            [&] { return blankPoint(view); },
+            [&] { return labelPoint(editor, QStringLiteral("Related")); },
+            [&] { return QPoint(-10, view.viewport()->height() / 2); }
+        };
+        for (const auto &point : rejectedPoints) {
+            enterFile(editor, localFile, actions, blankPoint(view));
+            moveFile(editor, localFile, actions, point(), false);
+            dropFile(editor, localFile, actions, point(), false);
+            CHECK(editor.received.isEmpty() && exported(editor) == before);
+        }
+        // The final point and payload/actions are independently checked at drop time.
+        enterFile(editor, localFile, actions, blankPoint(view));
+        moveFile(editor, localFile, actions, labelPoint(editor, alpha));
+        dropFile(editor, localFile, actions, blankPoint(view), false);
+        enterFile(editor, localFile, actions, blankPoint(view));
+        moveFile(editor, localFile, Qt::MoveAction, labelPoint(editor, alpha), false);
+        dropFile(editor, localFile, Qt::MoveAction, labelPoint(editor, alpha), false);
+        enterFile(editor, localFile, actions, blankPoint(view));
+        moveFile(editor, remote, actions, labelPoint(editor, alpha), false);
+        dropFile(editor, remote, actions, labelPoint(editor, alpha), false);
+        enterFile(editor, localFile, actions, blankPoint(view));
+        moveFile(editor, localFile, actions, labelPoint(editor, alpha));
+        QDragLeaveEvent leave;
+        QCoreApplication::sendEvent(view.viewport(), &leave);
+        CHECK(editor.received.isEmpty() && exported(editor) == before && editor.selectedNodeId() == b);
+        CHECK(changed.isEmpty() && selected.isEmpty() && activated.isEmpty() && errors.isEmpty());
+        const QString root = QStringLiteral("r"), relativeUrl = QDir(directory.path()).relativeFilePath(path);
+        const QString rootTopic = qs(record(before, "nodes", root).at("topic"));
+        enterFile(editor, localFile, actions, blankPoint(view));
+        moveFile(editor, localFile, actions, labelPoint(editor, rootTopic));
+        dropFile(editor, localFile, actions, labelPoint(editor, rootTopic));
+        CHECK(exported(editor) == withUrl(before, root, relativeUrl));
+        CHECK(changed.size() == 1 && editor.received.size() == 1);
+        CHECK(editor.setExpanded(a, false));
+        const Json collapsed = exported(editor);
+        CHECK(texts(editor, QStringLiteral("Delta")).isEmpty());
+        changed.clear();
+        enterFile(editor, localFile, actions, blankPoint(view));
+        moveFile(editor, localFile, actions, labelPoint(editor, alpha));
+        dropFile(editor, localFile, actions, labelPoint(editor, alpha));
+        CHECK(exported(editor) == withUrl(collapsed, a, relativeUrl));
+        CHECK(texts(editor, QStringLiteral("Delta")).isEmpty());
+        CHECK(changed.size() == 1 && editor.received.size() == 2 && editor.selectedNodeId() == b);
+        CHECK(selected.isEmpty() && activated.isEmpty() && errors.isEmpty());
+    }
+    {
+        Editor editor;
+        prepare(editor, false);
+        clickLabel(editor, QStringLiteral("Beta"), true);
+        const QString draft = QStringLiteral("Beta draft not yet accepted");
+        topicInput(editor).setPlainText(draft);
+        const QPoint point = labelPoint(editor, alpha);
+        CHECK(!topicInput(editor).geometry().contains(point));
+        const Json before = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        QSignalSpy activated(&editor, &Editor::nodeLinkActivated), errors(&editor, &Editor::errorOccurred);
+        enterFile(editor, localFile, actions, blankPoint(graphics(editor)));
+        moveFile(editor, localFile, actions, point);
+        dropFile(editor, localFile, actions, point);
+        CHECK(exported(editor) == withUrl(before, a, fileUrl));
+        CHECK(topicInput(editor).toPlainText() == draft && editor.selectedNodeId() == b);
+        CHECK(changed.size() == 1 && selected.isEmpty() && activated.isEmpty() && errors.isEmpty());
+        topicKey(editor, Qt::Key_Return);
+        Json accepted = withUrl(before, a, fileUrl);
+        setTopic(accepted, "b", draft);
+        CHECK(exported(editor) == accepted && activeTopicInput(editor) == nullptr);
+        CHECK(changed.size() == 2 && selected.isEmpty() && activated.isEmpty() && errors.isEmpty());
     }
 }
 

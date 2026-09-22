@@ -2,6 +2,13 @@
 #include <QAction>
 #include <QApplication>
 #include <QCursor>
+#include <QDir>
+#include <QDragEnterEvent>
+#include <QDragLeaveEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QUrl>
 #include <QFocusEvent>
 #include <QGraphicsItem>
 #include <QKeyEvent>
@@ -23,6 +30,14 @@
 
 namespace m3::qt {
 namespace {
+QString droppedLocalFilePath(const QMimeData *mime) {
+    if (!mime) return {};
+    const auto urls = mime->urls();
+    if (urls.size() != 1 || !urls.front().isValid() || !urls.front().isLocalFile()) return {};
+    const QString path = urls.front().toLocalFile();
+    if (path.isEmpty() || path.contains(QChar::Null) || !QDir::isAbsolutePath(path)) return {};
+    return path;
+}
 constexpr qreal tagHorizontalPadding = 6;
 constexpr qreal tagVerticalPadding = 3;
 constexpr qreal tagGap = 4;
@@ -373,6 +388,7 @@ QPointF sceneCenter(const QGraphicsView &view, const QSize &viewportSize) {
 }
 MindMapView::MindMapView(QWidget *parent) : QGraphicsView(parent) {
     setScene(new QGraphicsScene(this));
+    setAcceptDrops(true);
     setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
     // Stable viewport dimensions prevent fit/scrollbar resize feedback.
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
@@ -498,6 +514,49 @@ bool MindMapView::event(QEvent *event) {
 bool MindMapView::viewportEvent(QEvent *event) {
     if (handleNodeLinkEvent(event) || handleNodeDragEvent(event)) return true;
     return QGraphicsView::viewportEvent(event);
+}
+void MindMapView::dragEnterEvent(QDragEnterEvent *event) {
+    if (!event->possibleActions().testFlag(Qt::CopyAction) || droppedLocalFilePath(event->mimeData()).isEmpty()) {
+        event->ignore();
+        return;
+    }
+    event->setDropAction(Qt::CopyAction);
+    event->accept();
+}
+void MindMapView::dragMoveEvent(QDragMoveEvent *event) {
+    const QPoint position = event->position().toPoint();
+    if (!event->possibleActions().testFlag(Qt::CopyAction) || droppedLocalFilePath(event->mimeData()).isEmpty() ||
+        !viewport()->rect().contains(position) || !dynamic_cast<NodeItem *>(targetAt(position))) {
+        event->ignore();
+        return;
+    }
+    event->setDropAction(Qt::CopyAction);
+    event->accept();
+}
+void MindMapView::dragLeaveEvent(QDragLeaveEvent *event) {
+    // Canvas file drags bypass scene entry, so leave must bypass the scene too.
+    event->accept();
+}
+void MindMapView::dropEvent(QDropEvent *event) {
+    const QString filePath = droppedLocalFilePath(event->mimeData());
+    const QPoint position = event->position().toPoint();
+    if (!event->possibleActions().testFlag(Qt::CopyAction) || filePath.isEmpty() || !viewport()->rect().contains(position)) {
+        event->ignore();
+        return;
+    }
+    QString nodeId;
+    {
+        auto *node = dynamic_cast<NodeItem *>(targetAt(position));
+        if (!node) {
+            event->ignore();
+            return;
+        }
+        nodeId = node->id;
+    }
+    event->setDropAction(Qt::CopyAction);
+    event->accept();
+    // The receiver may replace the scene or destroy the editor synchronously.
+    emit fileDropped(nodeId, filePath);
 }
 void MindMapView::clearNodeLinkPress() {
     pressedLinkNodeId.clear();
