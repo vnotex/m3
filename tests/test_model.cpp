@@ -42,6 +42,60 @@ static void roundtrip() {
     CHECK(Json::parse(owned_node.get()) == exported["nodes"][0]);
 }
 
+static void outline() {
+    auto input = fixture();
+    input["nodes"][0]["topic"] = "Root \"世界\"\n\\ <b>*literal*</b>";
+    input["nodes"][0]["children"] = {"c", "a", "b"};
+    input["nodes"][0]["expanded"] = false;
+    for (auto &n : input["nodes"]) if (n["id"] == "d") n["children"] = {"n0"};
+    constexpr size_t count = 4096;
+    for (size_t i = 0; i < count; ++i) {
+        auto children = Json::array();
+        if (i + 1 < count) children.push_back("n" + std::to_string(i + 1));
+        if (i == 1) children.push_back("末");
+        input["nodes"].push_back({{"id", "n" + std::to_string(i)},
+            {"topic", "Chain " + std::to_string(i)}, {"children", std::move(children)}});
+    }
+    input["nodes"].push_back({{"id", "末"}});
+    auto expected = Json::parse(R"({"id":"r","topic":"","children":[
+      {"id":"c","topic":"","children":[]},
+      {"id":"a","topic":"","children":[
+        {"id":"d","topic":"","children":[
+          {"id":"n0","topic":"Chain 0","children":[
+            {"id":"n1","topic":"Chain 1","children":[
+              {"id":"n2","topic":"Chain 2","children":[]},
+              {"id":"末","topic":"","children":[]}]}]}]}]},
+      {"id":"b","topic":"","children":[]}]})");
+    expected["topic"] = input["nodes"][0]["topic"];
+    auto map = load(input);
+    const auto before = document(map);
+    char *raw = reinterpret_cast<char *>(1);
+    CHECK(m3_mindmap_get_outline_json(nullptr, &raw) == M3_ERR_INVALID_ARGUMENT);
+    CHECK(raw == nullptr && *m3_last_error());
+    CHECK(m3_mindmap_get_outline_json(map.get(), nullptr) == M3_ERR_INVALID_ARGUMENT);
+    CHECK(*m3_last_error());
+    ok(m3_mindmap_get_outline_json(map.get(), &raw));
+    Text owned(raw, m3_string_free);
+    CHECK(!*m3_last_error());
+    CHECK(Json::parse(owned.get()) == expected);
+    CHECK(document(map) == before);
+
+    ok(m3_mindmap_update_node(map.get(), "r", R"({"topic":"After snapshot"})"));
+    ok(m3_mindmap_get_outline_json(map.get(), &raw));
+    Text changed(raw, m3_string_free);
+    auto updated = expected;
+    updated["topic"] = "After snapshot";
+    CHECK(Json::parse(changed.get()) == updated);
+    map.reset();
+    CHECK(Json::parse(owned.get()) == expected);
+
+    auto blank = load(Json::object());
+    ok(m3_mindmap_get_outline_json(blank.get(), &raw));
+    Text blank_text(raw, m3_string_free);
+    const auto root = document(blank)["rootId"];
+    CHECK(Json::parse(blank_text.get()) == Json({{"id", root}, {"topic", ""}, {"children", Json::array()}}));
+}
+
 static Text markdown_text(const Map &map) {
     char *raw = nullptr;
     const auto status = m3_mindmap_to_markdown(map.get(), &raw);
@@ -742,6 +796,7 @@ int main(int argc, char **argv) {
         CHECK(argc == 2);
         const std::string name = argv[1];
         if (name == "roundtrip") roundtrip();
+        else if (name == "outline") outline();
         else if (name == "markdown") markdown();
         else if (name == "markdown_edges") markdown_edges();
         else if (name == "validation") validation();

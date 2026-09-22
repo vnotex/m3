@@ -71,6 +71,17 @@ M3_API M3Status m3_mindmap_create(const char *root_id, const char *topic, M3Mind
  * node patches and link mutations continue accepting only native records. */
 M3_API M3Status m3_mindmap_from_json(const char *json_utf8, M3Mindmap **out_map);
 M3_API M3Status m3_mindmap_to_json(const M3Mindmap *map, char **out_json);
+/* Lossy nested outline, not native schemaVersion 1 or a full-document export.
+ * Each node is {"id":string,"topic":string,"children":[node,...]}.
+ * The root is level 1; at most six levels are included. Leaves and level-6
+ * nodes have children: []; deeper descendants are not visited or returned.
+ * Preserves literal topics (including empty strings) and stored child order,
+ * including collapsed descendants within the limit. Omits all other attributes,
+ * cross-links and geometry; visibility does not affect the outline.
+ * The document is unchanged. Both arguments are required; a non-null output
+ * slot is set to NULL even on failure. The independent UTF-8 snapshot survives
+ * edits/destruction and must be released with m3_string_free. */
+M3_API M3Status m3_mindmap_get_outline_json(const M3Mindmap *map, char **out_json);
 /* Markdown text projection, not a round-trip format. Visits every node in stored
  * child order, including collapsed descendants: depths 0-5 use headings H1-H6,
  * deeper nodes use nested lists. Stable ID-derived HTML anchors identify nodes.

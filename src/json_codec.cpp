@@ -5,6 +5,16 @@
 #include <unordered_set>
 namespace m3 {
 namespace {
+Json encode_outline_node(const Model &model, const Node &node, unsigned level) {
+    Json result = {{"id", node.id}, {"topic", node.attrs.topic}, {"children", Json::array()}};
+    if (level < 6) {
+        auto &children = result["children"].get_ref<Json::array_t &>();
+        children.reserve(node.children.size());
+        for (const auto &id : node.children)
+            children.push_back(encode_outline_node(model, get_node(model, id), level + 1));
+    }
+    return result;
+}
 void schema(bool valid) { require(valid, M3_ERR_SCHEMA, "Invalid document schema"); }
 void keys(const Json &j, std::initializer_list<std::string_view> allowed) {
     schema(j.is_object());
@@ -226,6 +236,9 @@ Json encode_node(const Node &n) {
 Json encode_link(const Link &l) {
     return {{"id", l.id}, {"source", l.source}, {"target", l.target}, {"directed", l.directed},
         {"topic", l.topic}, {"icon", l.icon}, {"style", l.style}};
+}
+Json encode_outline(const Model &m) {
+    return encode_outline_node(m, get_node(m, m.root), 1);
 }
 Json encode_document(const Model &m) {
     Json nodes = Json::array(), links = Json::array();

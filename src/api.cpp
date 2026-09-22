@@ -55,6 +55,10 @@ M3Status m3_mindmap_to_json(const M3Mindmap *map, char **out_json) {
     if (out_json) *out_json = nullptr;
     return boundary([&] { argument(map && out_json); *out_json = snapshot(m3::encode_document(map->model)); });
 }
+M3Status m3_mindmap_get_outline_json(const M3Mindmap *map, char **out_json) {
+    if (out_json) *out_json = nullptr;
+    return boundary([&] { argument(map && out_json); *out_json = snapshot(m3::encode_outline(map->model)); });
+}
 M3Status m3_mindmap_to_markdown(const M3Mindmap *map, char **out_markdown) {
     if (out_markdown) *out_markdown = nullptr;
     return boundary([&] { argument(map && out_markdown); *out_markdown = snapshot(m3::encode_markdown(map->model)); });

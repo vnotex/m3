@@ -11,5 +11,6 @@ Model decode_document(const Json &j);
 Json encode_node(const Node &n);
 Json encode_link(const Link &l);
 Json encode_document(const Model &m);
+Json encode_outline(const Model &m);
 }
 #endif
