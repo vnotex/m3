@@ -218,10 +218,8 @@ static void mind_elixir_validation() {
     bad([](Json &j) { j["nodeData"] = nullptr; }, "null nodeData");
     bad([](Json &j) { j["nodeData"] = Json::array(); }, "array nodeData");
     bad([](Json &j) { j["nodeData"] = 1; }, "scalar nodeData");
-    bad([](Json &j) { j["nodeData"].erase("id"); }, "missing node ID");
     bad([](Json &j) { j["nodeData"]["id"] = ""; }, "empty node ID");
     bad([](Json &j) { j["nodeData"]["id"] = 1; }, "node ID type");
-    bad([](Json &j) { j["nodeData"].erase("topic"); }, "missing topic");
     bad([](Json &j) { j["nodeData"]["topic"] = nullptr; }, "topic type");
     bad([](Json &j) { j["nodeData"]["children"][0]["id"] = "r"; }, "reused root ID");
     bad([](Json &j) { j["nodeData"]["children"][0]["children"][0]["id"] = "a"; }, "duplicate descendant ID");
@@ -229,7 +227,6 @@ static void mind_elixir_validation() {
     bad([](Json &j) { j["nodeData"]["children"] = 1; }, "scalar children");
     bad([](Json &j) { j["nodeData"]["children"] = Json::object(); }, "object children");
     bad([](Json &j) { j["nodeData"]["children"][0] = "a"; }, "nonobject child");
-    bad([](Json &j) { j["nodeData"]["children"][0].erase("topic"); }, "missing child topic");
     bad([](Json &j) { j["nodeData"]["memo"] = nullptr; }, "memo type");
     bad([](Json &j) { j["nodeData"]["hyperLink"] = 1; }, "hyperLink type");
     bad([](Json &j) { j["nodeData"]["expanded"] = 0; }, "expanded type");
@@ -263,6 +260,100 @@ static void mind_elixir_validation() {
     bad([](Json &j) { j["extension"] = std::string("a\0b", 3); }, "ignored NUL string");
     bad([](Json &j) { j["extension"][std::string("a\0b", 3)] = 1; }, "ignored NUL key");
     CHECK(failures == 0);
+}
+
+static void simple_tree() {
+    auto empty = load(Json::object());
+    const auto blank = document(empty);
+    CHECK(blank["rootId"] == "m3-auto-1");
+    CHECK(blank["nodes"].size() == 1 && blank["nodes"][0]["topic"] == "");
+    CHECK(blank["nodes"][0]["children"] == Json::array());
+
+    const auto tree = Json::parse(R"({"children":[{},
+      {"topic":"Repeated 世界","expanded":false,"children":[{"topic":"Repeated 世界"}]},
+      {"id":"m3-auto-1","topic":"Last"}],"extension":{"ignored":true}})");
+    for (const auto &input : {tree, Json{{"nodeData", tree}}}) {
+        auto map = load(input);
+        const auto exported = document(map);
+        CHECK(exported["rootId"] == "m3-auto-2");
+        CHECK(exported["nodes"].size() == 5);
+        CHECK(node(map, "m3-auto-2")["children"] == Json({"m3-auto-3", "m3-auto-4", "m3-auto-1"}));
+        CHECK(node(map, "m3-auto-2")["topic"] == "" && node(map, "m3-auto-3")["topic"] == "");
+        CHECK(node(map, "m3-auto-4")["children"] == Json({"m3-auto-5"}));
+        CHECK(node(map, "m3-auto-4")["expanded"] == false);
+        CHECK(node(map, "m3-auto-5")["topic"] == "Repeated 世界");
+        CHECK(exported["nodes"][2]["id"] == "m3-auto-4");
+        CHECK(exported["nodes"][3]["id"] == "m3-auto-5" && exported["nodes"][4]["id"] == "m3-auto-1");
+        auto copy = load(exported);
+        CHECK(document(copy) == exported);
+        CHECK(document(load(input)) == exported);
+        ok(m3_mindmap_update_node(map.get(), "m3-auto-3", R"({"topic":"Edited"})"));
+        ok(m3_mindmap_move_node(map.get(), "m3-auto-5", "m3-auto-3", M3_APPEND));
+        CHECK(node(map, "m3-auto-3")["topic"] == "Edited");
+        CHECK(node(map, "m3-auto-3")["children"] == Json({"m3-auto-5"}));
+        CHECK(node(map, "m3-auto-4")["children"] == Json::array());
+    }
+    auto rich = load(Json::parse(R"({"id":"r","note":"Keep this note","image":{"url":"memory:picture"},
+      "hyperLink":"opaque:世界","tags":["one","one"],"icons":["star"],"style":{"custom":[1,true]},
+      "children":[{"image":{}},{"image":{"width":12}},{"image":null}]})"));
+    CHECK(node(rich, "r")["image"] == Json({{"url","memory:picture"},{"width",0},{"height",0}}));
+    CHECK(node(rich, "r")["note"] == "Keep this note");
+    CHECK(node(rich, "r")["hyperLink"] == "opaque:世界");
+    CHECK(node(rich, "r")["tags"] == Json({"one","one"}));
+    CHECK(node(rich, "r")["icons"] == Json({"star"}));
+    CHECK(node(rich, "r")["style"] == Json({{"custom",{1,true}}}));
+    CHECK(node(rich, "m3-auto-1")["image"] == Json({{"url",""},{"width",0},{"height",0}}));
+    CHECK(node(rich, "m3-auto-2")["image"] == Json({{"url",""},{"width",12},{"height",0}}));
+    auto rich_copy = load(document(rich));
+    CHECK(document(rich_copy) == document(rich));
+    auto linked = load(Json::parse(R"({"nodeData":{"children":[{"id":"a"},{"id":"b","memo":"Memo"}]},
+      "linkData":{"l":{"id":"l","from":"a","to":"b"}}})"));
+    CHECK(link(linked, "l")["source"] == "a" && link(linked, "l")["target"] == "b");
+    CHECK(node(linked, "b")["note"] == "Memo");
+
+    for (const auto *invalid : {
+        "null", "[]", "42", R"({"id":""})", R"({"id":null})", R"({"topic":1})",
+        R"({"children":null})", R"({"children":["leaf"]})", R"({"children":[{},null]})",
+        R"({"children":[{"id":"x"},{"children":[{"id":"x"}]}]})",
+        R"({"image":{"width":-1}})", R"({"image":{"url":null}})",
+        R"({"schemaVersion":1,"children":[{}]})", R"({"rootId":"r"})",
+        R"({"nodes":[]})", R"({"crossLinks":[]})", R"({"linkData":{}})",
+        R"({"nodeData":{},"schemaVersion":1})",
+        R"({"schemaVersion":1,"rootId":"r","nodes":[{"topic":"No ID"}]})"}) {
+        M3Mindmap *raw = reinterpret_cast<M3Mindmap *>(1);
+        const auto status = m3_mindmap_from_json(invalid, &raw);
+        Map unexpected(status == M3_OK ? raw : nullptr, m3_mindmap_destroy);
+        CHECK(status == M3_ERR_SCHEMA && raw == nullptr);
+    }
+    // Optional image fields are import-only: native documents and patches stay strict.
+    for (const auto *key : {"url", "width", "height"}) {
+        auto native = document(rich);
+        native["nodes"][0]["image"].erase(key);
+        M3Mindmap *raw = nullptr;
+        const auto status = m3_mindmap_from_json(native.dump().c_str(), &raw);
+        Map unexpected(raw, m3_mindmap_destroy);
+        CHECK(status == M3_ERR_SCHEMA && raw == nullptr);
+        auto patch = Json{{"image", node(rich, "r")["image"]}};
+        patch["image"].erase(key);
+        const auto before = document(rich);
+        CHECK(m3_mindmap_update_node(rich.get(), "r", patch.dump().c_str()) == M3_ERR_SCHEMA);
+        CHECK(document(rich) == before);
+    }
+    constexpr size_t count = 4096;
+    std::string deep;
+    for (size_t i = 1; i < count; ++i) deep += "{\"children\":[";
+    deep += "{}";
+    for (size_t i = 1; i < count; ++i) deep += "]}";
+    M3Mindmap *raw = nullptr;
+    ok(m3_mindmap_from_json(deep.c_str(), &raw));
+    Map deep_map(raw, m3_mindmap_destroy);
+    const auto deep_doc = document(deep_map);
+    CHECK(deep_doc["nodes"].size() == count);
+    for (size_t i = 0; i < count; ++i) {
+        const auto &n = deep_doc["nodes"][i];
+        CHECK(n["id"] == "m3-auto-" + std::to_string(i + 1));
+        CHECK(n["children"] == (i + 1 < count ? Json::array({"m3-auto-" + std::to_string(i + 2)}) : Json::array()));
+    }
 }
 
 static void edits() {
@@ -436,6 +527,7 @@ int main(int argc, char **argv) {
         else if (name == "validation") validation();
         else if (name == "mind_elixir") mind_elixir();
         else if (name == "mind_elixir_validation") mind_elixir_validation();
+        else if (name == "simple_tree") simple_tree();
         else if (name == "edits") edits();
         else if (name == "atomicity") atomicity();
         else if (name == "links") links();

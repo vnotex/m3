@@ -43,11 +43,24 @@ typedef struct M3Mindmap M3Mindmap;
  * insertion return ALREADY_EXISTS. Root removal/movement and moves into one's
  * own subtree return INVALID_OPERATION. See m3_last_error for diagnostics. */
 M3_API M3Status m3_mindmap_create(const char *root_id, const char *topic, M3Mindmap **out_map);
-/* Import accepts native documents or a compatible Mind Elixir v1.1.3 envelope
- * detected by nodeData (no producer version marker is available). Mixing nodeData
+/* Import also accepts a simple nested node tree, e.g.
+ *   {"topic":"Root","children":[{"topic":"Child"},{}]}
+ * Every node field is optional: omitted id is generated, topic defaults to "",
+ * children to [], and other attributes use native defaults. An empty object is
+ * a blank root. Supplied IDs must be nonempty strings and unique; generated
+ * m3-auto-N IDs (N starts at 1) follow preorder, skipping all supplied IDs.
+ * Simple trees accept native attributes; image url/width/height may also be
+ * omitted (""/0/0). Unknown node fields are ignored; supplied known fields must
+ * have valid types. Children are nested objects, not IDs. Native document
+ * markers schemaVersion/rootId/nodes/crossLinks and envelope markers
+ * nodeData/linkData are reserved at the top level; invalid marked documents
+ * never fall back to simple-tree decoding.
+ *
+ * A compatible Mind Elixir v1.1.3 envelope is detected by nodeData (no producer
+ * version marker is available). Mixing nodeData
  * with schemaVersion/rootId/nodes/crossLinks is rejected; invalid foreign input
- * never falls back to native decoding. Nested nodes require nonempty id and
- * string topic; ordered children and IDs are preserved, including collapsed
+ * never falls back to native decoding. Nested node fields are optional as above;
+ * ordered children and supplied IDs are preserved, including collapsed
  * descendants. topic/hyperLink/expanded/style/tags/icons map to native fields;
  * the memo extension maps to note. Optional ID-keyed linkData requires matching
  * record IDs and existing from/to endpoints; label maps to topic, directed is

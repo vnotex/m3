@@ -20,8 +20,9 @@
 // The widget owns its model; snapshots and commands never expose a core handle.
 // New editors contain the selected root "root" / "Central topic". New/load
 // replace it atomically, select the new root, and fit once; failed imports retain
-// the document and selection. Import accepts native JSON and Mind Elixir; export
-// is a copied native JSON snapshot, including opaque metadata, or empty on error.
+// the document and selection. Import accepts native JSON, optional-field nested
+// trees, and Mind Elixir. Export is a copied native JSON snapshot, including
+// opaque metadata, or empty on error.
 // Mutations return false/empty on semantic failure. After a successful mutation,
 // a drawing failure is reported without claiming rollback: the error scene is
 // retried on the next refresh. documentChanged fires once per semantic success;

@@ -41,7 +41,7 @@ void apply_shared_attributes(Attributes &a, const Json &j) {
     if (j.contains("tags")) a.tags = j["tags"].get<std::vector<std::string>>();
     if (j.contains("icons")) a.icons = j["icons"].get<std::vector<std::string>>();
 }
-void apply_attributes(Attributes &a, const Json &j) {
+void apply_attributes(Attributes &a, const Json &j, bool optional_image_fields = false) {
     apply_shared_attributes(a, j);
     if (j.contains("note")) a.note = j["note"].get<std::string>();
     if (j.contains("image")) {
@@ -49,7 +49,8 @@ void apply_attributes(Attributes &a, const Json &j) {
         if (i.is_null()) a.image.reset();
         else {
             keys(i, {"url", "width", "height"});
-            Image image{i.at("url").get<std::string>(), i.at("width").get<double>(), i.at("height").get<double>()};
+            schema(optional_image_fields || (i.contains("url") && i.contains("width") && i.contains("height")));
+            Image image{i.value("url", std::string{}), i.value("width", 0.0), i.value("height", 0.0)};
             schema(std::isfinite(image.width) && image.width >= 0 && std::isfinite(image.height) && image.height >= 0);
             a.image = std::move(image);
         }
@@ -63,27 +64,49 @@ void apply_link_fields(Link &l, const Json &j) {
     if (j.contains("icon")) l.icon = j["icon"].get<std::string>();
     if (j.contains("style")) { schema(j["style"].is_object()); l.style = j["style"]; }
 }
-Model decode_mind_elixir(const Json &j) {
-    const auto &root = j.at("nodeData");
-    schema(root.is_object());
+Model decode_tree(const Json &root, bool mind_elixir) {
+    // Reserve every supplied ID before generating any, including later siblings.
+    std::unordered_set<std::string_view> supplied_ids;
+    size_t count = 0;
+    {
+        std::vector<const Json *> pending{&root};
+        while (!pending.empty()) {
+            const auto &value = *pending.back();
+            pending.pop_back();
+            schema(value.is_object());
+            ++count;
+            if (value.contains("id")) {
+                const auto &id = value["id"].get_ref<const std::string &>();
+                schema(!id.empty() && supplied_ids.insert(id).second);
+            }
+            const auto children = value.find("children");
+            if (children != value.end()) {
+                schema(children->is_array());
+                for (const auto &child : *children) pending.push_back(&child);
+            }
+        }
+    }
     Model m;
+    m.nodes.reserve(count);
+    size_t next_id = 1;
     struct Frame { const Json *value; Node *parent; };
     std::vector<Frame> pending{{&root, nullptr}};
     while (!pending.empty()) {
         const auto frame = pending.back();
         pending.pop_back();
         const auto &value = *frame.value;
-        schema(value.is_object());
         Node n;
-        n.id = identifier(value.at("id"));
-        schema(value.contains("topic") && value["topic"].is_string());
-        apply_shared_attributes(n.attrs, value);
-        if (value.contains("memo")) n.attrs.note = value["memo"].get<std::string>();
-        const auto children = value.find("children");
-        if (children != value.end()) {
-            schema(children->is_array());
-            n.children.reserve(children->size());
+        if (value.contains("id")) n.id = value["id"].get<std::string>();
+        else {
+            do { n.id = "m3-auto-" + std::to_string(next_id++); }
+            while (supplied_ids.count(n.id));
         }
+        if (mind_elixir) {
+            apply_shared_attributes(n.attrs, value);
+            if (value.contains("memo")) n.attrs.note = value["memo"].get<std::string>();
+        } else apply_attributes(n.attrs, value, true);
+        const auto children = value.find("children");
+        if (children != value.end()) n.children.reserve(children->size());
         if (frame.parent) n.parent = frame.parent->id;
         auto id = n.id;
         auto inserted = m.nodes.emplace(std::move(id), std::move(n));
@@ -96,6 +119,10 @@ Model decode_mind_elixir(const Json &j) {
             for (auto it = children->rbegin(); it != children->rend(); ++it)
                 pending.push_back({&*it, stored});
     }
+    return m;
+}
+Model decode_mind_elixir(const Json &j) {
+    auto m = decode_tree(j.at("nodeData"), true);
     if (j.contains("linkData")) {
         const auto &links = j["linkData"];
         schema(links.is_object());
@@ -151,6 +178,9 @@ Model decode_document(const Json &j) {
             !j.contains("nodes") && !j.contains("crossLinks"));
         return decode_mind_elixir(j);
     }
+    if (j.is_object() && !j.contains("schemaVersion") && !j.contains("rootId") &&
+        !j.contains("nodes") && !j.contains("crossLinks") && !j.contains("linkData"))
+        return decode_tree(j, false);
     keys(j, {"schemaVersion", "rootId", "nodes", "crossLinks"});
     schema(j.at("schemaVersion").is_number_integer() && j["schemaVersion"] == 1);
     Model m;
