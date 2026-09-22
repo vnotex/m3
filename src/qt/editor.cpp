@@ -773,7 +773,7 @@ public:
         QObject::connect(view, &MindMapView::expansionRequested, controller, &MindMapController::setExpanded);
         QObject::connect(view, &MindMapView::appearanceChanged, controller, &MindMapController::refreshAppearance);
         QObject::connect(view, &MindMapView::editRequested, editSelection, &QAction::trigger);
-        QObject::connect(view, &MindMapView::topicEditRequested, controller, &MindMapController::renameNode);
+        QObject::connect(view, &MindMapView::topicEditRequested, controller, &MindMapController::commitTopicEdit);
         controller->newDocument(QStringLiteral("Central topic"));
         updateActions();
     }

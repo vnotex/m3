@@ -62,7 +62,7 @@ private:
     bool nodeDragging = false;
     QPointer<QPlainTextEdit> topicEditor;
     QPointer<QGraphicsTextItem> topicLabel;
-    QString editedId, originalTopic;
+    QString editedId, originalTopic, originalTopicDraft;
     Qt::FocusPolicy viewFocusPolicy = Qt::NoFocus, viewportFocusPolicy = Qt::NoFocus;
     void updateTopicEditorGeometry();
     QGraphicsItem *targetAt(const QPoint &position) const;

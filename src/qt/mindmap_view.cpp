@@ -410,13 +410,16 @@ void MindMapView::beginTopicEdit(const QString &id, const QList<QKeySequence> &a
     editedId = id;
     topicLabel = node->label;
     originalTopic = topicLabel->toPlainText();
+    originalTopicDraft = originalTopic;
+    originalTopicDraft.replace(QChar('#'), QStringLiteral("##"));
     auto *input = new QPlainTextEdit(viewport());
     topicEditor = input;
     input->setObjectName(QStringLiteral("topicEditor"));
     input->setAccessibleName(tr("Topic"));
     input->setFont(topicLabel->font());
     input->setPalette(palette());
-    input->setPlainText(originalTopic);
+    input->setPlainText(originalTopicDraft);
+    input->setPlaceholderText(tr("#tag adds a tag\n## types #"));
     input->setTabChangesFocus(false);
     input->setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
     input->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -446,10 +449,11 @@ void MindMapView::beginTopicEdit(const QString &id, const QList<QKeySequence> &a
 void MindMapView::finishTopicEdit(bool commit, bool restoreFocus) {
     if (!topicEditor) return;
     auto *input = topicEditor.data();
-    const QString id = editedId, original = originalTopic, draft = input->toPlainText();
+    const QString id = editedId, original = originalTopicDraft, draft = input->toPlainText();
     topicEditor.clear();
     editedId.clear();
     originalTopic.clear();
+    originalTopicDraft.clear();
     qApp->removeEventFilter(this);
     disconnect(input, nullptr, this, nullptr);
     for (auto *shortcut : input->findChildren<QShortcut *>()) {
@@ -476,8 +480,11 @@ void MindMapView::updateTopicEditorGeometry() {
     if (!topicEditor || !topicLabel) return;
     const QRect label = mapFromScene(topicLabel->sceneBoundingRect()).boundingRect();
     const int margin = topicEditor->frameWidth() + int(std::ceil(topicEditor->document()->documentMargin()));
-    const int line = topicEditor->fontMetrics().lineSpacing();
-    const int width = std::min(viewport()->width(), std::max(120, label.width() + 2 * margin));
+    const QFontMetrics metrics = topicEditor->fontMetrics();
+    const int line = metrics.lineSpacing();
+    const int placeholderWidth = metrics.size(0, topicEditor->placeholderText()).width();
+    const int width = std::min(viewport()->width(),
+                               std::max({120, label.width() + 2 * margin, placeholderWidth + 2 * margin}));
     const int height = std::min(viewport()->height(), std::clamp(label.height() + 2 * margin,
                                                                3 * line + 2 * margin, 8 * line + 2 * margin));
     const int x = std::clamp(label.left() - margin, 0, viewport()->width() - width);

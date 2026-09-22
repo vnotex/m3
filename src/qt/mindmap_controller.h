@@ -18,6 +18,7 @@ public:
     QString lastError() const { return error; }
     QString addNode(const QString &parent, const QString &topic, int index);
     bool renameNode(const QString &id, const QString &topic);
+    bool commitTopicEdit(const QString &id, const QString &draft);
     bool updateNodeProperties(const QString &id, const QByteArray &patch);
     bool removeNode(const QString &id);
     bool moveNode(const QString &id, const QString &parent, int index);

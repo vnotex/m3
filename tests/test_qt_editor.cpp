@@ -2309,12 +2309,16 @@ static void properties_case() {
     assertFit(editor);
     CHECK(editor.selectNode(QStringLiteral("a")));
     shortcut(editor, Qt::Key_F2);
-    topicInput(editor).setPlainText(QStringLiteral("Renamed from inline editor"));
+    topicInput(editor).setPlainText(QStringLiteral("Renamed from inline editor #inline"));
     changed.clear();
     reveal(tags);
     QTest::mouseClick(tags, Qt::LeftButton);
     pump();
     CHECK(activeTopicInput(editor) == nullptr && changed.size() == 1);
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "Renamed from inline editor");
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("tags") == Json::array({"inline"}));
+    CHECK(tags->text() == QStringLiteral("inline"));
+    QTest::keyClick(tags, Qt::Key_A, Qt::ControlModifier);
     QTest::keyClicks(tags, "new");
     CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "Renamed from inline editor");
     CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("tags") == Json::array({"new"}));
@@ -2755,7 +2759,167 @@ static void navigation_case() {
     CHECK(std::abs(view.transform().m11() - selectionScale) < 1e-6);
 }
 
+static void inline_tags_case() {
+    Editor editor;
+    showEditor(editor);
+    const QString root = QStringLiteral("r");
+    QSignalSpy changed(&editor, &Editor::documentChanged), errors(&editor, &Editor::errorOccurred);
+    auto reset = [&] {
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        CHECK(editor.selectNode(root));
+        pump();
+        changed.clear();
+        errors.clear();
+        return exported(editor);
+    };
+    {
+        Json expected = reset();
+        const Json original = expected;
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("  Roadmap  #todo   ##literal #x  done  "));
+        CHECK(exported(editor) == original && changed.isEmpty());
+        Json observedRoot;
+        const auto observer = QObject::connect(&editor, &Editor::documentChanged, &editor, [&] {
+            observedRoot = record(exported(editor), "nodes", root);
+        });
+        topicKey(editor, Qt::Key_Return);
+        QObject::disconnect(observer);
+        const QString topic = QStringLiteral("Roadmap #literal done");
+        setTopic(expected, "r", topic);
+        for (auto &entry : expected.at("nodes")) if (entry.at("id") == "r")
+            entry["tags"] = Json::array({"x", "y", "x", "todo", "x"});
+        CHECK(exported(editor) == expected && changed.size() == 1 && errors.isEmpty());
+        CHECK(observedRoot == record(expected, "nodes", root));
+        auto *owner = ownerItem(textItem(editor, topic));
+        auto badgeCount = [&](const QString &tag) {
+            const auto matches = texts(editor, tag);
+            return std::count_if(matches.begin(), matches.end(), [&](auto *badge) { return ownerItem(badge) == owner; });
+        };
+        CHECK(badgeCount(QStringLiteral("x")) == 3 && badgeCount(QStringLiteral("y")) == 1);
+        CHECK(badgeCount(QStringLiteral("todo")) == 1);
+        auto *tags = editor.findChild<QLineEdit *>(QStringLiteral("nodeTags"));
+        CHECK(tags && tags->text() == QStringLiteral("x, y, x, todo, x"));
+    }
+    {
+        // These vectors distinguish escape precedence, Unicode words, and line-preserving cleanup.
+        struct ParseCase { QString draft, topic; Json appended; };
+        const ParseCase cases[] = {
+            {QStringLiteral("##tag ###next ####keep # #! #one##two"),
+             QStringLiteral("#tag # ##keep # #! #two"), Json::array({"next", "one"})},
+            {QStringLiteral("  ##tag  "), QStringLiteral("  #tag  "), Json::array()},
+            {QString::fromUtf8(u8"#todo, (#世界) #release-1 #under_score #cafe\u0301 part#embedded #one#two #\U00010400"),
+             QStringLiteral(", () part"),
+             Json::array({"todo", u8"世界", "release-1", "under_score", u8"cafe\u0301", "embedded", "one", "two", u8"\U00010400"})},
+            {QStringLiteral("  First  #one \n\tsecond #two  "), QStringLiteral("First\nsecond"), Json::array({"one", "two"})},
+            {QStringLiteral("#one\n#two"), QStringLiteral("\n"), Json::array({"one", "two"})},
+            {QStringLiteral(" #solo "), QString(), Json::array({"solo"})}
+        };
+        for (const auto &test : cases) {
+            Json expected = reset();
+            shortcut(editor, Qt::Key_F2);
+            topicInput(editor).setPlainText(test.draft);
+            topicKey(editor, Qt::Key_Return);
+            setTopic(expected, "r", test.topic);
+            for (auto &entry : expected.at("nodes")) if (entry.at("id") == "r")
+                for (const auto &tag : test.appended) entry["tags"].push_back(tag);
+            CHECK(exported(editor) == expected && changed.size() == 1 && errors.isEmpty());
+        }
+    }
+    {
+        Json expected = reset();
+        CHECK(editor.renameNode(root, QStringLiteral("Roadmap #literal")));
+        setTopic(expected, "r", QStringLiteral("Roadmap #literal"));
+        changed.clear();
+        shortcut(editor, Qt::Key_F2);
+        const QString baseline = QStringLiteral("Roadmap ##literal");
+        CHECK(topicInput(editor).toPlainText() == baseline);
+        topicKey(editor, Qt::Key_Return);
+        CHECK(exported(editor) == expected && changed.isEmpty());
+
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).moveCursor(QTextCursor::End);
+        topicInput(editor).insertPlainText(QStringLiteral(" revised #next"));
+        CHECK(editor.renameNode(QStringLiteral("b"), QStringLiteral("Unrelated mutation")));
+        setTopic(expected, "b", QStringLiteral("Unrelated mutation"));
+        pump();
+        CHECK(topicInput(editor).toPlainText() == baseline + QStringLiteral(" revised #next"));
+        CHECK(exported(editor) == expected && changed.size() == 1);
+        topicKey(editor, Qt::Key_Z, Qt::ControlModifier);
+        CHECK(topicInput(editor).toPlainText() == baseline);
+        changed.clear();
+        topicKey(editor, Qt::Key_Return);
+        CHECK(exported(editor) == expected && changed.isEmpty());
+
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).moveCursor(QTextCursor::End);
+        topicInput(editor).insertPlainText(QStringLiteral(" revised #next"));
+        topicKey(editor, Qt::Key_Return);
+        setTopic(expected, "r", QStringLiteral("Roadmap #literal revised"));
+        for (auto &entry : expected.at("nodes")) if (entry.at("id") == "r")
+            entry["tags"].push_back("next");
+        CHECK(exported(editor) == expected && changed.size() == 1 && errors.isEmpty());
+    }
+    {
+        Json expected = reset();
+        CHECK(editor.renameNode(root, QStringLiteral("#")));
+        setTopic(expected, "r", QStringLiteral("#"));
+        changed.clear();
+        shortcut(editor, Qt::Key_F2);
+        CHECK(topicInput(editor).toPlainText() == QStringLiteral("##"));
+        topicInput(editor).setPlainText(QStringLiteral("#"));
+        topicKey(editor, Qt::Key_Return);
+        CHECK(exported(editor) == expected && changed.isEmpty() && errors.isEmpty());
+    }
+    {
+        Json expected = reset();
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Current #added"));
+        auto *tags = editor.findChild<QLineEdit *>(QStringLiteral("nodeTags"));
+        CHECK(tags != nullptr);
+        tags->setText(QStringLiteral("fresh"));
+        pump();
+        CHECK(topicInput(editor).toPlainText() == QStringLiteral("Current #added"));
+        for (auto &entry : expected.at("nodes")) if (entry.at("id") == "r")
+            entry["tags"] = Json::array({"fresh"});
+        CHECK(exported(editor) == expected && changed.size() == 1);
+        changed.clear();
+        topicKey(editor, Qt::Key_Return);
+        setTopic(expected, "r", QStringLiteral("Current"));
+        for (auto &entry : expected.at("nodes")) if (entry.at("id") == "r")
+            entry["tags"].push_back("added");
+        CHECK(exported(editor) == expected && changed.size() == 1 && errors.isEmpty());
+    }
+    {
+        const Json original = reset();
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Discard #drop ##keep"));
+        topicKey(editor, Qt::Key_Escape);
+        CHECK(activeTopicInput(editor) == nullptr);
+        CHECK(exported(editor) == original && changed.isEmpty() && errors.isEmpty());
+    }
+    {
+        Json expected = reset();
+        const QString literal = QStringLiteral("Literal #tag ##pair");
+        CHECK(editor.renameNode(root, literal));
+        setTopic(expected, "r", literal);
+        CHECK(exported(editor) == expected && changed.size() == 1 && errors.isEmpty());
+        changed.clear();
+        shortcut(editor, Qt::Key_F2);
+        CHECK(topicInput(editor).toPlainText() == QStringLiteral("Literal ##tag ####pair"));
+        topicKey(editor, Qt::Key_Return);
+        CHECK(exported(editor) == expected && changed.isEmpty());
+
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Invalid") + QChar(QChar::Null) + QStringLiteral("#tag"));
+        topicKey(editor, Qt::Key_Return);
+        CHECK(exported(editor) == expected && changed.isEmpty());
+        CHECK(errors.size() == 1 && editor.lastError() == QStringLiteral("Text cannot contain NUL characters"));
+        CHECK(errors.front().front().toString() == editor.lastError());
+    }
+}
+
 static void inline_edit_case() {
+    inline_tags_case();
     {
         Editor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));

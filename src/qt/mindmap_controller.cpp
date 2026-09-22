@@ -1,6 +1,9 @@
 #include "mindmap_controller.h"
 #include "mindmap_view.h"
 #include <QHash>
+#include <QRegularExpression>
+#include <QStringList>
+#include <QStringView>
 #include <QUuid>
 #include <nlohmann/json.hpp>
 #include <cmath>
@@ -15,6 +18,46 @@ QString string(const Json &j) { return QString::fromStdString(j.get<std::string>
 std::string utf8(const QString &s) { return s.toUtf8().toStdString(); }
 void requireStatus(M3Status result) {
     if (result != M3_OK) throw std::runtime_error(m3_last_error());
+}
+struct ParsedTopic { QString topic; QStringList tags; };
+ParsedTopic parseTopicEdit(const QString &draft) {
+    if (!draft.contains(u'#')) return {draft, {}};
+    static const QRegularExpression tokens(QStringLiteral(R"(##|#([\p{L}\p{N}_-][\p{L}\p{M}\p{N}_-]*))"));
+    ParsedTopic result;
+    result.topic.reserve(draft.size());
+    const QStringView source(draft);
+    auto matches = tokens.globalMatchView(source);
+    qsizetype offset = 0;
+    while (matches.hasNext()) {
+        const auto match = matches.next();
+        result.topic.append(source.sliced(offset, match.capturedStart() - offset));
+        if (match.capturedLength(1) > 0) result.tags.append(match.captured(1));
+        else result.topic.append(u'#');
+        offset = match.capturedEnd();
+    }
+    result.topic.append(source.sliced(offset));
+    if (!result.tags.isEmpty()) {
+        QChar *characters = result.topic.data();
+        qsizetype written = 0;
+        bool lineStart = true, pendingSpace = false;
+        for (qsizetype i = 0; i < result.topic.size(); ++i) {
+            const QChar character = characters[i];
+            if (character == u'\n') {
+                characters[written++] = character;
+                lineStart = true;
+                pendingSpace = false;
+            } else if (character.isSpace()) {
+                pendingSpace = lineStart == false;
+            } else {
+                if (pendingSpace) characters[written++] = u' ';
+                characters[written++] = character;
+                lineStart = false;
+                pendingSpace = false;
+            }
+        }
+        result.topic.truncate(written);
+    }
+    return result;
 }
 M3LayoutDirection coreDirection(MindMapEditor::LayoutDirection d) {
     switch (d) {
@@ -239,6 +282,23 @@ bool MindMapController::renameNode(const QString &id, const QString &topic) {
     if (!strings({id, topic})) return false;
     const auto patch = Json{{"topic", utf8(topic)}}.dump();
     return changed(m3_mindmap_update_node(model.get(), id.toUtf8().constData(), patch.c_str()));
+}
+bool MindMapController::commitTopicEdit(const QString &id, const QString &draft) {
+    if (!strings({id, draft})) return false;
+    try {
+        const auto parsed = parseTopicEdit(draft);
+        Json patch{{"topic", utf8(parsed.topic)}};
+        if (!parsed.tags.isEmpty()) {
+            char *raw = nullptr;
+            const auto read = m3_mindmap_get_node_json(model.get(), id.toUtf8().constData(), &raw);
+            Text text(raw, m3_string_free);
+            requireStatus(read);
+            const auto current = Json::parse(text.get());
+            auto &tags = patch["tags"] = current.at("tags");
+            for (const auto &tag : parsed.tags) tags.push_back(utf8(tag));
+        }
+        return updateNodeProperties(id, QByteArray::fromStdString(patch.dump()));
+    } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 bool MindMapController::updateNodeProperties(const QString &id, const QByteArray &patch) {
     if (!strings({id})) return false;
