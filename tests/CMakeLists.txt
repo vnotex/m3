@@ -43,6 +43,11 @@ target_link_libraries(m3_test_failures PRIVATE m3_fault_core)
 target_include_directories(m3_test_failures SYSTEM PRIVATE ../third_party)
 set_target_properties(m3_test_failures PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
 m3_target_defaults(m3_test_failures)
+if(MSVC)
+    # Debug STL iterator proxies allocate in noexcept constructors. Exclude that
+    # bookkeeping from fault injection, with a matching STL ABI in the driver.
+    target_compile_definitions(m3_fault_core PUBLIC $<$<CONFIG:Debug>:_ITERATOR_DEBUG_LEVEL=0>)
+endif()
 if(MINGW)
     # A dynamic libstdc++ keeps some std::string allocations inside its own DLL,
     # bypassing replacement new. Bind those calls to the test allocator as well.

@@ -51,7 +51,8 @@ jobs:
 
   qt:
     name: Qt / Windows / ${{ matrix.build_type }} / shared=${{ matrix.shared }}
-    runs-on: windows-latest
+    # Match the MSVC 2022 Qt kit and explicit Visual Studio generator.
+    runs-on: windows-2022
     timeout-minutes: 30
     strategy:
       fail-fast: false
