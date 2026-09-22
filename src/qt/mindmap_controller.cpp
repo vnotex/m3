@@ -21,6 +21,7 @@ M3LayoutDirection coreDirection(MindMapEditor::LayoutDirection d) {
     case MindMapEditor::LayoutDirection::Balanced: return M3_LAYOUT_BALANCED;
     case MindMapEditor::LayoutDirection::Right: return M3_LAYOUT_RIGHT;
     case MindMapEditor::LayoutDirection::Left: return M3_LAYOUT_LEFT;
+    case MindMapEditor::LayoutDirection::Outline: return M3_LAYOUT_OUTLINE;
     }
     throw std::runtime_error("Invalid layout direction");
 }
@@ -104,6 +105,7 @@ Presentation MindMapController::prepare(const M3Mindmap *map, MindMapEditor::Lay
     index.reserve(nodes.size());
     for (const auto &n : nodes) index.emplace(n.at("id").get<std::string>(), &n);
     Presentation result;
+    result.outline = requested == MindMapEditor::LayoutDirection::Outline;
     std::vector<const Json *> pending{index.at(data.at("rootId").get<std::string>())};
     while (!pending.empty()) {
         const auto &record = *pending.back();
@@ -136,7 +138,8 @@ Presentation MindMapController::prepare(const M3Mindmap *map, MindMapEditor::Lay
     sizes.reserve(result.nodes.size());
     for (size_t i = 0; i < result.nodes.size(); ++i)
         sizes.push_back({ids[i].constData(), result.nodes[i].rectangle.width(), result.nodes[i].rectangle.height()});
-    const M3LayoutOptions options{coreDirection(requested), 64, 20};
+    const M3LayoutOptions options{coreDirection(requested), result.outline ? 32.0 : 64.0,
+                                  result.outline ? 8.0 : 20.0};
     char *raw = nullptr;
     const auto status = m3_mindmap_layout_json(map, sizes.data(), sizes.size(), &options, &raw);
     Text layoutText(raw, m3_string_free);

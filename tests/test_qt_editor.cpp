@@ -21,6 +21,7 @@
 #include <QFont>
 #include <QFocusEvent>
 #include <QGraphicsItem>
+#include <QGraphicsPathItem>
 #include <QGraphicsScene>
 #include <QGraphicsTextItem>
 #include <QGraphicsView>
@@ -215,6 +216,30 @@ static void assertFit(Editor &editor) {
 static bool finiteRect(const QRectF &r) {
     return std::isfinite(r.x()) && std::isfinite(r.y()) && std::isfinite(r.width()) &&
            std::isfinite(r.height()) && r.width() > 0 && r.height() > 0;
+}
+static void assertTreeConnectors(Editor &editor, const std::vector<QRectF> &nodes) {
+    size_t edges = 0;
+    for (auto *item : graphics(editor).scene()->items()) {
+        auto *connector = dynamic_cast<QGraphicsPathItem *>(item);
+        if (!connector) continue;
+        ++edges;
+        const QPainterPath path = connector->mapToScene(connector->path());
+        CHECK(path.elementCount() >= 2);
+        CHECK(path.elementAt(0).type == QPainterPath::MoveToElement);
+        if (editor.layoutDirection() == Editor::LayoutDirection::Outline) {
+            CHECK(path.elementCount() == 3);
+            const auto from = path.elementAt(0), elbow = path.elementAt(1), to = path.elementAt(2);
+            CHECK(elbow.type == QPainterPath::LineToElement && to.type == QPainterPath::LineToElement);
+            CHECK(from.x == elbow.x && elbow.y == to.y);
+            CHECK(from.y < elbow.y && elbow.x < to.x);
+            const QPainterPath stroke = connector->mapToScene(connector->shape());
+            for (const auto &node : nodes)
+                CHECK(!stroke.intersects(node.adjusted(3, 3, -3, -3)));
+        } else {
+            CHECK(path.elementAt(1).type == QPainterPath::CurveToElement);
+        }
+    }
+    CHECK(edges + 1 == nodes.size());
 }
 static void rejectUnchanged(Editor &editor, const std::function<bool()> &operation) {
     const Json before = exported(editor);
@@ -942,11 +967,13 @@ static void render_case() {
     CHECK(sceneBounds.top() <= contentBounds.top() - 31 && sceneBounds.bottom() >= contentBounds.bottom() + 31);
 
     QSignalSpy changed(&editor, &Editor::documentChanged);
-    for (auto direction : {Editor::LayoutDirection::Balanced, Editor::LayoutDirection::Left, Editor::LayoutDirection::Right}) {
+    for (auto direction : {Editor::LayoutDirection::Outline, Editor::LayoutDirection::Balanced,
+                           Editor::LayoutDirection::Left, Editor::LayoutDirection::Right}) {
         CHECK(editor.setLayoutDirection(direction));
         CHECK(editor.layoutDirection() == direction);
         nodes = checkNodes();
         checkLinkLabels(nodes);
+        assertTreeConnectors(editor, nodes);
         const qreal rootX = topicRect(editor, rootTopic).center().x();
         bool left = false, right = false;
         for (const QRectF &rectangle : {topicRect(editor, wrapped), topicRect(editor, QStringLiteral("<b>plain</b>")), emptyNodeRect(editor)}) {
@@ -3263,18 +3290,54 @@ static void controls_case() {
     for (auto *picker : editor.findChildren<QComboBox *>())
         if (picker->findText(QStringLiteral("Balanced")) >= 0 &&
             picker->findText(QStringLiteral("Right")) >= 0 && picker->findText(QStringLiteral("Left")) >= 0) layout = picker;
-    CHECK(layout != nullptr);
+    CHECK(layout != nullptr && layout->findText(QStringLiteral("Outline")) >= 0);
     const Json beforeLayout = exported(editor);
     const QString rootTopic = qs(record(beforeLayout, "nodes", QStringLiteral("r")).at("topic"));
-    layout->setCurrentIndex(layout->findText(QStringLiteral("Left")));
-    CHECK(editor.layoutDirection() == Editor::LayoutDirection::Left);
-    CHECK(topicRect(editor, QStringLiteral("Alpha")).center().x() < topicRect(editor, rootTopic).center().x());
-    layout->setCurrentIndex(layout->findText(QStringLiteral("Right")));
-    CHECK(editor.layoutDirection() == Editor::LayoutDirection::Right);
-    CHECK(topicRect(editor, QStringLiteral("Alpha")).center().x() > topicRect(editor, rootTopic).center().x());
-    layout->setCurrentIndex(layout->findText(QStringLiteral("Balanced")));
-    CHECK(editor.layoutDirection() == Editor::LayoutDirection::Balanced);
-    CHECK(exported(editor) == beforeLayout && changed.isEmpty());
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    QSignalSpy layoutSelection(&editor, &Editor::selectionChanged);
+    const std::vector<std::pair<QString, int>> initialRows{
+        {rootTopic, 0}, {QStringLiteral("Alpha"), 1}, {QStringLiteral("Delta"), 2},
+        {QStringLiteral("Beta"), 1}, {QString(), 1}
+    };
+    auto checkOutline = [&](const std::vector<std::pair<QString, int>> &rows) {
+        CHECK(editor.layoutDirection() == Editor::LayoutDirection::Outline);
+        std::vector<QRectF> rectangles;
+        for (const auto &row : rows)
+            rectangles.push_back(row.first.isEmpty() ? emptyNodeRect(editor) : topicRect(editor, row.first));
+        CHECK(std::abs(rectangles.front().center().x()) < 0.01);
+        CHECK(std::abs(rectangles.front().center().y()) < 0.01);
+        for (size_t i = 0; i < rows.size(); ++i) {
+            CHECK(std::abs(rectangles[i].left() - rectangles.front().left() - 32 * rows[i].second) < 0.01);
+            if (i > 0) CHECK(rectangles[i].top() > rectangles[i - 1].bottom());
+            if (i > 1) CHECK(std::abs((rectangles[i].top() - rectangles[i - 1].bottom()) -
+                                     (rectangles[1].top() - rectangles[0].bottom())) < 0.01);
+        }
+        assertTreeConnectors(editor, rectangles);
+        return rectangles;
+    };
+    layout->setCurrentIndex(layout->findText(QStringLiteral("Outline")));
+    const auto outlineNodes = checkOutline(initialRows);
+    const auto widths = std::minmax_element(outlineNodes.begin(), outlineNodes.end(),
+        [](const QRectF &a, const QRectF &b) { return a.width() < b.width(); });
+    CHECK(widths.second->width() > widths.first->width() + 1);
+    CHECK(editor.selectedNodeId() == QStringLiteral("a") && editor.selectedLinkId().isEmpty());
+    CHECK(exported(editor) == beforeLayout && changed.isEmpty() && layoutSelection.isEmpty());
+    for (auto direction : {Editor::LayoutDirection::Left, Editor::LayoutDirection::Right,
+                           Editor::LayoutDirection::Balanced}) {
+        layout->setCurrentIndex(layout->findData(int(direction)));
+        CHECK(editor.layoutDirection() == direction);
+        if (direction == Editor::LayoutDirection::Left)
+            CHECK(topicRect(editor, QStringLiteral("Alpha")).center().x() < topicRect(editor, rootTopic).center().x());
+        if (direction == Editor::LayoutDirection::Right)
+            CHECK(topicRect(editor, QStringLiteral("Alpha")).center().x() > topicRect(editor, rootTopic).center().x());
+        assertTreeConnectors(editor, {topicRect(editor, rootTopic), topicRect(editor, QStringLiteral("Alpha")),
+                                     topicRect(editor, QStringLiteral("Delta")), topicRect(editor, QStringLiteral("Beta")),
+                                     emptyNodeRect(editor)});
+    }
+    layout->setCurrentIndex(layout->findText(QStringLiteral("Outline")));
+    CHECK(checkOutline(initialRows) == outlineNodes);
+    CHECK(editor.selectedNodeId() == QStringLiteral("a") && editor.selectedLinkId().isEmpty());
+    CHECK(exported(editor) == beforeLayout && changed.isEmpty() && layoutSelection.isEmpty());
     CHECK(editor.selectNode(QStringLiteral("r")));
     CHECK(editAction(editor, "addChild").isEnabled());
     CHECK(editAction(editor, "editSelection").isEnabled());
@@ -3299,6 +3362,8 @@ static void controls_case() {
     CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("children") == Json({"d", utf8(added)}));
     CHECK(record(exported(editor), "nodes", added).at("topic") == utf8(QString::fromUtf8("UI child\n世界")));
     CHECK(!texts(editor, QString::fromUtf8("UI child\n世界")).isEmpty());
+    checkOutline({{rootTopic, 0}, {QStringLiteral("Alpha"), 1}, {QStringLiteral("Delta"), 2},
+                  {QString::fromUtf8("UI child\n世界"), 2}, {QStringLiteral("Beta"), 1}, {QString(), 1}});
     shortcut(editor, Qt::Key_F2);
     topicInput(editor).setPlainText(QStringLiteral("Renamed\nfrom F2"));
     topicKey(editor, Qt::Key_Return, Qt::ControlModifier);
@@ -3314,15 +3379,26 @@ static void controls_case() {
     topicKey(editor, Qt::Key_Enter, Qt::ControlModifier);
     CHECK(record(exported(editor), "nodes", added).at("topic") == "Double click topic");
     CHECK(changed.size() == 4);
+    const std::vector<std::pair<QString, int>> expandedRows{
+        {rootTopic, 0}, {QStringLiteral("Alpha"), 1}, {QStringLiteral("Delta"), 2},
+        {QStringLiteral("Double click topic"), 2}, {QStringLiteral("Beta"), 1}, {QString(), 1}
+    };
+    const auto expandedNodes = checkOutline(expandedRows);
 
     CHECK(editor.selectNode(QStringLiteral("a")));
     shortcut(editor, Qt::Key_Space);
     CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == false);
     CHECK(texts(editor, QStringLiteral("Double click topic")).isEmpty());
     CHECK(texts(editor, QStringLiteral("Delta")).isEmpty());
+    const auto compactNodes = checkOutline({{rootTopic, 0}, {QStringLiteral("Alpha"), 1},
+                                           {QStringLiteral("Beta"), 1}, {QString(), 1}});
+    CHECK(compactNodes[2].top() < expandedNodes[4].top());
+    CHECK(editor.selectedNodeId() == QStringLiteral("a"));
     shortcut(editor, Qt::Key_Space);
     CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == true);
     CHECK(!texts(editor, QStringLiteral("Double click topic")).isEmpty());
+    CHECK(checkOutline(expandedRows) == expandedNodes);
+    CHECK(editor.selectedNodeId() == QStringLiteral("a"));
     CHECK(changed.size() == 6);
 
     CHECK(editor.selectNode(QStringLiteral("d")));

@@ -6,7 +6,7 @@ extern "C" {
 #endif
 #define M3_NO_PARENT ((size_t)-1)
 typedef enum M3LayoutDirection {
-    M3_LAYOUT_BALANCED = 0, M3_LAYOUT_RIGHT = 1, M3_LAYOUT_LEFT = 2
+    M3_LAYOUT_BALANCED = 0, M3_LAYOUT_RIGHT = 1, M3_LAYOUT_LEFT = 2, M3_LAYOUT_OUTLINE = 3
 } M3LayoutDirection;
 typedef struct M3Rect { double x, y, width, height; } M3Rect;
 typedef struct M3LayoutNode { size_t parent_index; double width, height; } M3LayoutNode;
@@ -23,9 +23,13 @@ typedef struct M3LayoutResult {
  * gaps. Exactly one root (at any index); siblings retain input order.
  * Empty input succeeds. Rectangles correspond to input indexes, root centered
  * at (0,0). Rectangle coordinates are top-left; bounds are their union without
- * padding. Subtree span is max(node height, stacked child spans plus gaps).
- * Each child stack is centered on its parent's center Y; root side stacks are
- * separately centered at zero. Horizontal gaps separate adjacent generations.
+ * padding. In non-OUTLINE modes, subtree span is max(node height, stacked
+ * child spans plus gaps). Each child stack is centered on its parent's center
+ * Y; root side stacks are separately centered at zero. Horizontal gaps
+ * separate adjacent generations. OUTLINE places rows in depth-first preorder:
+ * each child's left edge is its parent's left edge plus horizontal_gap,
+ * independent of node widths; each row starts vertical_gap below the previous
+ * row's bottom.
  * BALANCED assigns root branches to the smaller current stacked side span,
  * RIGHT on ties. Branch descendants inherit that side. LEFT reflects RIGHT.
  * Overflow/nonfinite intermediate geometry returns INVALID_ARGUMENT.

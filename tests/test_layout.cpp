@@ -55,10 +55,23 @@ static void geometry() {
     const M3LayoutNode parent_tall[] = {{M3_NO_PARENT,100,40},{0,60,100},{1,40,10}};
     auto parent_result = calculate(parent_tall,3,options());
     near(parent_result->rects[1].y,-50); near(parent_result->rects[2].y,-5);
+    const M3LayoutNode outline_nodes[] = {{4,40,10},{5,60,20},{1,150,30},{5,80,50},{1,25,15},{M3_NO_PARENT,100,40},{0,70,25}};
+    const M3Rect outline_rects[] = {{46,117,40,10},{-18,28,60,20},{14,56,150,30},{-18,168,80,50},{14,94,25,15},{-50,-20,100,40},{78,135,70,25}};
+    auto outline = calculate(outline_nodes,7,{M3_LAYOUT_OUTLINE,32,8});
+    for (size_t i = 0; i < 7; ++i) rect(outline->rects[i],outline_rects[i]);
+    rect(outline->bounds,{-50,-20,214,238});
+    auto zero_gaps = calculate(outline_nodes,7,{M3_LAYOUT_OUTLINE,0,0});
+    const size_t preorder[] = {5,1,2,4,0,6,3};
+    double y = -20;
+    for (size_t i : preorder) {
+        near(zero_gaps->rects[i].x,-50); near(zero_gaps->rects[i].y,y);
+        y += outline_nodes[i].height;
+    }
+    rect(zero_gaps->bounds,{-50,-20,150,190});
     auto map = load(fixture());
     auto semantic = document(map);
     const char *ids[] = {"r","a","d","b","c"};
-    for (auto direction : {M3_LAYOUT_BALANCED,M3_LAYOUT_RIGHT,M3_LAYOUT_LEFT}) {
+    for (auto direction : {M3_LAYOUT_BALANCED,M3_LAYOUT_RIGHT,M3_LAYOUT_LEFT,M3_LAYOUT_OUTLINE}) {
         auto j = layout(map,base_sizes,5,options(direction));
         auto standalone = calculate(base_nodes,5,options(direction));
         for (size_t i = 0; i < 5; ++i) {
@@ -83,6 +96,7 @@ static void geometry() {
 static void collapse() {
     auto map = load(fixture());
     const auto original = layout(map);
+    const auto original_outline = layout(map,base_sizes,5,options(M3_LAYOUT_OUTLINE));
     const auto semantic = document(map);
     ok(m3_mindmap_update_node(map.get(),"a",R"({"expanded":false})"));
     const auto collapsed = layout(map);
@@ -96,13 +110,23 @@ static void collapse() {
     CHECK(node(map,"d")["id"] == "d");
     const M3NodeSize visible_sizes[] = {{"r",100,40},{"a",60,20},{"b",80,30},{"c",50,10}};
     CHECK(layout(map,visible_sizes,4) == collapsed);
+    const auto outline = layout(map,visible_sizes,4,options(M3_LAYOUT_OUTLINE));
+    const M3Rect compacted[] = {{-50,-20,100,40},{-10,40,60,20},{-10,80,80,30},{-10,130,50,10}};
+    for (size_t i = 0; i < 4; ++i) {
+        const auto &n = outline["nodes"][i];
+        CHECK(n["id"] == ids[i]);
+        rect({n["x"],n["y"],n["width"],n["height"]},compacted[i]);
+    }
+    CHECK(outline["bounds"] == Json({{"x",-50},{"y",-20},{"width",120},{"height",160}}));
     ok(m3_mindmap_update_node(map.get(),"a",R"({"expanded":true})"));
     CHECK(layout(map) == original);
+    CHECK(layout(map,base_sizes,5,options(M3_LAYOUT_OUTLINE)) == original_outline);
     ok(m3_mindmap_update_node(map.get(),"r",R"({"expanded":false})"));
     auto root = layout(map,base_sizes,1);
     CHECK(root["nodes"] == Json::array({original["nodes"][0]}));
     CHECK(root["crossLinks"].empty() && root["treeEdges"].empty());
     CHECK(root["bounds"] == Json({{"x",-50},{"y",-20},{"width",100},{"height",40}}));
+    CHECK(layout(map,base_sizes,1,options(M3_LAYOUT_OUTLINE)) == root);
     CHECK(document(map)["nodes"].size() == 5);
     CHECK(document(map)["crossLinks"] == semantic["crossLinks"]);
 }
@@ -133,6 +157,11 @@ static void invalid() {
     const double max = std::numeric_limits<double>::max();
     reject({{M3_NO_PARENT,max,10},{0,max,10}}, {M3_LAYOUT_RIGHT,max,0});
     reject({{M3_NO_PARENT,10,10},{0,10,max},{0,10,max}});
+    reject({{M3_NO_PARENT,10,10}}, {M3_LAYOUT_OUTLINE,std::numeric_limits<double>::quiet_NaN(),0});
+    reject({{M3_NO_PARENT,10,10},{0,10,10},{1,10,10}}, {M3_LAYOUT_OUTLINE,max,0});
+    reject({{M3_NO_PARENT,10,10},{0,10,max},{0,10,max}}, {M3_LAYOUT_OUTLINE,0,0});
+    reject({{M3_NO_PARENT,10,10},{0,10,10},{0,10,10}}, {M3_LAYOUT_OUTLINE,0,max});
+    reject({{M3_NO_PARENT,max,10},{0,max/2,10}}, {M3_LAYOUT_OUTLINE,max,0});
     M3LayoutResult *out = reinterpret_cast<M3LayoutResult *>(1);
     auto opts = options();
     CHECK(m3_layout_tree(nullptr,1,&opts,&out) == M3_ERR_INVALID_ARGUMENT && out == nullptr);
@@ -158,6 +187,7 @@ static void invalid() {
     const M3NodeSize utf8[] = {{"\xf4\x90\x80\x80",10,10}};
     bad_sizes(utf8,1,M3_ERR_INVALID_ARGUMENT);
     bad_sizes(base_sizes,5,M3_ERR_INVALID_ARGUMENT,{static_cast<M3LayoutDirection>(-1),40,20});
+    bad_sizes(base_sizes,5,M3_ERR_INVALID_ARGUMENT,{M3_LAYOUT_OUTLINE,max,0});
     ok(m3_mindmap_update_node(map.get(),"a",R"({"expanded":false})"));
     baseline = document(map);
     auto hidden_bad = std::vector<M3NodeSize>(base_sizes,base_sizes+5);
@@ -197,6 +227,12 @@ static void deep() {
     near(geometry["nodes"][count-1]["x"],-5+12*(count-1));
     near(geometry["nodes"][count-1]["y"],-2);
     near(geometry["bounds"]["width"],10+12*(count-1));
+    const auto outline = layout(map,sizes.data(),sizes.size(),{M3_LAYOUT_OUTLINE,2,1});
+    CHECK(outline["nodes"].size() == count && outline["treeEdges"].size() == count-1);
+    near(outline["nodes"][count-1]["x"],-5+2*(count-1));
+    near(outline["nodes"][count-1]["y"],-2+5*(count-1));
+    near(outline["bounds"]["width"],10+2*(count-1));
+    near(outline["bounds"]["height"],4+5*(count-1));
     CHECK(document(map) == exported);
     ok(m3_mindmap_remove_subtree(map.get(),ids[retained].c_str()));
     const auto remaining = document(map);

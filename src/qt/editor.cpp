@@ -734,6 +734,7 @@ public:
         direction->addItem(tr("Balanced"), int(LayoutDirection::Balanced));
         direction->addItem(tr("Right"), int(LayoutDirection::Right));
         direction->addItem(tr("Left"), int(LayoutDirection::Left));
+        direction->addItem(tr("Outline"), int(LayoutDirection::Outline));
         direction->setAccessibleName(tr("Layout direction"));
         toolbar->addWidget(direction);
         QObject::connect(direction, &QComboBox::currentIndexChanged, editor, [this] {

@@ -679,12 +679,20 @@ void MindMapView::install(Presentation presentation, bool fit) {
     for (const auto &edge : presentation.treeEdges) {
         parents.insert(edge.target, edge.source);
         const QRectF parent = rectangles.value(edge.source), child = rectangles.value(edge.target);
-        const bool right = child.center().x() > parent.center().x();
-        const QPointF from(right ? parent.right() : parent.left(), parent.center().y());
-        const QPointF to(right ? child.left() : child.right(), child.center().y());
-        const qreal middle = (from.x() + to.x()) / 2;
-        QPainterPath path(from);
-        path.cubicTo(QPointF(middle, from.y()), QPointF(middle, to.y()), to);
+        QPainterPath path;
+        if (presentation.outline) {
+            const qreal trunk = parent.left() + 16;
+            path.moveTo(trunk, parent.bottom());
+            path.lineTo(trunk, child.center().y());
+            path.lineTo(child.left(), child.center().y());
+        } else {
+            const bool right = child.center().x() > parent.center().x();
+            const QPointF from(right ? parent.right() : parent.left(), parent.center().y());
+            const QPointF to(right ? child.left() : child.right(), child.center().y());
+            const qreal middle = (from.x() + to.x()) / 2;
+            path.moveTo(from);
+            path.cubicTo(QPointF(middle, from.y()), QPointF(middle, to.y()), to);
+        }
         auto *item = replacement->addPath(path, QPen(palette().color(QPalette::Mid), 1));
         item->setAcceptedMouseButtons(Qt::NoButton);
     }

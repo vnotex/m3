@@ -104,7 +104,8 @@ struct EditorConfig {
 class M3_QT_API MindMapEditor : public QWidget {
     Q_OBJECT
 public:
-    enum class LayoutDirection { Balanced, Right, Left };
+    // Outline shows depth-first indented rows with square tree connectors.
+    enum class LayoutDirection { Balanced, Right, Left, Outline };
     Q_ENUM(LayoutDirection)
     explicit MindMapEditor(QWidget *parent = nullptr);
     explicit MindMapEditor(const EditorConfig &config, QWidget *parent = nullptr);

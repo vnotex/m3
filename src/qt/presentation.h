@@ -46,6 +46,7 @@ struct Presentation {
     std::vector<TreeEdge> treeEdges;
     std::vector<LinkPresentation> links;
     QRectF bounds;
+    bool outline = false;
 };
 // Ephemeral command-dialog data, not a mutable semantic model.
 struct NodeChoice {
