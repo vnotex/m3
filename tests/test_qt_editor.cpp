@@ -52,12 +52,14 @@
 #include <QPushButton>
 #include <QScrollBar>
 #include <QScrollArea>
+#include <QScreen>
 #include <QSignalSpy>
 #include <QSpinBox>
 #include <QStatusBar>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTextDocument>
+#include <QTextBrowser>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
@@ -4418,6 +4420,36 @@ static void inline_edit_case() {
 }
 
 static void shortcut_help_case() {
+    auto popup = [](Editor &editor) {
+        auto *dialog = editor.findChild<QDialog *>(QStringLiteral("shortcutHelpPopup"));
+        return dialog && dialog->isVisible() ? dialog : nullptr;
+    };
+    auto open = [&](Editor &editor, Qt::Key key = Qt::Key_Question, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+        shortcut(editor, key, modifiers);
+        CHECK(QTest::qWaitFor([&] { return popup(editor) != nullptr; }, 5000));
+        auto *dialog = popup(editor);
+        auto *browser = dialog->findChild<QTextBrowser *>(QStringLiteral("shortcutHelpBrowser"));
+        CHECK(browser && QApplication::activePopupWidget() == dialog);
+        CHECK(QTest::qWaitFor([&] { return browser->hasFocus(); }, 5000));
+        CHECK(dialog->screen()->availableGeometry().contains(dialog->frameGeometry()));
+        return browser;
+    };
+    auto escape = [&](Editor &editor) {
+        CHECK(popup(editor) != nullptr);
+        auto *browser = popup(editor)->findChild<QTextBrowser *>();
+        QTest::keyClick(browser, Qt::Key_Escape);
+        pump();
+        CHECK(!popup(editor) && graphics(editor).hasFocus());
+    };
+    auto outside = [&](Editor &editor, QWidget &target, QPoint point = QPoint(4, 4)) {
+        auto *dialog = popup(editor);
+        CHECK(dialog && target.windowHandle());
+        CHECK(!dialog->frameGeometry().contains(target.mapToGlobal(point)));
+        // Use the window-system path, not QWidget delivery that bypasses popup grabs.
+        QTest::mouseClick(target.windowHandle(), Qt::LeftButton, Qt::NoModifier, point);
+        pump();
+        CHECK(!popup(editor));
+    };
     using Shortcuts = m3::qt::EditorConfig::Shortcuts;
     QList<QKeySequence> Shortcuts::*const members[] = {
         &Shortcuts::addChild, &Shortcuts::addSibling, &Shortcuts::addSiblingBefore, &Shortcuts::editSelection,
@@ -4426,7 +4458,7 @@ static void shortcut_help_case() {
         &Shortcuts::selectChild, &Shortcuts::previousSibling, &Shortcuts::nextSibling, &Shortcuts::selectRoot,
         &Shortcuts::clearSelection, &Shortcuts::zoomIn, &Shortcuts::zoomOut, &Shortcuts::resetZoom, &Shortcuts::fit,
         &Shortcuts::toggleBold, &Shortcuts::toggleItalic, &Shortcuts::resetStyle, &Shortcuts::textColor,
-        &Shortcuts::fillColor, &Shortcuts::editTags, &Shortcuts::editIcons, &Shortcuts::editNote, &Shortcuts::editTopic
+        &Shortcuts::fillColor, &Shortcuts::editTags, &Shortcuts::editIcons, &Shortcuts::editNote, &Shortcuts::editTopic, &Shortcuts::showHelp
     };
     m3::qt::EditorConfig config;
     QList<QKeySequence> expectedKeys;
@@ -4442,59 +4474,135 @@ static void shortcut_help_case() {
     expectedKeys.append(less); expectedKeys.append(ampersand);
     const QKeySequence newline(Qt::SHIFT | Qt::Key_Return), keypadNewline(Qt::SHIFT | Qt::Key_Enter);
     config.shortcuts.acceptTopic.append(newline); config.shortcuts.acceptTopic.append(keypadNewline);
-    Editor editor(config);
-    const Editor &api = editor;
-    const QString original = api.shortcutHelp();
-    CHECK(editor.loadJson(encoded(editorFixture())));
-    showEditor(editor, QSize(760, 440));
-    QTextDocument document;
-    document.setHtml(original);
-    const QStringList lines = document.toPlainText().split(QLatin1Char('\n'));
-    for (const auto &binding : expectedKeys) CHECK(lines.contains(binding.toString(QKeySequence::NativeText)));
-    // Rebound accept keys must not also be advertised as unconditional newlines.
-    CHECK(lines.count(newline.toString(QKeySequence::NativeText)) == 1);
-    CHECK(lines.count(keypadNewline.toString(QKeySequence::NativeText)) == 1);
-    editor.clearSelection();
-    CHECK(api.shortcutHelp() == original);
-    CHECK(editor.selectLink(QStringLiteral("l1")));
-    CHECK(api.shortcutHelp() == original);
-    CHECK(editor.selectNode(QStringLiteral("a")));
-    const auto zoom = graphics(editor).transform();
-    const Json saved = exported(editor);
-    QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
-    trigger(editor, "editSelection");
-    topicInput(editor).setPlainText(QStringLiteral("Uncommitted help draft"));
-    CHECK(api.shortcutHelp() == original);
-    CHECK(topicInput(editor).toPlainText() == QStringLiteral("Uncommitted help draft"));
-    CHECK(exported(editor) == saved && changed.isEmpty() && selected.isEmpty() && graphics(editor).transform() == zoom);
-    topicKey(editor, Qt::Key_Escape);
-    CHECK(!editor.renameNode(QStringLiteral("missing"), QStringLiteral("Missing")));
-    const QString error = editor.lastError();
-    QSignalSpy errors(&editor, &Editor::errorOccurred);
-    CHECK(api.shortcutHelp() == original && editor.lastError() == error && errors.isEmpty());
-    CHECK(exported(editor) == saved && changed.isEmpty() && selected.isEmpty());
-    QString modified = api.shortcutHelp();
-    modified.clear();
-    CHECK(api.shortcutHelp() == original);
-    // Clearing bindings affects only this editor's help, without fabricated defaults.
-    m3::qt::EditorConfig disabled;
-    disabled.shortcuts.toggleBold.clear(); disabled.shortcuts.acceptTopic.clear();
-    Editor unbound(disabled), defaults;
-    auto plainHelp = [](const Editor &target) {
-        QTextDocument text; text.setHtml(target.shortcutHelp());
-        return text.toPlainText().split(QLatin1Char('\n'));
-    };
-    CHECK(!plainHelp(unbound).contains(QKeySequence(Qt::Key_B).toString(QKeySequence::NativeText)));
-    CHECK(!plainHelp(unbound).contains(QKeySequence(Qt::CTRL | Qt::Key_Return).toString(QKeySequence::NativeText)));
-    CHECK(plainHelp(defaults).contains(QKeySequence(Qt::Key_B).toString(QKeySequence::NativeText)));
-    CHECK(!plainHelp(defaults).contains(expectedKeys.front().toString(QKeySequence::NativeText)));
-    CHECK(api.shortcutHelp() == original);
-    QString retained;
     {
-        Editor source(config);
-        retained = source.shortcutHelp();
+        Editor editor(config);
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor, QSize(760, 440));
+        shortcut(editor, Qt::Key_Question);
+        CHECK(!popup(editor));
+        auto configuredHelp = [&] { return open(editor, Qt::Key_F31, Qt::ControlModifier | Qt::AltModifier); };
+        auto *browser = configuredHelp();
+        const QString original = browser->toPlainText();
+        const QStringList lines = original.split(QLatin1Char('\n'));
+        for (const auto &binding : expectedKeys) CHECK(lines.contains(binding.toString(QKeySequence::NativeText)));
+        CHECK(lines.count(newline.toString(QKeySequence::NativeText)) == 1);
+        CHECK(lines.count(keypadNewline.toString(QKeySequence::NativeText)) == 1);
+        escape(editor);
+        editor.clearSelection();
+        CHECK(configuredHelp()->toPlainText() == original);
+        escape(editor);
+        CHECK(editor.selectLink(QStringLiteral("l1")));
+        CHECK(configuredHelp()->toPlainText() == original);
+        escape(editor);
+        CHECK(editor.selectedLinkId() == QStringLiteral("l1"));
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        const auto zoom = graphics(editor).transform();
+        const Json saved = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        CHECK(configuredHelp()->toPlainText() == original);
+        escape(editor);
+        CHECK(exported(editor) == saved && changed.isEmpty() && selected.isEmpty() && graphics(editor).transform() == zoom);
+        CHECK(!editor.renameNode(QStringLiteral("missing"), QStringLiteral("Missing")));
+        const QString error = editor.lastError();
+        QSignalSpy errors(&editor, &Editor::errorOccurred);
+        CHECK(configuredHelp()->toPlainText() == original && editor.lastError() == error && errors.isEmpty());
+        escape(editor);
+        CHECK(exported(editor) == saved && changed.isEmpty() && selected.isEmpty());
     }
-    CHECK(retained == original);
+    {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(QStringLiteral("a")));
+        showEditor(editor, QSize(760, 440));
+        const Json saved = exported(editor);
+        const auto zoom = graphics(editor).transform();
+        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        shortcut(editor, Qt::Key_Slash);
+        CHECK(!popup(editor));
+        QKeyEvent repeat(QEvent::KeyPress, Qt::Key_Question, Qt::NoModifier, QStringLiteral("?"), true);
+        QCoreApplication::sendEvent(graphics(editor).viewport(), &repeat);
+        CHECK(!popup(editor));
+        for (auto modifiers : {Qt::NoModifier, Qt::ShiftModifier}) {
+            auto *browser = open(editor, Qt::Key_Question, modifiers);
+            CHECK(browser->toPlainText().split(QLatin1Char('\n')).contains(QKeySequence(Qt::Key_Question).toString(QKeySequence::NativeText)));
+            QTest::keyClicks(browser, "bir");
+            QTest::keyClick(browser, Qt::Key_Return);
+            CHECK(popup(editor) && exported(editor) == saved && changed.isEmpty() && selected.isEmpty());
+            CHECK(browser->verticalScrollBar()->maximum() > 0);
+            QTest::keyClick(browser, Qt::Key_End, Qt::ControlModifier);
+            CHECK(browser->verticalScrollBar()->value() > 0);
+            escape(editor);
+            CHECK(editor.selectedNodeId() == QStringLiteral("a") && graphics(editor).transform() == zoom);
+        }
+        open(editor);
+        outside(editor, editor);
+        CHECK(exported(editor) == saved && changed.isEmpty() && selected.isEmpty());
+        open(editor);
+        QWidget *addButton = nullptr;
+        for (auto *toolbar : editor.findChildren<QToolBar *>())
+            if (auto *button = toolbar->widgetForAction(&editAction(editor, "addChild"))) addButton = button;
+        CHECK(addButton != nullptr);
+        outside(editor, editor, addButton->mapTo(&editor, addButton->rect().center()));
+        CHECK(exported(editor) == saved && changed.isEmpty() && selected.isEmpty() && !activeTopicInput(editor));
+        open(editor);
+        escape(editor);
+        shortcut(editor, Qt::Key_E);
+        QTest::keyClicks(&topicInput(editor), "draft?"); pump();
+        CHECK(!popup(editor) && topicInput(editor).toPlainText() == QStringLiteral("draft?"));
+        CHECK(exported(editor) == saved && changed.isEmpty());
+        topicKey(editor, Qt::Key_Escape);
+        shortcut(editor, Qt::Key_T);
+        auto *tags = editor.findChild<QLineEdit *>(QStringLiteral("nodeTags"));
+        CHECK(tags && tags->hasFocus());
+        QTest::keyClicks(tags, "?"); pump();
+        CHECK(tags->hasFocus() && tags->text() == QStringLiteral("?") && !popup(editor));
+        CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("tags") == Json::array({"?"}));
+        CHECK(changed.size() == 1 && selected.isEmpty());
+        const Json typed = exported(editor);
+        open(editor);
+        escape(editor);
+        CHECK(exported(editor) == typed && changed.size() == 1);
+    }
+    {
+        m3::qt::EditorConfig disabled;
+        disabled.shortcuts.showHelp.clear();
+        Editor unbound(disabled), defaults;
+        showEditor(unbound, QSize(760, 440));
+        const Json saved = exported(unbound);
+        QSignalSpy changed(&unbound, &Editor::documentChanged);
+        shortcut(unbound, Qt::Key_Question);
+        CHECK(!popup(unbound) && exported(unbound) == saved && changed.isEmpty());
+        showEditor(defaults, QSize(760, 440));
+        auto *browser = open(defaults);
+        const auto lines = browser->toPlainText().split(QLatin1Char('\n'));
+        CHECK(lines.contains(QKeySequence(Qt::Key_B).toString(QKeySequence::NativeText)));
+        CHECK(!lines.contains(expectedKeys.front().toString(QKeySequence::NativeText)));
+        CHECK(!popup(unbound));
+        outside(defaults, unbound);
+        // No deferred owner-focus callback may steal a subsequently activated host.
+        unbound.activateWindow(); graphics(unbound).setFocus(); pump();
+        CHECK(graphics(unbound).hasFocus() && !popup(defaults) && !popup(unbound));
+        CHECK(exported(unbound) == saved && changed.isEmpty());
+        shortcut(unbound, Qt::Key_Question);
+        CHECK(!popup(unbound) && !popup(defaults));
+    }
+    {
+        m3::qt::EditorConfig partial;
+        partial.shortcuts.toggleBold.clear(); partial.shortcuts.acceptTopic.clear();
+        Editor editor(partial);
+        showEditor(editor, QSize(760, 440));
+        const auto lines = open(editor)->toPlainText().split(QLatin1Char('\n'));
+        CHECK(!lines.contains(QKeySequence(Qt::Key_B).toString(QKeySequence::NativeText)));
+        CHECK(!lines.contains(QKeySequence(Qt::CTRL | Qt::Key_Return).toString(QKeySequence::NativeText)));
+        escape(editor);
+    }
+    {
+        QPointer<Editor> editor = new Editor;
+        showEditor(*editor, QSize(760, 440));
+        open(*editor);
+        const QPointer<QDialog> dialog = popup(*editor);
+        delete editor.data(); pump();
+        CHECK(editor.isNull() && dialog.isNull() && QApplication::activePopupWidget() == nullptr);
+    }
 }
 
 static void configuration_case() {

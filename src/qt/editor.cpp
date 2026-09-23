@@ -17,9 +17,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeyEvent>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPalette>
@@ -29,11 +31,13 @@
 #include <QPointer>
 #include <QScopedValueRollback>
 #include <QScrollArea>
+#include <QScreen>
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStringList>
 #include <functional>
+#include <QTextBrowser>
 #include <QToolBar>
 #include <QToolButton>
 #include <QLabel>
@@ -89,6 +93,40 @@ public:
     }
 private:
     QPalette palette;
+};
+class ShortcutHelpPopup final : public QDialog {
+public:
+    ShortcutHelpPopup(MindMapEditor *host, MindMapView *canvas, const QString &help)
+        : QDialog(host, Qt::Popup), view(canvas) {
+        setObjectName(QStringLiteral("shortcutHelpPopup"));
+        setWindowTitle(tr("Keyboard shortcuts"));
+        auto *layout = new QVBoxLayout(this);
+        auto *browser = new QTextBrowser(this);
+        browser->setObjectName(QStringLiteral("shortcutHelpBrowser"));
+        browser->setAccessibleName(tr("Keyboard shortcuts"));
+        browser->setLineWrapMode(QTextEdit::NoWrap);
+        browser->setHtml(help);
+        layout->addWidget(browser, 1);
+        layout->addWidget(new QLabel(tr("%1 to close").arg(QKeySequence(Qt::Key_Escape).toString(QKeySequence::NativeText)), this));
+        setFocusProxy(browser);
+    }
+protected:
+    void keyPressEvent(QKeyEvent *event) override {
+        if (event->matches(QKeySequence::Cancel)) {
+            const QPointer<MindMapView> canvas = view;
+            event->accept();
+            reject();
+            if (canvas && canvas->window()->isActiveWindow()) canvas->setFocus(Qt::OtherFocusReason);
+            return;
+        }
+        QDialog::keyPressEvent(event);
+    }
+    void mousePressEvent(QMouseEvent *event) override {
+        if (!rect().contains(event->position().toPoint())) setAttribute(Qt::WA_NoMouseReplay);
+        QDialog::mousePressEvent(event);
+    }
+private:
+    QPointer<MindMapView> view;
 };
 class NodePropertiesPanel final : public QFrame {
 public:
@@ -579,6 +617,19 @@ public:
     enum class Navigation { Parent, Child, PreviousSibling, NextSibling };
     QList<QAction *> menuActions;
     QString shortcutHelpText;
+    QPointer<ShortcutHelpPopup> helpPopup;
+    void showHelp() {
+        if (!helpPopup) helpPopup = new ShortcutHelpPopup(host, view, shortcutHelpText);
+        const QRect available = view->screen()->availableGeometry().adjusted(12, 12, -12, -12);
+        const QSize size(qMin(640, available.width()), qMin(640, available.height()));
+        const QPoint center = view->viewport()->mapToGlobal(view->viewport()->rect().center());
+        helpPopup->resize(size);
+        helpPopup->move(qBound(available.left(), center.x() - size.width() / 2, available.right() - size.width() + 1),
+                        qBound(available.top(), center.y() - size.height() / 2, available.bottom() - size.height() + 1));
+        helpPopup->show();
+        helpPopup->raise();
+        helpPopup->setFocus(Qt::PopupFocusReason);
+    }
     QString shortcutHelp() const {
         auto row = [](const QString &label, const QList<QKeySequence> &bindings) {
             QStringList keys;
@@ -861,6 +912,7 @@ public:
             }, false)
         };
         for (auto *action : nodeEditingActions) action->setAutoRepeat(false);
+        action("showHelp", tr("Keyboard shortcuts"), config.shortcuts.showHelp, [this] { showHelp(); }, false)->setAutoRepeat(false);
         // Snapshot configured bindings before inline editing temporarily clears them.
         shortcutHelpText = shortcutHelp();
         view->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -927,7 +979,6 @@ QString MindMapEditor::toMarkdown() const { return d->controller->toMarkdown(); 
 QString MindMapEditor::toHtml() const { return d->controller->toHtml(); }
 QString MindMapEditor::lastError() const { return d->controller->lastError(); }
 QString MindMapEditor::resourceBasePath() const { return d->controller->resourceBasePath(); }
-QString MindMapEditor::shortcutHelp() const { return d->shortcutHelpText; }
 void MindMapEditor::provideImage(const QString &url, quint64 requestId, const QImage &image) { d->controller->provideImage(url, requestId, image); }
 void MindMapEditor::reloadImages() { d->controller->reloadImages(); }
 QString MindMapEditor::addNode(const QString &parent, const QString &topic, int index) { return d->controller->addNode(parent, topic, index); }

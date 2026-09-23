@@ -82,6 +82,8 @@ namespace m3::qt {
 // Text/Fill color mode; T/O/N expand and reveal Tags/Icons/Note, focusing that control.
 // E begins inline topic editing for nodes only; F2 still edits nodes or links. These
 // letters remain ordinary input while typing, including in the inline topic draft.
+// With canvas focus, ? opens shortcut help for any selection. Escape or an outside
+// click dismisses it; Escape returns focus to the canvas without clearing selection.
 // acceptTopic applies only during
 // inline editing, while map shortcuts are suspended. UI creation inserts a blank
 // node and starts inline editing. Escape cancels the draft (keeping a newly created
@@ -126,6 +128,8 @@ struct EditorConfig {
         QList<QKeySequence> editIcons{QKeySequence(Qt::Key_O)};
         QList<QKeySequence> editNote{QKeySequence(Qt::Key_N)};
         QList<QKeySequence> editTopic{QKeySequence(Qt::Key_E)};
+        // Question-mark events may retain Shift on layouts that use it for ?.
+        QList<QKeySequence> showHelp{QKeySequence(Qt::Key_Question), QKeySequence(Qt::SHIFT | Qt::Key_Question)};
     } shortcuts;
     // UI policy only: the removeNode() API never prompts.
     bool confirmSubtreeDeletion = true;
@@ -144,11 +148,6 @@ public:
     explicit MindMapEditor(const EditorConfig &config, QWidget *parent = nullptr);
     ~MindMapEditor() override;
     QString resourceBasePath() const;
-    // Owned Qt rich-text (HTML) keyboard help, grouped by input context. Uses this
-    // editor's construction-time bindings; the snapshot survives widget destruction.
-    // Does not change the document, selection, focus, inline draft, or last error.
-    // Hosts choose how to display it; the editor has no built-in help control.
-    QString shortcutHelp() const;
     // GUI-thread host image protocol. Connect imageRequested before loading, or
     // call reloadImages after attaching. The URL is a resolved resource/cache key;
     // supply that URL and request ID unchanged. Null pixels mean unavailable.
