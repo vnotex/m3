@@ -284,7 +284,7 @@ public:
         icons = new EmojiLineEdit(body);
         line("nodeIcons", tr("&Icons"), tr("Icons"), icons);
         url = line("nodeUrl", tr("&URL"), tr("URL"));
-        imageUrl = line("nodeImageUrl", tr("Image URL"), tr("Image URL"));
+        imageUrl = line("nodeImageUrl", tr("Image"), tr("Image"));
         imageUrl->setPlaceholderText(tr("Image URL or reference"));
         tags->setPlaceholderText(tr("Separate with commas"));
         icons->setPlaceholderText(tr("Search emoji names or paste emoji"));
