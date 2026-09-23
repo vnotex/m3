@@ -1,10 +1,12 @@
 # m3
 
+<img src="pics/m3.png" alt="m3 logo" width="180">
+
 **Mindmap in Markdown**
 
 A C++17 mind-map library with a public C API and an optional Qt Widgets editor. Use the Qt-free core in your application, or embed the editor to work with maps visually.
 
-![m3 Qt demo showing a project mind map with editable, styled branches](screenshot.png)
+![m3 Qt demo showing a project mind map with editable, styled branches](pics/screenshot.png)
 
 ## Features
 
