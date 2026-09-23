@@ -378,6 +378,32 @@ public:
         view->viewport()->installEventFilter(this);
         hide();
     }
+    enum class Action { ToggleBold, ToggleItalic, ResetStyle, TextColor, FillColor, Tags, Icons, Note };
+    void activate(Action action) {
+        refresh();
+        if (boundId.isEmpty()) return;
+        QWidget *target = nullptr;
+        switch (action) {
+        case Action::ToggleBold: bold->click(); return;
+        case Action::ToggleItalic: italic->click(); return;
+        case Action::ResetStyle: reset->click(); return;
+        case Action::TextColor: target = textColor; break;
+        case Action::FillColor: target = fillColor; break;
+        case Action::Tags: target = tags; break;
+        case Action::Icons: target = icons; break;
+        case Action::Note: target = note; break;
+        }
+        toggle->setChecked(true);
+        reposition();
+        layout()->activate();
+        body->layout()->activate();
+        if (scroll->layout()) scroll->layout()->activate();
+        scroll->ensureWidgetVisible(target);
+        if (action == Action::TextColor) textColor->setChecked(true);
+        else if (action == Action::FillColor) fillColor->setChecked(true);
+        if (!isVisible() || !isEnabled() || !target->isVisible() || !target->isEnabled()) return;
+        target->setFocus(Qt::OtherFocusReason);
+    }
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override {
         switch (event->type()) {
@@ -434,9 +460,10 @@ private:
         if (refreshing || boundId.isEmpty()) return;
         const QString id = boundId;
         const QByteArray json = QJsonDocument(patch).toJson(QJsonDocument::Compact);
+        const QPointer<NodePropertiesPanel> guard(this);
         controller->updateNodeProperties(id, json);
         // Re-read even after a no-op or a nested load/new from a host signal handler.
-        refresh();
+        if (guard) refresh();
     }
     void refreshColors() {
         const QColor color = fillColor->isChecked() ? currentStyle.backgroundColor : currentStyle.textColor;
@@ -546,6 +573,8 @@ public:
     QAction *addChild, *addSibling, *addSiblingBefore, *editSelection, *deleteSelection, *toggleExpanded, *move, *up, *down, *addLink;
     QAction *rootSelection, *clearSelectionAction;
     QList<QAction *> nodeNavigation;
+    NodePropertiesPanel *properties;
+    QList<QAction *> nodeEditingActions;
     enum class TopicOperation { Child, SiblingAfter, SiblingBefore };
     enum class Navigation { Parent, Child, PreviousSibling, NextSibling };
     QList<QAction *> menuActions;
@@ -567,8 +596,9 @@ public:
             result->setShortcuts(editing ? QList<QKeySequence>{} : shortcuts);
         });
         QObject::connect(result, &QAction::triggered, host, [this, command = std::move(command)] {
+            const QPointer<MindMapEditor> guard(host);
             view->finishTopicEdit(true);
-            command();
+            if (guard) command();
         });
         return result;
     }
@@ -588,6 +618,7 @@ public:
         addChild->setEnabled(node); addLink->setEnabled(node);
         addSibling->setEnabled(node); addSiblingBefore->setEnabled(node);
         for (auto *action : nodeNavigation) action->setEnabled(node);
+        for (auto *action : nodeEditingActions) action->setEnabled(node != nullptr);
         rootSelection->setEnabled(!nodes.empty());
         clearSelectionAction->setEnabled(node || hasLink);
         editSelection->setEnabled(node || hasLink);
@@ -767,7 +798,22 @@ public:
         };
         clearSelectionAction = action("clearSelection", tr("Clear selection"), config.shortcuts.clearSelection, [this] { controller->clearSelection(); }, false);
         layout->addWidget(view, 1); layout->addWidget(error);
-        new NodePropertiesPanel(editor, view, controller);
+        properties = new NodePropertiesPanel(editor, view, controller);
+        nodeEditingActions = {
+            action("toggleBold", tr("Toggle bold"), config.shortcuts.toggleBold, [this] { properties->activate(NodePropertiesPanel::Action::ToggleBold); }, false),
+            action("toggleItalic", tr("Toggle italic"), config.shortcuts.toggleItalic, [this] { properties->activate(NodePropertiesPanel::Action::ToggleItalic); }, false),
+            action("resetStyle", tr("Reset style"), config.shortcuts.resetStyle, [this] { properties->activate(NodePropertiesPanel::Action::ResetStyle); }, false),
+            action("textColor", tr("Text color"), config.shortcuts.textColor, [this] { properties->activate(NodePropertiesPanel::Action::TextColor); }, false),
+            action("fillColor", tr("Fill color"), config.shortcuts.fillColor, [this] { properties->activate(NodePropertiesPanel::Action::FillColor); }, false),
+            action("editTags", tr("Edit tags"), config.shortcuts.editTags, [this] { properties->activate(NodePropertiesPanel::Action::Tags); }, false),
+            action("editIcons", tr("Edit icons"), config.shortcuts.editIcons, [this] { properties->activate(NodePropertiesPanel::Action::Icons); }, false),
+            action("editNote", tr("Edit note"), config.shortcuts.editNote, [this] { properties->activate(NodePropertiesPanel::Action::Note); }, false),
+            action("editTopic", tr("Edit topic"), config.shortcuts.editTopic, [this] {
+                const QString id = controller->selectedNodeId();
+                if (!id.isEmpty()) view->beginTopicEdit(id, config.shortcuts.acceptTopic);
+            }, false)
+        };
+        for (auto *action : nodeEditingActions) action->setAutoRepeat(false);
         view->setContextMenuPolicy(Qt::CustomContextMenu);
         QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this](const QPoint &point) {
             view->finishTopicEdit(true);

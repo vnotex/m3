@@ -67,7 +67,7 @@ if(M3_BUILD_QT)
     m3_target_defaults(m3_test_qt_editor)
     set_target_properties(m3_test_qt_editor PROPERTIES
         AUTOMOC ON CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
-    set(_m3_qt_cases html html_edges markdown document tree_edits collapse graph_edits render navigation controls configuration shortcuts lifetime inline_edit node_drag properties hyperlinks images)
+    set(_m3_qt_cases html html_edges markdown document tree_edits collapse graph_edits render navigation controls configuration shortcuts lifetime inline_edit node_drag properties hyperlinks images node_shortcuts)
     if(M3_BUILD_QT_DEMO)
         find_package(Qt6 6.5 REQUIRED COMPONENTS Network)
         target_link_libraries(m3_test_qt_editor PRIVATE Qt6::Network)

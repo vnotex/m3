@@ -77,6 +77,11 @@ namespace m3::qt {
 // without removing the toolbar/menu command. Avoid assigning the same sequence to
 // multiple map commands. Bindings are local to this widget; link/move dialogs and
 // the layout picker and properties inputs keep their normal input keys.
+// With a selected node and canvas focus, B/I/R toggle bold/italic or reset appearance
+// without expanding the properties card or moving focus. C/F expand and reveal the
+// Text/Fill color mode; T/O/N expand and reveal Tags/Icons/Note, focusing that control.
+// E begins inline topic editing for nodes only; F2 still edits nodes or links. These
+// letters remain ordinary input while typing, including in the inline topic draft.
 // acceptTopic applies only during
 // inline editing, while map shortcuts are suspended. UI creation inserts a blank
 // node and starts inline editing. Escape cancels the draft (keeping a newly created
@@ -112,6 +117,15 @@ struct EditorConfig {
         QList<QKeySequence> zoomOut{QKeySequence(QKeySequence::ZoomOut)};
         QList<QKeySequence> resetZoom{QKeySequence(Qt::CTRL | Qt::Key_0)};
         QList<QKeySequence> fit;
+        QList<QKeySequence> toggleBold{QKeySequence(Qt::Key_B)};
+        QList<QKeySequence> toggleItalic{QKeySequence(Qt::Key_I)};
+        QList<QKeySequence> resetStyle{QKeySequence(Qt::Key_R)};
+        QList<QKeySequence> textColor{QKeySequence(Qt::Key_C)};
+        QList<QKeySequence> fillColor{QKeySequence(Qt::Key_F)};
+        QList<QKeySequence> editTags{QKeySequence(Qt::Key_T)};
+        QList<QKeySequence> editIcons{QKeySequence(Qt::Key_O)};
+        QList<QKeySequence> editNote{QKeySequence(Qt::Key_N)};
+        QList<QKeySequence> editTopic{QKeySequence(Qt::Key_E)};
     } shortcuts;
     // UI policy only: the removeNode() API never prompts.
     bool confirmSubtreeDeletion = true;
