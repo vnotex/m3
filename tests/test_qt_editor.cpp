@@ -4951,6 +4951,77 @@ static void node_shortcuts_case() {
         CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(QStringLiteral("a")));
         showEditor(editor);
         Json expected = exported(editor);
+        auto &view = graphics(editor);
+        const auto zoom = view.transform();
+        QSignalSpy selected(&editor, &Editor::selectionChanged);
+        auto type = [&](const char *digits) { QTest::keyClicks(QApplication::focusWidget(), digits); pump(); };
+
+        // Unhandled digits bubble from the canvas, without focusing Text or Fill.
+        view.setFocus();
+        type("22");
+        jsonNode(expected, "a")["style"]["color"] = "#e74c3c";
+        CHECK(exported(editor) == expected && view.hasFocus());
+        type("11");
+        jsonNode(expected, "a")["style"].erase("color");
+        CHECK(exported(editor) == expected && view.hasFocus());
+
+        // Other panel buttons also leave numeric input to the editor fallback.
+        button(editor, "nodeFillColor")->click();
+        button(editor, "nodeBold")->setFocus();
+        type("46");
+        jsonNode(expected, "a")["style"]["background"] = "#a9d6f5";
+        CHECK(exported(editor) == expected && button(editor, "nodeBold")->hasFocus());
+        type("11");
+        jsonNode(expected, "a")["style"].erase("background");
+        CHECK(exported(editor) == expected);
+        view.setFocus();
+        type("2");
+        button(editor, "nodeBold")->setFocus();
+        type("6");
+        CHECK(exported(editor) == expected);
+        CHECK(selected.isEmpty() && view.transform() == zoom);
+
+        // A real input consumes digits instead of passing them to swatch selection.
+        auto *note = editor.findChild<QPlainTextEdit *>(QStringLiteral("nodeNote"));
+        CHECK(note);
+        note->setFocus();
+        note->selectAll();
+        type("1146");
+        jsonNode(expected, "a")["note"] = "1146";
+        CHECK(exported(editor) == expected);
+
+        // Hidden or collapsed properties must not change color from the canvas.
+        button(editor, "nodePropertiesToggle")->setChecked(false);
+        view.setFocus();
+        type("22");
+        CHECK(exported(editor) == expected);
+        button(editor, "nodePropertiesToggle")->setChecked(true);
+        editor.clearSelection();
+        view.setFocus();
+        type("22");
+        CHECK(exported(editor) == expected && editor.selectedNodeId().isEmpty());
+        CHECK(editor.selectLink(QStringLiteral("l1")));
+        type("22");
+        CHECK(exported(editor) == expected && editor.selectedLinkId() == QStringLiteral("l1"));
+    }
+    {
+        m3::qt::EditorConfig config;
+        config.shortcuts.zoomIn = {QKeySequence(Qt::Key_2)};
+        Editor editor(config);
+        showEditor(editor);
+        shortcut(editor, Qt::Key_0, Qt::ControlModifier);
+        const Json expected = exported(editor);
+        auto &view = graphics(editor);
+        const auto zoom = view.transform();
+        view.setFocus();
+        QTest::keyClicks(view.viewport(), "22");
+        CHECK(view.transform().m11() > zoom.m11() && exported(editor) == expected);
+    }
+    {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(QStringLiteral("a")));
+        showEditor(editor);
+        Json expected = exported(editor);
         QSignalSpy changed(&editor, &Editor::documentChanged);
         auto type = [&](const char *digits) { QTest::keyClicks(QApplication::focusWidget(), digits); pump(); };
         shortcut(editor, Qt::Key_C);

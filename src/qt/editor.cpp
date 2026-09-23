@@ -3,6 +3,7 @@
 #include "mindmap_view.h"
 #include "emoji_line_edit.h"
 #include <QAction>
+#include <QApplication>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
@@ -414,6 +415,7 @@ public:
         });
         connect(controller, &MindMapController::selectionChanged, this, [this] { refresh(); });
         connect(controller, &MindMapController::documentChanged, this, [this] { refresh(); });
+        connect(qApp, &QApplication::focusChanged, this, [this] { pendingColorRow = 0; });
         for (auto *button : {textColor, fillColor, defaultColor}) button->installEventFilter(this);
         for (auto *button : swatches) button->installEventFilter(this);
         host->installEventFilter(this);
@@ -453,21 +455,22 @@ public:
     }
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override {
-        auto *button = qobject_cast<QToolButton *>(watched);
-        if (button && button != reset && (button == textColor || button == fillColor || button == defaultColor || swatches.contains(button))) {
-            if (event->type() == QEvent::FocusOut || event->type() == QEvent::MouseButtonPress || event->type() == QEvent::Hide)
+        if (event->type() == QEvent::FocusOut || event->type() == QEvent::MouseButtonPress || event->type() == QEvent::Hide)
+            pendingColorRow = 0;
+        if (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) {
+            auto *key = static_cast<QKeyEvent *>(event);
+            const auto modifiers = key->modifiers() & ~Qt::KeypadModifier;
+            const int digit = key->key() - Qt::Key_0;
+            if (modifiers != Qt::NoModifier || digit < 0 || digit > 9) {
                 pendingColorRow = 0;
-            if (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) {
-                auto *key = static_cast<QKeyEvent *>(event);
-                const auto modifiers = key->modifiers() & ~Qt::KeypadModifier;
-                const int digit = key->key() - Qt::Key_0;
-                if (modifiers != Qt::NoModifier || digit < 0 || digit > 9 ||
-                    !button->hasFocus() || !button->isVisible() || !button->isEnabled()) {
+            } else if (watched == parentWidget() && event->type() == QEvent::KeyPress) {
+                // Only unhandled child keys reach the editor; shortcuts and inputs win.
+                if (!isVisible() || !isEnabled() || !toggle->isChecked() || boundId.isEmpty()) {
                     pendingColorRow = 0;
                     return false;
                 }
                 key->accept();
-                if (event->type() == QEvent::ShortcutOverride || key->isAutoRepeat()) return true;
+                if (key->isAutoRepeat()) return true;
                 if (pendingColorRow == 0) {
                     if (digit >= 1 && digit <= 4) pendingColorRow = digit;
                     return true;
@@ -482,9 +485,9 @@ protected:
                 }
                 return true;
             }
-            // Color controls do not drive the card's geometry or font refresh.
-            return false;
         }
+        // Color controls do not drive the card's geometry or font refresh.
+        if (qobject_cast<QToolButton *>(watched) && watched != reset) return false;
         switch (event->type()) {
         case QEvent::Resize:
         case QEvent::Move:
@@ -714,7 +717,7 @@ public:
         const QString right = section(tr("Selected node on canvas"), nodes) + section(tr("Inline topic"), inlineEdit)
             + section(tr("Node properties"), row(tr("Collapse card"), {QKeySequence(Qt::Key_Escape)})
                 + QStringLiteral("<tr><td colspan=2>%1<br>%2<br>%3</td></tr>").arg(
-                    tr("With Text, Fill or a swatch focused:").toHtmlEscaped(),
+                    tr("With properties expanded, outside inputs:").toHtmlEscaped(),
                     tr("Type row (1-4), then column (1-6).").toHtmlEscaped(),
                     tr("11 selects Auto.").toHtmlEscaped()))
             + section(tr("Emoji picker"), emoji);
