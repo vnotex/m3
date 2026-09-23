@@ -36,6 +36,7 @@
 #include <functional>
 #include <QToolBar>
 #include <QToolButton>
+#include <QToolTip>
 #include <QLabel>
 #include <QVBoxLayout>
 #include <QUrl>
@@ -47,11 +48,13 @@ QString loadStyleSheet(const QString &path) {
         qFatal("Cannot load embedded stylesheet %s: %s", qPrintable(path), qPrintable(file.errorString()));
     return QString::fromUtf8(file.readAll());
 }
-// Lucide: https://lucide.dev/icons/rotate-ccw; notice: third_party/lucide/LICENSE.
-class RotateCcwIconEngine final : public QIconEngine {
+// Lucide: https://lucide.dev/icons/rotate-ccw and circle-question-mark.
+// Notice: third_party/lucide/LICENSE.
+class LucideIconEngine final : public QIconEngine {
 public:
-    explicit RotateCcwIconEngine(const QPalette &palette) : palette(palette) {}
-    QIconEngine *clone() const override { return new RotateCcwIconEngine(*this); }
+    enum class Glyph { RotateCcw, CircleQuestionMark };
+    LucideIconEngine(const QPalette &palette, Glyph type) : palette(palette), type(type) {}
+    QIconEngine *clone() const override { return new LucideIconEngine(*this); }
     void paint(QPainter *painter, const QRect &rect, QIcon::Mode mode, QIcon::State) override {
         if (rect.isEmpty()) return;
         static const QPainterPath glyph = [] {
@@ -66,6 +69,16 @@ public:
             path.lineTo(8, 8);
             return path;
         }();
+        static const QPainterPath questionMark = [] {
+            QPainterPath path;
+            path.addEllipse(QPointF(12, 12), 10, 10);
+            path.moveTo(9.09, 9);
+            path.arcTo(QRectF(8.9200033293, 6.9955305903, 6, 6), 160.6192914816, -160.7046509499);
+            path.cubicTo(14.92, 12, 11.92, 13, 11.92, 13);
+            path.moveTo(12, 17);
+            path.lineTo(12.01, 17);
+            return path;
+        }();
         const auto group = mode == QIcon::Disabled ? QPalette::Disabled : palette.currentColorGroup();
         const auto role = mode == QIcon::Selected ? QPalette::HighlightedText : QPalette::ButtonText;
         const qreal side = qMin(rect.width(), rect.height());
@@ -75,7 +88,7 @@ public:
         painter->setRenderHint(QPainter::Antialiasing);
         painter->setBrush(Qt::NoBrush);
         painter->setPen(QPen(palette.color(group, role), 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        painter->drawPath(glyph);
+        painter->drawPath(type == Glyph::RotateCcw ? glyph : questionMark);
         painter->restore();
     }
     QPixmap pixmap(const QSize &size, QIcon::Mode mode, QIcon::State state) override {
@@ -89,6 +102,32 @@ public:
     }
 private:
     QPalette palette;
+    Glyph type;
+};
+class ShortcutHelpButton final : public QToolButton {
+public:
+    explicit ShortcutHelpButton(QWidget *parent) : QToolButton(parent) {
+        setObjectName(QStringLiteral("shortcutHelp"));
+        setAccessibleName(tr("Keyboard shortcuts"));
+        setToolButtonStyle(Qt::ToolButtonIconOnly);
+        setAutoRaise(true);
+        setFocusPolicy(Qt::NoFocus);
+        setFixedSize(28, 28);
+        setIconSize(QSize(18, 18));
+        updateIcon();
+        connect(this, &QToolButton::clicked, this, [this] {
+            QToolTip::showText(mapToGlobal(QPoint(0, 0)), toolTip(), this);
+        });
+    }
+protected:
+    void changeEvent(QEvent *event) override {
+        if (event->type() == QEvent::PaletteChange) updateIcon();
+        QToolButton::changeEvent(event);
+    }
+private:
+    void updateIcon() {
+        setIcon(QIcon(new LucideIconEngine(palette(), LucideIconEngine::Glyph::CircleQuestionMark)));
+    }
 };
 class NodePropertiesPanel final : public QFrame {
 public:
@@ -181,7 +220,7 @@ public:
         reset->setToolButtonStyle(Qt::ToolButtonIconOnly);
         reset->setFocusPolicy(Qt::StrongFocus);
         reset->setIconSize(QSize(16, 16));
-        reset->setIcon(QIcon(new RotateCcwIconEngine(reset->palette())));
+        reset->setIcon(QIcon(new LucideIconEngine(reset->palette(), LucideIconEngine::Glyph::RotateCcw)));
         reset->installEventFilter(this);
         fontRow->addWidget(sizeLabel);
         fontRow->addWidget(fontSize, 1);
@@ -415,7 +454,7 @@ protected:
             reposition();
             break;
         case QEvent::PaletteChange:
-            if (watched == reset) reset->setIcon(QIcon(new RotateCcwIconEngine(reset->palette())));
+            if (watched == reset) reset->setIcon(QIcon(new LucideIconEngine(reset->palette(), LucideIconEngine::Glyph::RotateCcw)));
             break;
         case QEvent::FontChange:
             refresh();
@@ -578,6 +617,52 @@ public:
     enum class TopicOperation { Child, SiblingAfter, SiblingBefore };
     enum class Navigation { Parent, Child, PreviousSibling, NextSibling };
     QList<QAction *> menuActions;
+    QString shortcutHelp() const {
+        auto row = [](const QString &label, const QList<QKeySequence> &bindings) {
+            QStringList keys;
+            for (const auto &binding : bindings)
+                if (!binding.isEmpty()) keys.append(binding.toString(QKeySequence::NativeText).toHtmlEscaped());
+            const QString value = keys.isEmpty() ? tr("Unassigned").toHtmlEscaped() : keys.join(QStringLiteral("<br>"));
+            return QStringLiteral("<tr><td valign=top><nobr>%1</nobr></td><td valign=top><nobr>%2</nobr></td></tr>")
+                .arg(value, label.toHtmlEscaped());
+        };
+        auto section = [](const QString &title, const QString &rows) {
+            return QStringLiteral("<p><b>%1</b></p><table cellspacing=4>%2</table>")
+                .arg(title.toHtmlEscaped(), rows);
+        };
+        QString canvas, nodes;
+        for (auto *action : view->actions()) {
+            auto &rows = nodeEditingActions.contains(action) ? nodes : canvas;
+            rows += row(action->text(), action->shortcuts());
+        }
+        QString inlineEdit = row(tr("Accept topic"), config.shortcuts.acceptTopic);
+        inlineEdit += row(tr("Cancel draft"), {QKeySequence(Qt::Key_Escape)});
+        QList<QKeySequence> newlines;
+        for (const auto &newline : {QKeySequence(Qt::SHIFT | Qt::Key_Return), QKeySequence(Qt::SHIFT | Qt::Key_Enter)}) {
+            bool accepts = false;
+            for (const auto &binding : config.shortcuts.acceptTopic)
+                if (!binding.isEmpty() && binding[0] == newline[0]) { accepts = true; break; }
+            if (!accepts) newlines.append(newline);
+        }
+        if (!newlines.isEmpty()) inlineEdit += row(tr("New line"), newlines);
+        QString emoji = row(tr("Move left / down / up / right"),
+            {QKeySequence(Qt::CTRL | Qt::Key_H), QKeySequence(Qt::CTRL | Qt::Key_J),
+             QKeySequence(Qt::CTRL | Qt::Key_K), QKeySequence(Qt::CTRL | Qt::Key_L)});
+        emoji += row(tr("Previous / next emoji"), {QKeySequence(Qt::Key_Up), QKeySequence(Qt::Key_Down)});
+        emoji += row(tr("Previous / next category"), {QKeySequence(Qt::CTRL | Qt::Key_PageUp), QKeySequence(Qt::CTRL | Qt::Key_PageDown)});
+        emoji += row(tr("Use selected emoji"), {QKeySequence(Qt::Key_Return), QKeySequence(Qt::Key_Enter)});
+        emoji += row(tr("Close picker"), {QKeySequence(Qt::Key_Escape)});
+        emoji += row(tr("Leave picker field"), {QKeySequence(Qt::Key_Tab), QKeySequence(Qt::SHIFT | Qt::Key_Tab)});
+        const QString left = section(tr("Canvas"), canvas) + section(tr("During drag or image resize"),
+            row(tr("Cancel gesture"), {QKeySequence(Qt::Key_Escape)}));
+        const QString right = section(tr("Selected node on canvas"), nodes) + section(tr("Inline topic"), inlineEdit)
+            + section(tr("Node properties"), row(tr("Collapse card"), {QKeySequence(Qt::Key_Escape)}))
+            + section(tr("Emoji picker"), emoji);
+        return QStringLiteral("<qt><b>%1</b><p>%2</p><table cellspacing=12><tr>"
+            "<td valign=top>%3</td><td valign=top>%4</td></tr></table></qt>")
+            .arg(tr("Keyboard shortcuts").toHtmlEscaped(),
+                 tr("Canvas shortcuts require map focus. Letters type normally in text fields.").toHtmlEscaped(), left, right);
+    }
     QAction *action(const char *name, const QString &text, const QList<QKeySequence> &shortcuts, std::function<void()> command, bool showInToolbar = true) {
         auto *result = new QAction(text, host);
         result->setObjectName(QString::fromLatin1(name));
@@ -797,7 +882,7 @@ public:
             action("nextSibling", tr("Select next sibling"), config.shortcuts.nextSibling, [this] { navigate(Navigation::NextSibling); }, false)
         };
         clearSelectionAction = action("clearSelection", tr("Clear selection"), config.shortcuts.clearSelection, [this] { controller->clearSelection(); }, false);
-        layout->addWidget(view, 1); layout->addWidget(error);
+        layout->addWidget(view, 1);
         properties = new NodePropertiesPanel(editor, view, controller);
         nodeEditingActions = {
             action("toggleBold", tr("Toggle bold"), config.shortcuts.toggleBold, [this] { properties->activate(NodePropertiesPanel::Action::ToggleBold); }, false),
@@ -814,6 +899,14 @@ public:
             }, false)
         };
         for (auto *action : nodeEditingActions) action->setAutoRepeat(false);
+        auto *help = new ShortcutHelpButton(editor);
+        // Snapshot configured bindings before inline editing temporarily clears them.
+        help->setToolTip(shortcutHelp());
+        auto *footer = new QHBoxLayout;
+        footer->addWidget(error, 1);
+        footer->addStretch();
+        footer->addWidget(help, 0, Qt::AlignBottom);
+        layout->addLayout(footer);
         view->setContextMenuPolicy(Qt::CustomContextMenu);
         QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this](const QPoint &point) {
             view->finishTopicEdit(true);

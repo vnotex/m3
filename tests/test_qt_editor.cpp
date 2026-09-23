@@ -72,6 +72,7 @@
 #include <cmath>
 #include <exception>
 #include <functional>
+#include <iterator>
 #include <set>
 #include <utility>
 #include <vector>
@@ -4416,6 +4417,112 @@ static void inline_edit_case() {
     }
 }
 
+static void shortcut_help_case() {
+    using Shortcuts = m3::qt::EditorConfig::Shortcuts;
+    QList<QKeySequence> Shortcuts::*const members[] = {
+        &Shortcuts::addChild, &Shortcuts::addSibling, &Shortcuts::addSiblingBefore, &Shortcuts::editSelection,
+        &Shortcuts::acceptTopic, &Shortcuts::deleteSelection, &Shortcuts::toggleExpanded, &Shortcuts::moveNode,
+        &Shortcuts::moveUp, &Shortcuts::moveDown, &Shortcuts::addLink, &Shortcuts::selectParent,
+        &Shortcuts::selectChild, &Shortcuts::previousSibling, &Shortcuts::nextSibling, &Shortcuts::selectRoot,
+        &Shortcuts::clearSelection, &Shortcuts::zoomIn, &Shortcuts::zoomOut, &Shortcuts::resetZoom, &Shortcuts::fit,
+        &Shortcuts::toggleBold, &Shortcuts::toggleItalic, &Shortcuts::resetStyle, &Shortcuts::textColor,
+        &Shortcuts::fillColor, &Shortcuts::editTags, &Shortcuts::editIcons, &Shortcuts::editNote, &Shortcuts::editTopic
+    };
+    m3::qt::EditorConfig config;
+    QList<QKeySequence> expectedKeys;
+    for (size_t index = 0; index < std::size(members); ++index) {
+        const QKeySequence binding(Qt::CTRL | Qt::ALT | (Qt::Key_F1 + int(index)));
+        config.shortcuts.*members[index] = {binding};
+        expectedKeys.append(binding);
+    }
+    // Multiple bindings and HTML-sensitive glyphs must survive rich-text rendering.
+    const QKeySequence less(Qt::CTRL | Qt::Key_Less), ampersand(Qt::ALT | Qt::Key_Ampersand);
+    config.shortcuts.toggleBold.append(less);
+    config.shortcuts.toggleItalic.append(ampersand);
+    expectedKeys.append(less); expectedKeys.append(ampersand);
+    const QKeySequence newline(Qt::SHIFT | Qt::Key_Return), keypadNewline(Qt::SHIFT | Qt::Key_Enter);
+    config.shortcuts.acceptTopic.append(newline); config.shortcuts.acceptTopic.append(keypadNewline);
+    Editor editor(config);
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    showEditor(editor, QSize(760, 440));
+    auto *help = editor.findChild<QToolButton *>(QStringLiteral("shortcutHelp"));
+    auto *panel = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
+    CHECK(help && panel);
+    auto *accessible = QAccessible::queryAccessibleInterface(help);
+    CHECK(accessible && accessible->role() == QAccessible::Button && !accessible->text(QAccessible::Name).isEmpty());
+    const QString original = help->toolTip();
+    QTextDocument document;
+    document.setHtml(original);
+    const QStringList lines = document.toPlainText().split(QLatin1Char('\n'));
+    for (const auto &binding : expectedKeys) CHECK(lines.contains(binding.toString(QKeySequence::NativeText)));
+    // Rebound accept keys must not also be advertised as unconditional newlines.
+    CHECK(lines.count(newline.toString(QKeySequence::NativeText)) == 1);
+    CHECK(lines.count(keypadNewline.toString(QKeySequence::NativeText)) == 1);
+    auto anchored = [&] {
+        CHECK(help->isVisible() && editor.rect().contains(help->geometry()));
+        CHECK(help->geometry().right() >= editor.width() - 20 && help->geometry().bottom() >= editor.height() - 20);
+        CHECK(!help->geometry().intersects(panel->geometry()));
+    };
+    for (const auto &size : {QSize(760, 440), QSize(1000, 700)}) {
+        editor.resize(size); pump(); anchored();
+    }
+    // Keep the button anchored with both a hidden error and a wrapping error.
+    const Json beforeError = exported(editor);
+    CHECK(!editor.loadJson(QByteArray("{\"") + QByteArray(600, 'x')));
+    pump(); anchored();
+    QLabel *error = nullptr;
+    for (auto *label : editor.findChildren<QLabel *>())
+        if (label->isVisible() && label->text() == editor.lastError()) error = label;
+    CHECK(error && error->height() >= 2 * error->fontMetrics().lineSpacing());
+    CHECK(exported(editor) == beforeError);
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    editor.clearSelection();
+    CHECK(help->isVisible() && help->toolTip() == original);
+    CHECK(editor.selectLink(QStringLiteral("l1")));
+    CHECK(help->isVisible() && help->toolTip() == original);
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    pump(); anchored();
+    const auto zoom = graphics(editor).transform();
+    const Json saved = exported(editor);
+    QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+    trigger(editor, "editSelection");
+    topicInput(editor).setPlainText(QStringLiteral("Uncommitted help draft"));
+    QTest::mouseMove(graphics(editor).viewport(), QPoint(5, 5));
+    QTest::mouseMove(help, help->rect().center());
+    CHECK(QTest::qWaitFor([&] { return QToolTip::isVisible() && QToolTip::text() == original; }, 5000));
+    CHECK(help->toolTip() == original && topicInput(editor).toPlainText() == QStringLiteral("Uncommitted help draft"));
+    CHECK(exported(editor) == saved && changed.isEmpty() && selected.isEmpty() && graphics(editor).transform() == zoom);
+    topicKey(editor, Qt::Key_Escape);
+    QToolTip::hideText();
+    QTest::mouseMove(graphics(editor).viewport(), QPoint(5, 5));
+    CHECK(QTest::qWaitFor([] { return !QToolTip::isVisible(); }, 5000));
+    graphics(editor).setFocus();
+    QTest::mouseClick(help, Qt::LeftButton); pump();
+    CHECK(QToolTip::isVisible() && QToolTip::text() == original && graphics(editor).hasFocus());
+    CHECK(exported(editor) == saved && changed.isEmpty() && selected.isEmpty());
+    QToolTip::hideText();
+    QPalette palette = help->palette();
+    palette.setColor(QPalette::ButtonText, QColor(Qt::red)); help->setPalette(palette);
+    const QImage redIcon = help->icon().pixmap(help->iconSize()).toImage();
+    palette.setColor(QPalette::ButtonText, QColor(Qt::green)); help->setPalette(palette);
+    CHECK(help->icon().pixmap(help->iconSize()).toImage() != redIcon);
+    // Clearing bindings affects only this editor's help, without fabricated defaults.
+    m3::qt::EditorConfig disabled;
+    disabled.shortcuts.toggleBold.clear(); disabled.shortcuts.acceptTopic.clear();
+    Editor unbound(disabled), defaults;
+    auto plainHelp = [](Editor &target) {
+        auto *button = target.findChild<QToolButton *>(QStringLiteral("shortcutHelp"));
+        CHECK(button != nullptr);
+        QTextDocument text; text.setHtml(button->toolTip());
+        return text.toPlainText().split(QLatin1Char('\n'));
+    };
+    CHECK(!plainHelp(unbound).contains(QKeySequence(Qt::Key_B).toString(QKeySequence::NativeText)));
+    CHECK(!plainHelp(unbound).contains(QKeySequence(Qt::CTRL | Qt::Key_Return).toString(QKeySequence::NativeText)));
+    CHECK(plainHelp(defaults).contains(QKeySequence(Qt::Key_B).toString(QKeySequence::NativeText)));
+    CHECK(!plainHelp(defaults).contains(expectedKeys.front().toString(QKeySequence::NativeText)));
+    CHECK(help->toolTip() == original);
+}
+
 static void configuration_case() {
     {
         QTemporaryDir first, second;
@@ -6173,6 +6280,7 @@ int main(int argc, char **argv) {
         else if (name == "controls") controls_case();
         else if (name == "inline_edit") inline_edit_case();
         else if (name == "configuration") configuration_case();
+        else if (name == "shortcut_help") shortcut_help_case();
         else if (name == "shortcuts") shortcuts_case();
         else if (name == "node_shortcuts") node_shortcuts_case();
         else if (name == "lifetime") lifetime_case();

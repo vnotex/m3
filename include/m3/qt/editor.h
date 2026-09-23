@@ -71,6 +71,9 @@
 // or "Npx"), fontWeight (normal/bold or CSS weight 100-900), and fontStyle
 // (normal/italic, inheriting the editor font when unset). Other style data stays
 // opaque and is preserved when a property is edited or appearance is reset.
+// The bottom-right question-mark button shows shortcut help on hover, grouped by
+// input context and reflecting this editor's configured bindings. Hovering never
+// changes focus, selection, or an uncommitted topic draft.
 namespace m3::qt {
 // Widget policy, copied at construction; no Qt-specific configuration enters the core.
 // Replace a shortcut list to rebind it, or clear it to disable its keyboard binding
