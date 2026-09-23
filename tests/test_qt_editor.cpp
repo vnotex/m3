@@ -4458,7 +4458,7 @@ static void shortcut_help_case() {
         &Shortcuts::selectChild, &Shortcuts::previousSibling, &Shortcuts::nextSibling, &Shortcuts::selectRoot,
         &Shortcuts::clearSelection, &Shortcuts::zoomIn, &Shortcuts::zoomOut, &Shortcuts::resetZoom, &Shortcuts::fit,
         &Shortcuts::toggleBold, &Shortcuts::toggleItalic, &Shortcuts::resetStyle, &Shortcuts::textColor,
-        &Shortcuts::fillColor, &Shortcuts::editTags, &Shortcuts::editIcons, &Shortcuts::editNote, &Shortcuts::editTopic, &Shortcuts::showHelp
+        &Shortcuts::fillColor, &Shortcuts::editTags, &Shortcuts::editIcons, &Shortcuts::editNote, &Shortcuts::editTopic, &Shortcuts::showHelp, &Shortcuts::toggleProperties
     };
     m3::qt::EditorConfig config;
     QList<QKeySequence> expectedKeys;
@@ -4778,7 +4778,54 @@ static void node_shortcuts_case() {
         CHECK(scroll->viewport()->rect().contains(target->mapTo(scroll->viewport(), target->rect().center())));
     };
     const Qt::Key letters[] = {Qt::Key_B, Qt::Key_I, Qt::Key_R, Qt::Key_C, Qt::Key_F,
-                               Qt::Key_T, Qt::Key_O, Qt::Key_N, Qt::Key_E};
+                               Qt::Key_T, Qt::Key_O, Qt::Key_N, Qt::Key_E, Qt::Key_P};
+    {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(QStringLiteral("a")));
+        showEditor(editor, QSize(760, 440));
+        auto &view = graphics(editor);
+        auto *toggle = button(editor, "nodePropertiesToggle");
+        auto *scroll = editor.findChild<QScrollArea *>();
+        CHECK(scroll != nullptr);
+        toggle->setChecked(true);
+        view.setFocus();
+        Json expected = exported(editor);
+        const auto zoom = view.transform();
+        const auto center = view.mapToScene(view.viewport()->rect().center());
+        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        // No shortcut() helper: the first P must leave focus ready for the second P.
+        for (bool expanded : {false, true}) {
+            QTest::keyClick(view.viewport(), Qt::Key_P); pump();
+            CHECK(toggle->isChecked() == expanded && scroll->isVisible() == expanded && view.hasFocus());
+            CHECK(editor.selectedNodeId() == QStringLiteral("a") && selected.isEmpty());
+            CHECK(exported(editor) == expected && changed.isEmpty() && view.transform() == zoom);
+            CHECK(view.mapToScene(view.viewport()->rect().center()) == center);
+        }
+        QKeyEvent repeat(QEvent::KeyPress, Qt::Key_P, Qt::NoModifier, QStringLiteral("p"), true);
+        QCoreApplication::sendEvent(view.viewport(), &repeat);
+        CHECK(toggle->isChecked() && scroll->isVisible() && changed.isEmpty());
+        shortcut(editor, Qt::Key_Question);
+        auto *popup = editor.findChild<QDialog *>(QStringLiteral("shortcutHelpPopup"));
+        CHECK(popup && popup->isVisible());
+        auto *browser = popup->findChild<QTextBrowser *>();
+        CHECK(browser && browser->hasFocus());
+        CHECK(browser->toPlainText().split(QLatin1Char('\n')).contains(QKeySequence(Qt::Key_P).toString(QKeySequence::NativeText)));
+        QTest::keyClick(browser, Qt::Key_P); pump();
+        CHECK(toggle->isChecked() && popup->isVisible());
+        QTest::keyClick(browser, Qt::Key_Escape); pump();
+        shortcut(editor, Qt::Key_T);
+        auto *tags = editor.findChild<QLineEdit *>(QStringLiteral("nodeTags"));
+        CHECK(tags && tags->hasFocus());
+        QTest::keyClicks(tags, "p"); pump();
+        jsonNode(expected, "a")["tags"] = Json::array({"p"});
+        CHECK(tags->hasFocus() && toggle->isChecked() && scroll->isVisible());
+        CHECK(exported(editor) == expected && changed.size() == 1);
+        shortcut(editor, Qt::Key_E);
+        QTest::keyClicks(&topicInput(editor), "p"); pump();
+        CHECK(topicInput(editor).toPlainText() == QStringLiteral("p") && toggle->isChecked());
+        CHECK(exported(editor) == expected && changed.size() == 1 && selected.isEmpty());
+        topicKey(editor, Qt::Key_Escape);
+    }
     {
         Editor editor;
         Json input = editorFixture();
@@ -5069,6 +5116,7 @@ static void node_shortcuts_case() {
         config.shortcuts.toggleBold = {QKeySequence(Qt::CTRL | Qt::Key_B)};
         config.shortcuts.editTopic = {QKeySequence(Qt::CTRL | Qt::Key_E)};
         config.shortcuts.editNote = {QKeySequence(Qt::CTRL | Qt::Key_N)};
+        config.shortcuts.toggleProperties = {QKeySequence(Qt::CTRL | Qt::Key_P)};
         config.shortcuts.toggleItalic.clear();
         Editor editor(config), defaults;
         CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(QStringLiteral("a")));
@@ -5079,9 +5127,14 @@ static void node_shortcuts_case() {
         Json expected = exported(editor);
         const Json other = exported(defaults);
         QSignalSpy changed(&editor, &Editor::documentChanged), otherChanged(&defaults, &Editor::documentChanged);
-        for (auto key : {Qt::Key_B, Qt::Key_E, Qt::Key_N, Qt::Key_I}) shortcut(editor, key);
+        for (auto key : {Qt::Key_B, Qt::Key_E, Qt::Key_N, Qt::Key_I, Qt::Key_P}) shortcut(editor, key);
         CHECK(exported(editor) == expected && changed.isEmpty());
         CHECK(!toggle->isChecked() && !activeTopicInput(editor) && graphics(editor).hasFocus());
+        for (bool expanded : {true, false}) {
+            shortcut(editor, Qt::Key_P, Qt::ControlModifier);
+            CHECK(toggle->isChecked() == expanded && graphics(editor).hasFocus());
+        }
+        CHECK(exported(editor) == expected && changed.isEmpty());
         shortcut(editor, Qt::Key_B, Qt::ControlModifier);
         jsonNode(expected, "a")["style"]["fontWeight"] = "bold";
         CHECK(exported(editor) == expected && changed.size() == 1 && textItem(editor, QStringLiteral("Alpha"))->font().bold());
@@ -5108,7 +5161,7 @@ static void node_shortcuts_case() {
     {
         m3::qt::EditorConfig config;
         config.shortcuts.resetStyle.clear(); config.shortcuts.textColor.clear(); config.shortcuts.fillColor.clear();
-        config.shortcuts.editTags.clear(); config.shortcuts.editIcons.clear();
+        config.shortcuts.editTags.clear(); config.shortcuts.editIcons.clear(); config.shortcuts.toggleProperties.clear();
         Editor editor(config);
         Json input = editorFixture();
         jsonNode(input, "a")["style"] = {{"fontWeight", "bold"}, {"color", "#2980b9"}};
@@ -5117,7 +5170,7 @@ static void node_shortcuts_case() {
         auto *toggle = button(editor, "nodePropertiesToggle"); toggle->setChecked(false);
         const Json before = exported(editor);
         QSignalSpy changed(&editor, &Editor::documentChanged);
-        for (auto key : {Qt::Key_R, Qt::Key_C, Qt::Key_F, Qt::Key_T, Qt::Key_O}) {
+        for (auto key : {Qt::Key_R, Qt::Key_C, Qt::Key_F, Qt::Key_T, Qt::Key_O, Qt::Key_P}) {
             shortcut(editor, key);
             CHECK(exported(editor) == before && changed.isEmpty());
             CHECK(!toggle->isChecked() && graphics(editor).hasFocus() && !activeTopicInput(editor));

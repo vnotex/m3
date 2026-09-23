@@ -416,7 +416,7 @@ public:
         view->viewport()->installEventFilter(this);
         hide();
     }
-    enum class Action { ToggleBold, ToggleItalic, ResetStyle, TextColor, FillColor, Tags, Icons, Note };
+    enum class Action { ToggleBold, ToggleItalic, ResetStyle, TextColor, FillColor, Tags, Icons, Note, ToggleProperties };
     void activate(Action action) {
         refresh();
         if (boundId.isEmpty()) return;
@@ -425,6 +425,10 @@ public:
         case Action::ToggleBold: bold->click(); return;
         case Action::ToggleItalic: italic->click(); return;
         case Action::ResetStyle: reset->click(); return;
+        case Action::ToggleProperties:
+            toggle->click();
+            if (view) view->setFocus(Qt::OtherFocusReason);
+            return;
         case Action::TextColor: target = textColor; break;
         case Action::FillColor: target = fillColor; break;
         case Action::Tags: target = tags; break;
@@ -906,6 +910,7 @@ public:
             action("editTags", tr("Edit tags"), config.shortcuts.editTags, [this] { properties->activate(NodePropertiesPanel::Action::Tags); }, false),
             action("editIcons", tr("Edit icons"), config.shortcuts.editIcons, [this] { properties->activate(NodePropertiesPanel::Action::Icons); }, false),
             action("editNote", tr("Edit note"), config.shortcuts.editNote, [this] { properties->activate(NodePropertiesPanel::Action::Note); }, false),
+            action("toggleProperties", tr("Toggle properties panel"), config.shortcuts.toggleProperties, [this] { properties->activate(NodePropertiesPanel::Action::ToggleProperties); }, false),
             action("editTopic", tr("Edit topic"), config.shortcuts.editTopic, [this] {
                 const QString id = controller->selectedNodeId();
                 if (!id.isEmpty()) view->beginTopicEdit(id, config.shortcuts.acceptTopic);

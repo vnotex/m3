@@ -82,6 +82,7 @@ namespace m3::qt {
 // Text/Fill color mode; T/O/N expand and reveal Tags/Icons/Note, focusing that control.
 // E begins inline topic editing for nodes only; F2 still edits nodes or links. These
 // letters remain ordinary input while typing, including in the inline topic draft.
+// P toggles the selected node's properties card, keeping focus on the canvas.
 // With canvas focus, ? opens shortcut help for any selection. Escape or an outside
 // click dismisses it; Escape returns focus to the canvas without clearing selection.
 // acceptTopic applies only during
@@ -130,6 +131,7 @@ struct EditorConfig {
         QList<QKeySequence> editTopic{QKeySequence(Qt::Key_E)};
         // Question-mark events may retain Shift on layouts that use it for ?.
         QList<QKeySequence> showHelp{QKeySequence(Qt::Key_Question), QKeySequence(Qt::SHIFT | Qt::Key_Question)};
+        QList<QKeySequence> toggleProperties{QKeySequence(Qt::Key_P)};
     } shortcuts;
     // UI policy only: the removeNode() API never prompts.
     bool confirmSubtreeDeletion = true;
