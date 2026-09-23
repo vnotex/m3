@@ -71,9 +71,6 @@
 // or "Npx"), fontWeight (normal/bold or CSS weight 100-900), and fontStyle
 // (normal/italic, inheriting the editor font when unset). Other style data stays
 // opaque and is preserved when a property is edited or appearance is reset.
-// The bottom-right question-mark button shows shortcut help on hover, grouped by
-// input context and reflecting this editor's configured bindings. Hovering never
-// changes focus, selection, or an uncommitted topic draft.
 namespace m3::qt {
 // Widget policy, copied at construction; no Qt-specific configuration enters the core.
 // Replace a shortcut list to rebind it, or clear it to disable its keyboard binding
@@ -147,6 +144,11 @@ public:
     explicit MindMapEditor(const EditorConfig &config, QWidget *parent = nullptr);
     ~MindMapEditor() override;
     QString resourceBasePath() const;
+    // Owned Qt rich-text (HTML) keyboard help, grouped by input context. Uses this
+    // editor's construction-time bindings; the snapshot survives widget destruction.
+    // Does not change the document, selection, focus, inline draft, or last error.
+    // Hosts choose how to display it; the editor has no built-in help control.
+    QString shortcutHelp() const;
     // GUI-thread host image protocol. Connect imageRequested before loading, or
     // call reloadImages after attaching. The URL is a resolved resource/cache key;
     // supply that URL and request ID unchanged. Null pixels mean unavailable.

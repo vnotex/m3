@@ -36,7 +36,6 @@
 #include <functional>
 #include <QToolBar>
 #include <QToolButton>
-#include <QToolTip>
 #include <QLabel>
 #include <QVBoxLayout>
 #include <QUrl>
@@ -48,13 +47,11 @@ QString loadStyleSheet(const QString &path) {
         qFatal("Cannot load embedded stylesheet %s: %s", qPrintable(path), qPrintable(file.errorString()));
     return QString::fromUtf8(file.readAll());
 }
-// Lucide: https://lucide.dev/icons/rotate-ccw and circle-question-mark.
-// Notice: third_party/lucide/LICENSE.
-class LucideIconEngine final : public QIconEngine {
+// Lucide: https://lucide.dev/icons/rotate-ccw; notice: third_party/lucide/LICENSE.
+class RotateCcwIconEngine final : public QIconEngine {
 public:
-    enum class Glyph { RotateCcw, CircleQuestionMark };
-    LucideIconEngine(const QPalette &palette, Glyph type) : palette(palette), type(type) {}
-    QIconEngine *clone() const override { return new LucideIconEngine(*this); }
+    explicit RotateCcwIconEngine(const QPalette &palette) : palette(palette) {}
+    QIconEngine *clone() const override { return new RotateCcwIconEngine(*this); }
     void paint(QPainter *painter, const QRect &rect, QIcon::Mode mode, QIcon::State) override {
         if (rect.isEmpty()) return;
         static const QPainterPath glyph = [] {
@@ -69,16 +66,6 @@ public:
             path.lineTo(8, 8);
             return path;
         }();
-        static const QPainterPath questionMark = [] {
-            QPainterPath path;
-            path.addEllipse(QPointF(12, 12), 10, 10);
-            path.moveTo(9.09, 9);
-            path.arcTo(QRectF(8.9200033293, 6.9955305903, 6, 6), 160.6192914816, -160.7046509499);
-            path.cubicTo(14.92, 12, 11.92, 13, 11.92, 13);
-            path.moveTo(12, 17);
-            path.lineTo(12.01, 17);
-            return path;
-        }();
         const auto group = mode == QIcon::Disabled ? QPalette::Disabled : palette.currentColorGroup();
         const auto role = mode == QIcon::Selected ? QPalette::HighlightedText : QPalette::ButtonText;
         const qreal side = qMin(rect.width(), rect.height());
@@ -88,7 +75,7 @@ public:
         painter->setRenderHint(QPainter::Antialiasing);
         painter->setBrush(Qt::NoBrush);
         painter->setPen(QPen(palette.color(group, role), 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        painter->drawPath(type == Glyph::RotateCcw ? glyph : questionMark);
+        painter->drawPath(glyph);
         painter->restore();
     }
     QPixmap pixmap(const QSize &size, QIcon::Mode mode, QIcon::State state) override {
@@ -102,32 +89,6 @@ public:
     }
 private:
     QPalette palette;
-    Glyph type;
-};
-class ShortcutHelpButton final : public QToolButton {
-public:
-    explicit ShortcutHelpButton(QWidget *parent) : QToolButton(parent) {
-        setObjectName(QStringLiteral("shortcutHelp"));
-        setAccessibleName(tr("Keyboard shortcuts"));
-        setToolButtonStyle(Qt::ToolButtonIconOnly);
-        setAutoRaise(true);
-        setFocusPolicy(Qt::NoFocus);
-        setFixedSize(28, 28);
-        setIconSize(QSize(18, 18));
-        updateIcon();
-        connect(this, &QToolButton::clicked, this, [this] {
-            QToolTip::showText(mapToGlobal(QPoint(0, 0)), toolTip(), this);
-        });
-    }
-protected:
-    void changeEvent(QEvent *event) override {
-        if (event->type() == QEvent::PaletteChange) updateIcon();
-        QToolButton::changeEvent(event);
-    }
-private:
-    void updateIcon() {
-        setIcon(QIcon(new LucideIconEngine(palette(), LucideIconEngine::Glyph::CircleQuestionMark)));
-    }
 };
 class NodePropertiesPanel final : public QFrame {
 public:
@@ -220,7 +181,7 @@ public:
         reset->setToolButtonStyle(Qt::ToolButtonIconOnly);
         reset->setFocusPolicy(Qt::StrongFocus);
         reset->setIconSize(QSize(16, 16));
-        reset->setIcon(QIcon(new LucideIconEngine(reset->palette(), LucideIconEngine::Glyph::RotateCcw)));
+        reset->setIcon(QIcon(new RotateCcwIconEngine(reset->palette())));
         reset->installEventFilter(this);
         fontRow->addWidget(sizeLabel);
         fontRow->addWidget(fontSize, 1);
@@ -454,7 +415,7 @@ protected:
             reposition();
             break;
         case QEvent::PaletteChange:
-            if (watched == reset) reset->setIcon(QIcon(new LucideIconEngine(reset->palette(), LucideIconEngine::Glyph::RotateCcw)));
+            if (watched == reset) reset->setIcon(QIcon(new RotateCcwIconEngine(reset->palette())));
             break;
         case QEvent::FontChange:
             refresh();
@@ -617,6 +578,7 @@ public:
     enum class TopicOperation { Child, SiblingAfter, SiblingBefore };
     enum class Navigation { Parent, Child, PreviousSibling, NextSibling };
     QList<QAction *> menuActions;
+    QString shortcutHelpText;
     QString shortcutHelp() const {
         auto row = [](const QString &label, const QList<QKeySequence> &bindings) {
             QStringList keys;
@@ -882,7 +844,7 @@ public:
             action("nextSibling", tr("Select next sibling"), config.shortcuts.nextSibling, [this] { navigate(Navigation::NextSibling); }, false)
         };
         clearSelectionAction = action("clearSelection", tr("Clear selection"), config.shortcuts.clearSelection, [this] { controller->clearSelection(); }, false);
-        layout->addWidget(view, 1);
+        layout->addWidget(view, 1); layout->addWidget(error);
         properties = new NodePropertiesPanel(editor, view, controller);
         nodeEditingActions = {
             action("toggleBold", tr("Toggle bold"), config.shortcuts.toggleBold, [this] { properties->activate(NodePropertiesPanel::Action::ToggleBold); }, false),
@@ -899,14 +861,8 @@ public:
             }, false)
         };
         for (auto *action : nodeEditingActions) action->setAutoRepeat(false);
-        auto *help = new ShortcutHelpButton(editor);
         // Snapshot configured bindings before inline editing temporarily clears them.
-        help->setToolTip(shortcutHelp());
-        auto *footer = new QHBoxLayout;
-        footer->addWidget(error, 1);
-        footer->addStretch();
-        footer->addWidget(help, 0, Qt::AlignBottom);
-        layout->addLayout(footer);
+        shortcutHelpText = shortcutHelp();
         view->setContextMenuPolicy(Qt::CustomContextMenu);
         QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this](const QPoint &point) {
             view->finishTopicEdit(true);
@@ -971,6 +927,7 @@ QString MindMapEditor::toMarkdown() const { return d->controller->toMarkdown(); 
 QString MindMapEditor::toHtml() const { return d->controller->toHtml(); }
 QString MindMapEditor::lastError() const { return d->controller->lastError(); }
 QString MindMapEditor::resourceBasePath() const { return d->controller->resourceBasePath(); }
+QString MindMapEditor::shortcutHelp() const { return d->shortcutHelpText; }
 void MindMapEditor::provideImage(const QString &url, quint64 requestId, const QImage &image) { d->controller->provideImage(url, requestId, image); }
 void MindMapEditor::reloadImages() { d->controller->reloadImages(); }
 QString MindMapEditor::addNode(const QString &parent, const QString &topic, int index) { return d->controller->addNode(parent, topic, index); }
