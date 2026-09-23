@@ -33,6 +33,7 @@ signals:
     void topicEditingChanged(bool editing);
     void nodePicked(const QString &id);
     void nodeLinkActivated(const QString &nodeId, const QString &url);
+    void imageResizeRequested(const QString &nodeId, const QString &url, const QSizeF &originalSize, const QSizeF &size);
     void fileDropped(const QString &nodeId, const QString &filePath);
     void nodeMoveRequested(const QString &id, const QString &parent, int index);
     void linkPicked(const QString &id);
@@ -67,6 +68,13 @@ private:
     QString draggedNodeId, dropTargetId;
     QPoint dragPressPosition;
     bool nodeDragging = false;
+    QString resizedNodeId, resizedImageUrl;
+    QSizeF originalImageSize, resizedImageSize;
+    QRectF initialImageRectangle;
+    QPoint imagePressPosition;
+    QPointF imagePressScenePosition;
+    QGraphicsItem *resizedImageItem = nullptr;
+    bool imageResizeDragging = false;
     QPointer<QPlainTextEdit> topicEditor;
     QPointer<QGraphicsTextItem> topicLabel;
     QString editedId, originalTopic, originalTopicDraft;
@@ -76,6 +84,9 @@ private:
     void updatePanCursor(const QPoint &position);
     QString dropTargetAt(const QPoint &position) const;
     void setDropTarget(const QString &id);
+    void clearImageResize();
+    bool handleImageResizeEvent(QEvent *event);
+    bool updateImageResize(const QPoint &position);
     void clearNodeLinkPress();
     bool handleNodeLinkEvent(QEvent *event);
     void clearNodeDrag();

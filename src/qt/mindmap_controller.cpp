@@ -2,6 +2,10 @@
 #include "mindmap_view.h"
 #include "html_export.h"
 #include <QHash>
+#include <QDir>
+#include <QUrl>
+#include <QPointer>
+#include <QTimer>
 #include <QRegularExpression>
 #include <QStringList>
 #include <QStringView>
@@ -73,6 +77,10 @@ QRectF rectangle(const Json &j) {
     return {j.at("x").get<double>(), j.at("y").get<double>(),
             j.at("width").get<double>(), j.at("height").get<double>()};
 }
+std::optional<NodeImage> nodeImage(const Json &value) {
+    if (value.is_null()) return std::nullopt;
+    return NodeImage{string(value.at("url")), value.at("width").get<double>(), value.at("height").get<double>()};
+}
 NodeStyle nodeStyle(const Json &style) {
     NodeStyle result;
     if (!style.is_object()) return result;
@@ -116,7 +124,84 @@ LinkPresentation linkPresentation(const Json &j) {
             string(j.at("topic")), j.at("directed").get<bool>()};
 }
 }
-MindMapController::MindMapController(MindMapView &v, QObject *parent) : QObject(parent), view(v) {}
+MindMapController::MindMapController(MindMapView &v, const QString &base, QObject *parent)
+    : QObject(parent), view(v), resourceBase(QDir::cleanPath(QDir::current().absoluteFilePath(base))) {}
+QString MindMapController::resolveResourceUrl(const QString &value) const {
+    if (value.isEmpty()) return {};
+    const QString path = QDir::fromNativeSeparators(value);
+    if (QDir::isAbsolutePath(path)) return QUrl::fromLocalFile(path).toString(QUrl::FullyEncoded);
+    // Spaces are valid filename input, but malformed URL escapes stay invalid.
+    QString encodedPath = path;
+    encodedPath.replace(u' ', QStringLiteral("%20"));
+    QUrl reference(encodedPath, QUrl::StrictMode);
+    if (!reference.isValid()) return value;
+    if (!reference.scheme().isEmpty()) {
+        if (reference.scheme().compare(QStringLiteral("file"), Qt::CaseInsensitive) != 0 ||
+            reference.path().startsWith(u'/') || !reference.host().isEmpty()) return value;
+        reference.setScheme(QString());
+    }
+    const QUrl base = QUrl::fromLocalFile(resourceBase.endsWith(u'/') ? resourceBase : resourceBase + u'/');
+    return base.resolved(reference).toString(QUrl::FullyEncoded);
+}
+void MindMapController::provideImage(const QString &url, quint64 requestId, const QImage &image) {
+    auto resource = imageResources.find(url);
+    if (resource == imageResources.end() || resource->requestId != requestId || resource->completed) return;
+    resource->pixels = image;
+    resource->completed = true;
+    scheduleImageRefresh();
+}
+void MindMapController::reloadImages() {
+    imageResources.clear();
+    ++imageGeneration;
+    scheduleImageRefresh();
+}
+void MindMapController::scheduleImageRefresh() {
+    if (imageRefreshScheduled) return;
+    imageRefreshScheduled = true;
+    QTimer::singleShot(0, this, [this] {
+        imageRefreshScheduled = false;
+        refreshAppearance();
+    });
+}
+void MindMapController::scheduleImageRequests() {
+    if (imageRequestsScheduled) return;
+    imageRequestsScheduled = true;
+    QTimer::singleShot(0, this, [this] {
+        imageRequestsScheduled = false;
+        if (!model) return;
+        const auto generation = imageGeneration;
+        const QPointer<MindMapController> alive(this);
+        try {
+            const auto bytes = snapshot(model.get());
+            const auto data = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
+            QSet<QString> referenced, visible;
+            QStringList requests;
+            for (const auto &node : data.at("nodes")) {
+                const auto image = nodeImage(node.at("image"));
+                if (!image || image->url.isEmpty()) continue;
+                const QString url = resolveResourceUrl(image->url);
+                referenced.insert(url);
+                if (visibleNodes.contains(string(node.at("id"))) && !visible.contains(url)) {
+                    visible.insert(url);
+                    requests.append(url);
+                }
+            }
+            for (auto it = imageResources.begin(); it != imageResources.end();) {
+                if (!referenced.contains(it.key())) it = imageResources.erase(it);
+                else ++it;
+            }
+            for (const auto &url : requests) {
+                if (imageResources.contains(url)) continue;
+                const quint64 id = nextImageRequestId++;
+                imageResources.insert(url, ImageResource{id, {}, false});
+                emit imageRequested(url, id);
+                if (!alive || imageGeneration != generation) return;
+            }
+        } catch (const std::exception &e) {
+            if (alive) fail(QString::fromUtf8(e.what()));
+        }
+    });
+}
 bool MindMapController::fail(const QString &message) {
     error = message;
     emit errorOccurred(error);
@@ -158,7 +243,7 @@ QString MindMapController::toHtml() {
         return encodeHtml(document, image);
     } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
-Presentation MindMapController::prepare(const M3Mindmap *map, MindMapEditor::LayoutDirection requested) {
+Presentation MindMapController::prepare(const M3Mindmap *map, MindMapEditor::LayoutDirection requested, bool useImageCache) {
     const auto bytes = snapshot(map);
     const auto data = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
     const auto &nodes = data.at("nodes");
@@ -175,6 +260,14 @@ Presentation MindMapController::prepare(const M3Mindmap *map, MindMapEditor::Lay
         node.id = string(record.at("id"));
         node.topic = string(record.at("topic"));
         node.hyperlink = string(record.at("hyperLink"));
+        node.image = nodeImage(record.at("image"));
+        if (useImageCache && node.image && !node.image->url.isEmpty()) {
+            const auto resource = imageResources.constFind(resolveResourceUrl(node.image->url));
+            if (resource != imageResources.cend()) {
+                node.imagePixels = resource->pixels;
+                node.imageFailed = resource->completed && resource->pixels.isNull();
+            }
+        }
         for (const auto &icon : record.at("icons")) node.icons.append(string(icon));
         node.tags.reserve(record.at("tags").size());
         for (const auto &tag : record.at("tags")) {
@@ -221,6 +314,8 @@ void MindMapController::install(Presentation presentation, bool fit) {
     view.install(std::move(presentation), fit);
     visibleNodes.swap(nodes);
     visibleLinks.swap(links);
+    ++imageGeneration; // Also stop request delivery across a reentrant visual/semantic rebuild.
+    scheduleImageRequests();
 }
 void MindMapController::selection(const QString &node, const QString &link) {
     if (node == selectedNode && link == selectedLink) {
@@ -235,10 +330,12 @@ void MindMapController::selection(const QString &node, const QString &link) {
 }
 bool MindMapController::replace(Map candidate) {
     try {
-        auto presentation = prepare(candidate.get(), direction);
+        auto presentation = prepare(candidate.get(), direction, false);
         const QString root = presentation.nodes.front().id;
         install(std::move(presentation), true);
         model.swap(candidate);
+        imageResources.clear();
+        ++imageGeneration;
         success();
         selection(root, {});
         view.setSelection(selectedNode, selectedLink);
@@ -445,6 +542,7 @@ NodeProperties MindMapController::nodeProperties(const QString &id) {
             result.topic = string(record.at("topic"));
             result.hyperlink = string(record.at("hyperLink"));
             result.note = string(record.at("note"));
+            result.image = nodeImage(record.at("image"));
             for (const auto &tag : record.at("tags")) result.tags.append(string(tag));
             for (const auto &icon : record.at("icons")) result.icons.append(string(icon));
             result.root = record.at("id") == data.at("rootId");

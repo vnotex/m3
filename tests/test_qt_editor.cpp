@@ -2,11 +2,15 @@
 #include "m3/qt/editor.h"
 #ifdef M3_QT_TEST_DEMO
 #include "qt_demo_window.h"
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QHostAddress>
 #endif
 #include <QAction>
 #include <QAbstractButton>
 #include <QAccessible>
 #include <QApplication>
+#include <QBuffer>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QCloseEvent>
@@ -593,6 +597,115 @@ struct HtmlPage {
         return image;
     }
 };
+static Json imageDocument(const QString &url = QStringLiteral("memory:picture"), double width = 0, double height = 0) {
+    Json input = editorFixture();
+    setTopic(input, "r", QStringLiteral("Image root"));
+    setTopic(input, "c", QStringLiteral("Gamma"));
+    for (auto &node : input.at("nodes")) if (node.at("id") == "r") {
+        node["tags"] = Json::array({"one", "two"});
+        node["image"] = Json{{"url", utf8(url)}, {"width", width}, {"height", height}};
+    }
+    return input;
+}
+static QImage imagePixels(QColor left = QColor(231, 37, 53), QColor right = QColor(29, 71, 223),
+                          QSize size = QSize(120, 60)) {
+    QImage image(size, QImage::Format_RGB32);
+    image.fill(left);
+    QPainter painter(&image);
+    painter.fillRect(QRect(size.width() / 2, 0, size.width() - size.width() / 2, size.height()), right);
+    return image;
+}
+static QGraphicsItem *nodeImageItem(Editor &editor, const QString &topic, const QString &url) {
+    for (auto *child : ownerItem(textItem(editor, topic))->childItems())
+        if (child->isVisible() && !dynamic_cast<QGraphicsTextItem *>(child) &&
+            child->cursor().shape() != Qt::PointingHandCursor &&
+            child->toolTip().contains(url.toHtmlEscaped()) && !url.isEmpty()) return child;
+    return nullptr;
+}
+static QRectF nodeImageRect(Editor &editor, const QString &topic = QStringLiteral("Image root"),
+                             const QString &url = QStringLiteral("memory:picture")) {
+    auto *item = nodeImageItem(editor, topic, url);
+    CHECK(item != nullptr);
+    return item->sceneBoundingRect();
+}
+static bool imageHasColors(Editor &editor, const QString &topic, const QString &url,
+                           QColor left = QColor(231, 37, 53), QColor right = QColor(29, 71, 223)) {
+    auto *item = nodeImageItem(editor, topic, url);
+    if (!item) return false;
+    const QRectF rect = item->sceneBoundingRect();
+    const QImage painted = paintScene(editor, rect);
+    auto matches = [&](qreal fraction, QColor color) {
+        const QPoint point = imagePoint(painted, rect, QPointF(rect.left() + fraction * rect.width(), rect.center().y()));
+        if (!painted.rect().contains(point)) return false;
+        const QColor actual = painted.pixelColor(point);
+        return std::abs(actual.red() - color.red()) <= 2 && std::abs(actual.green() - color.green()) <= 2 &&
+               std::abs(actual.blue() - color.blue()) <= 2;
+    };
+    return matches(0.25, left) && matches(0.75, right);
+}
+static void checkImageSize(const QRectF &rect, QSizeF size, qreal tolerance = 0.01) {
+    CHECK(finiteRect(rect));
+    CHECK(std::abs(rect.width() - size.width()) <= tolerance);
+    CHECK(std::abs(rect.height() - size.height()) <= tolerance);
+}
+static void checkImageLayout(Editor &editor, QSizeF size, const QString &url = QStringLiteral("memory:picture")) {
+    const QRectF image = nodeImageRect(editor, QStringLiteral("Image root"), url);
+    checkImageSize(image, size);
+    CHECK(topicRect(editor, QStringLiteral("Image root")).contains(image));
+    CHECK(image.top() > textItem(editor, QStringLiteral("one"))->sceneBoundingRect().bottom());
+    CHECK(image.top() > textItem(editor, QStringLiteral("two"))->sceneBoundingRect().bottom());
+    std::vector<QRectF> nodes;
+    for (const QString &topic : {QStringLiteral("Image root"), QStringLiteral("Alpha"), QStringLiteral("Beta"),
+                                 QStringLiteral("Gamma"), QStringLiteral("Delta")}) {
+        const QRectF node = topicRect(editor, topic);
+        for (const auto &other : nodes) CHECK(!node.intersects(other));
+        nodes.push_back(node);
+    }
+}
+static QGraphicsItem *imageHandle(Editor &editor, const QString &topic = QStringLiteral("Image root")) {
+    auto *owner = ownerItem(textItem(editor, topic));
+    for (auto *item : graphics(editor).scene()->items())
+        if (item->isVisible() && item->cursor().shape() == Qt::SizeFDiagCursor && belongsTo(item, owner)) return item;
+    return nullptr;
+}
+static QPoint imageHandlePoint(Editor &editor, const QString &topic = QStringLiteral("Image root")) {
+    auto &view = graphics(editor);
+    auto *handle = imageHandle(editor, topic);
+    CHECK(handle != nullptr);
+    view.ensureVisible(handle, 30, 30);
+    pump();
+    handle = imageHandle(editor, topic);
+    CHECK(handle != nullptr);
+    const QPoint point = handle->deviceTransform(view.viewportTransform()).map(handle->boundingRect().center()).toPoint();
+    CHECK(view.viewport()->rect().contains(point) && belongsTo(view.itemAt(point), handle));
+    return point;
+}
+static QPoint startImageResize(Editor &editor, QPointF sceneDelta,
+                                const QString &topic = QStringLiteral("Image root")) {
+    auto &view = graphics(editor);
+    const QPoint from = imageHandlePoint(editor, topic);
+    const QPoint to = view.mapFromScene(view.mapToScene(from) + sceneDelta);
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, from);
+    movePointer(view, to, Qt::LeftButton);
+    return to;
+}
+static void releaseImageResize(Editor &editor, QPoint point) {
+    QTest::mouseRelease(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, point);
+    pump();
+}
+static QPoint nodeLinkPoint(Editor &editor, const QString &topic) {
+    auto &view = graphics(editor);
+    for (auto *child : ownerItem(textItem(editor, topic))->childItems()) {
+        if (!child->isVisible() || child->cursor().shape() != Qt::PointingHandCursor) continue;
+        view.ensureVisible(child);
+        pump();
+        const QPoint point = view.mapFromScene(child->sceneBoundingRect().center());
+        CHECK(view.viewport()->rect().contains(point) && belongsTo(view.itemAt(point), child));
+        return point;
+    }
+    throw std::runtime_error("Missing reachable node link");
+}
+
 static void htmlAppearance(Editor &editor) {
     QFont font(QStringLiteral("Arial"));
     font.setPixelSize(16);
@@ -1203,6 +1316,392 @@ static void lifetime_case() {
     Editor restored;
     CHECK(restored.loadJson(retained));
     CHECK(exported(restored) == retainedDocument);
+}
+
+static void images_case() {
+    const QString root = QStringLiteral("r"), topic = QStringLiteral("Image root"), url = QStringLiteral("memory:picture");
+    const QImage pixels = imagePixels();
+    const QImage alternate = imagePixels(QColor(13, 181, 67), QColor(197, 29, 163));
+    auto serve = [&](Editor &editor) {
+        QObject::connect(&editor, &Editor::imageRequested, &editor,
+            [&editor, pixels](const QString &source, quint64 id) { editor.provideImage(source, id, pixels); });
+    };
+    {
+        Editor editor;
+        std::vector<std::pair<QString, quint64>> requests;
+        QObject::connect(&editor, &Editor::imageRequested, &editor,
+            [&](const QString &source, quint64 id) { requests.emplace_back(source, id); });
+        CHECK(editor.loadJson(encoded(imageDocument())));
+        showEditor(editor);
+        CHECK(QTest::qWaitFor([&] { return requests.size() == 1; }, 5000));
+        checkImageLayout(editor, QSizeF(120, 90));
+        CHECK(imageHandle(editor) == nullptr);
+        const Json before = exported(editor);
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Uncommitted image-resolution draft"));
+        const QTransform zoom = graphics(editor).transform();
+        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        // A mismatched URL and unknown ID cannot consume the outstanding response.
+        editor.provideImage(QStringLiteral("memory:wrong"), requests.front().second, alternate);
+        editor.provideImage(url, requests.front().second + 100, alternate);
+        pump();
+        checkImageSize(nodeImageRect(editor), QSizeF(120, 90));
+        QImage highDpi = pixels;
+        highDpi.setDevicePixelRatio(2);
+        editor.provideImage(requests.front().first, requests.front().second, highDpi);
+        CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, url); }, 5000));
+        checkImageSize(nodeImageRect(editor), QSizeF(120, 60));
+        CHECK(exported(editor) == before && changed.isEmpty() && selected.isEmpty());
+        CHECK(editor.selectedNodeId() == QStringLiteral("a") && graphics(editor).transform() == zoom);
+        CHECK(topicInput(editor).toPlainText() == QStringLiteral("Uncommitted image-resolution draft"));
+        editor.provideImage(url, requests.front().second, alternate);
+        pump();
+        CHECK(imageHasColors(editor, topic, url));
+        topicKey(editor, Qt::Key_Escape);
+        checkImageLayout(editor, QSizeF(120, 60));
+        for (auto direction : {Editor::LayoutDirection::Right, Editor::LayoutDirection::Outline}) {
+            CHECK(editor.setLayoutDirection(direction));
+            checkImageLayout(editor, QSizeF(120, 60));
+            CHECK(imageHasColors(editor, topic, url) && exported(editor) == before && changed.isEmpty());
+        }
+    }
+    for (const auto &sizes : std::vector<std::pair<QSizeF, QSizeF>>{
+             {QSizeF(90, 0), QSizeF(90, 67.5)}, {QSizeF(0, 60), QSizeF(80, 60)},
+             {QSizeF(90, 90), QSizeF(90, 90)}, {QSizeF(1e300, 1e300), QSizeF(4096, 4096)}}) {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(imageDocument(url, sizes.first.width(), sizes.first.height()))));
+        showEditor(editor);
+        const Json before = exported(editor);
+        checkImageLayout(editor, sizes.second);
+        CHECK(imageHandle(editor) == nullptr && exported(editor) == before);
+    }
+    {
+        Editor editor;
+        const QImage large = imagePixels(QColor(231, 37, 53), QColor(29, 71, 223), QSize(480, 240));
+        QObject::connect(&editor, &Editor::imageRequested, &editor, [&](const QString &source, quint64 id) {
+            editor.provideImage(source, id, large);
+        });
+        CHECK(editor.loadJson(encoded(imageDocument())));
+        showEditor(editor);
+        CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, url); }, 5000));
+        checkImageLayout(editor, QSizeF(240, 120));
+        CHECK(record(exported(editor), "nodes", root).at("image") ==
+              Json({{"url", utf8(url)}, {"width", 0}, {"height", 0}}));
+    }
+    {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(imageDocument())));
+        showEditor(editor);
+        checkImageSize(nodeImageRect(editor), QSizeF(120, 90));
+        const Json before = exported(editor);
+        const QTransform zoom = graphics(editor).transform();
+        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        serve(editor);
+        editor.reloadImages();
+        CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, url); }, 5000));
+        CHECK(exported(editor) == before && changed.isEmpty() && selected.isEmpty());
+        CHECK(graphics(editor).transform() == zoom);
+    }
+    // Metadata is a proportional box, never a stretch or a semantic default-size write.
+    for (const QSizeF stored : {QSizeF(90, 0), QSizeF(90, 90), QSizeF(0, 45), QSizeF(1e300, 1e300)}) {
+        Editor editor;
+        serve(editor);
+        CHECK(editor.loadJson(encoded(imageDocument(url, stored.width(), stored.height()))));
+        showEditor(editor);
+        const Json before = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, url); }, 5000));
+        checkImageLayout(editor, stored.width() > 1e200 ? QSizeF(4096, 2048) : QSizeF(90, 45));
+        CHECK(exported(editor) == before && changed.isEmpty());
+    }
+    {
+        Editor editor;
+        serve(editor);
+        Json input = imageDocument();
+        for (auto &node : input.at("nodes")) if (node.at("id") == "a")
+            node["image"] = Json{{"url", "memory:child"}, {"width", 0}, {"height", 0}};
+        CHECK(editor.loadJson(encoded(input)));
+        showEditor(editor, QSize(1200, 900));
+        CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, url); }, 5000));
+        shortcut(editor, Qt::Key_0, Qt::ControlModifier);
+        editor.clearSelection();
+        CHECK(imageHandle(editor) == nullptr);
+        auto &view = graphics(editor);
+        const QPoint body = view.mapFromScene(nodeImageRect(editor).center());
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, body);
+        pump();
+        CHECK(editor.selectedNodeId() == root && imageHandle(editor) != nullptr);
+        QSignalSpy activated(&editor, &Editor::nodeLinkActivated);
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, nodeLinkPoint(editor, topic));
+        CHECK(activated.size() == 1 && activated.front().at(1).toString() == QStringLiteral("opaque:anything"));
+        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        Json expected = exported(editor);
+        const QImage htmlBefore = HtmlPage(editor.toHtml()).image();
+        editor.clearSelection();
+        CHECK(HtmlPage(editor.toHtml()).image() == htmlBefore);
+        CHECK(editor.selectNode(root));
+        selected.clear();
+        const QPoint from = imageHandlePoint(editor);
+        const QPointF center = view.mapToScene(view.viewport()->rect().center());
+        const QTransform zoom = view.transform();
+        const QPoint to = view.mapFromScene(view.mapToScene(from) + QPointF(60, 30));
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, from);
+        movePointer(view, to, Qt::LeftButton);
+        checkImageSize(nodeImageRect(editor), QSizeF(180, 90));
+        CHECK(imageHasColors(editor, topic, url));
+        CHECK(exported(editor) == expected && changed.isEmpty() && selected.isEmpty());
+        CHECK(view.transform() == zoom && view.mapToScene(view.viewport()->rect().center()) == center);
+        CHECK(HtmlPage(editor.toHtml()).image() == htmlBefore);
+        releaseImageResize(editor, to);
+        for (auto &node : expected.at("nodes")) if (node.at("id") == "r") {
+            node["image"]["width"] = 180;
+            node["image"]["height"] = 90;
+        }
+        CHECK(exported(editor) == expected && changed.size() == 1 && selected.isEmpty());
+        CHECK(editor.selectedNodeId() == root && view.transform() == zoom);
+        checkImageLayout(editor, QSizeF(180, 90));
+        CHECK(HtmlPage(editor.toHtml()).image() != htmlBefore);
+        Editor restored;
+        serve(restored);
+        CHECK(restored.loadJson(editor.toJson()));
+        showEditor(restored);
+        CHECK(QTest::qWaitFor([&] { return imageHasColors(restored, topic, url); }, 5000));
+        checkImageLayout(restored, QSizeF(180, 90));
+        CHECK(exported(restored) == expected);
+        // A child's handle resizes, rather than initiating a node-reparent drag.
+        editor.activateWindow();
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        const QPoint childEnd = startImageResize(editor, QPointF(30, 15), QStringLiteral("Alpha"));
+        releaseImageResize(editor, childEnd);
+        for (auto &node : expected.at("nodes")) if (node.at("id") == "a") {
+            node["image"]["width"] = 150;
+            node["image"]["height"] = 75;
+        }
+        CHECK(exported(editor) == expected && changed.size() == 2);
+        CHECK(editor.setExpanded(QStringLiteral("a"), false));
+        CHECK(texts(editor, QStringLiteral("Delta")).isEmpty());
+        CHECK(editor.setExpanded(QStringLiteral("a"), true));
+        CHECK(!texts(editor, QStringLiteral("Delta")).isEmpty());
+        const Json beforePan = exported(editor);
+        const QPoint panStart = view.mapFromScene(nodeImageRect(editor, QStringLiteral("Alpha"), QStringLiteral("memory:child")).center());
+        const QPointF panCenter = view.mapToScene(view.viewport()->rect().center());
+        dragMiddle(view, panStart, panStart + QPoint(35, 20));
+        CHECK(view.mapToScene(view.viewport()->rect().center()) != panCenter && exported(editor) == beforePan);
+    }
+    {
+        Editor editor;
+        serve(editor);
+        CHECK(editor.loadJson(encoded(imageDocument())));
+        showEditor(editor, QSize(1200, 900));
+        CHECK(QTest::qWaitFor([&] { return imageHandle(editor) != nullptr; }, 5000));
+        shortcut(editor, Qt::Key_0, Qt::ControlModifier);
+        const Json original = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        const QPoint click = imageHandlePoint(editor);
+        QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, click);
+        QTest::mouseDClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, click);
+        QTest::mouseRelease(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, click);
+        CHECK(activeTopicInput(editor) == nullptr && exported(editor) == original && changed.isEmpty());
+        const QPoint away = startImageResize(editor, QPointF(60, 30));
+        const QPoint back = away - QPoint(60, 30);
+        movePointer(graphics(editor), back, Qt::LeftButton);
+        releaseImageResize(editor, back);
+        CHECK(exported(editor) == original && changed.isEmpty());
+        shortcut(editor, Qt::Key_Minus, Qt::ControlModifier);
+        const QTransform zoom = graphics(editor).transform();
+        const QPoint end = startImageResize(editor, QPointF(60, 30));
+        releaseImageResize(editor, end);
+        const QRectF resized = nodeImageRect(editor);
+        checkImageSize(resized, QSizeF(180, 90), 0.8);
+        CHECK(std::abs(resized.width() / resized.height() - 2) < 1e-9);
+        CHECK(changed.size() == 1 && graphics(editor).transform() == zoom);
+        const QPoint extreme = startImageResize(editor, QPointF(10000, 5000));
+        checkImageSize(nodeImageRect(editor), QSizeF(4096, 2048));
+        releaseImageResize(editor, extreme);
+        CHECK(record(exported(editor), "nodes", root).at("image").at("width") == 4096);
+        // Start near the bottom-right of a huge image without fitting/changing zoom.
+        const QPoint minimum = startImageResize(editor, QPointF(-10000, -5000));
+        checkImageSize(nodeImageRect(editor), QSizeF(16, 8));
+        releaseImageResize(editor, minimum);
+        CHECK(record(exported(editor), "nodes", root).at("image").at("width") == 16);
+        CHECK(record(exported(editor), "nodes", root).at("image").at("height") == 8);
+    }
+    enum class Cancel { Escape, Url, Replace, Focus, NoButtons, Ungrab, Hide, Selection, Reload };
+    for (auto cancel : {Cancel::Escape, Cancel::Url, Cancel::Replace, Cancel::Focus, Cancel::NoButtons,
+                        Cancel::Ungrab, Cancel::Hide, Cancel::Selection, Cancel::Reload}) {
+        Editor editor;
+        serve(editor);
+        CHECK(editor.loadJson(encoded(imageDocument())));
+        showEditor(editor, QSize(1200, 900));
+        CHECK(QTest::qWaitFor([&] { return imageHandle(editor) != nullptr; }, 5000));
+        shortcut(editor, Qt::Key_0, Qt::ControlModifier);
+        auto &view = graphics(editor);
+        const QPoint end = startImageResize(editor, QPointF(60, 30));
+        checkImageSize(nodeImageRect(editor), QSizeF(180, 90));
+        QString retainedUrl = url;
+        switch (cancel) {
+        case Cancel::Escape: QTest::keyClick(view.viewport(), Qt::Key_Escape); break;
+        case Cancel::Url: {
+            retainedUrl = QStringLiteral("memory:replacement");
+            auto *field = editor.findChild<QLineEdit *>(QStringLiteral("nodeImageUrl"));
+            CHECK(field != nullptr);
+            field->setText(retainedUrl);
+            break;
+        }
+        case Cancel::Replace:
+            retainedUrl = QStringLiteral("memory:new-document");
+            CHECK(editor.loadJson(encoded(imageDocument(retainedUrl, 80, 40))));
+            break;
+        case Cancel::Focus: {
+            QFocusEvent event(QEvent::FocusOut, Qt::OtherFocusReason);
+            QCoreApplication::sendEvent(&view, &event);
+            break;
+        }
+        case Cancel::NoButtons: movePointer(view, end, Qt::NoButton); break;
+        case Cancel::Ungrab: {
+            QEvent event(QEvent::UngrabMouse);
+            QCoreApplication::sendEvent(view.viewport(), &event);
+            break;
+        }
+        case Cancel::Hide: editor.hide(); break;
+        case Cancel::Selection: CHECK(editor.selectNode(QStringLiteral("a"))); break;
+        case Cancel::Reload: editor.reloadImages(); pump(); break;
+        }
+        pump();
+        const Json retained = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        releaseImageResize(editor, end);
+        CHECK(exported(editor) == retained && changed.isEmpty());
+        CHECK(record(retained, "nodes", root).at("image").at("width") == (cancel == Cancel::Replace ? 80 : 0));
+        checkImageSize(nodeImageRect(editor, topic, retainedUrl), cancel == Cancel::Replace ? QSizeF(80, 40) : QSizeF(120, 60));
+        if (cancel == Cancel::Escape) CHECK(editor.selectedNodeId() == root);
+    }
+    {
+        QPointer<Editor> editor = new Editor;
+        serve(*editor);
+        CHECK(editor->loadJson(encoded(imageDocument())));
+        showEditor(*editor, QSize(1200, 900));
+        CHECK(QTest::qWaitFor([&] { return imageHandle(*editor) != nullptr; }, 5000));
+        shortcut(*editor, Qt::Key_0, Qt::ControlModifier);
+        const QPoint end = startImageResize(*editor, QPointF(60, 30));
+        bool committed = false;
+        QObject::connect(editor, &Editor::documentChanged, editor, [&] {
+            committed = record(exported(*editor), "nodes", root).at("image").at("width") == 180;
+            delete editor.data();
+        });
+        // Do not access the editor/view after the release signal destroys them.
+        QTest::mouseRelease(graphics(*editor).viewport(), Qt::LeftButton, Qt::NoModifier, end);
+        pump();
+        CHECK(committed && editor.isNull());
+    }
+    {
+        Editor editor;
+        std::vector<std::pair<QString, quint64>> requests;
+        QObject::connect(&editor, &Editor::imageRequested, &editor,
+            [&](const QString &source, quint64 id) { requests.emplace_back(source, id); });
+        CHECK(editor.loadJson(encoded(imageDocument(QStringLiteral("memory:A")))));
+        showEditor(editor);
+        CHECK(QTest::qWaitFor([&] { return requests.size() == 1; }, 5000));
+        const auto requestA = requests.front();
+        CHECK(editor.loadJson(encoded(imageDocument(QStringLiteral("memory:B")))));
+        CHECK(QTest::qWaitFor([&] { return requests.size() == 2; }, 5000));
+        const auto requestB = requests.back();
+        const Json retained = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        editor.provideImage(requestB.first, requestB.second, pixels);
+        CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, requestB.first); }, 5000));
+        editor.provideImage(requestA.first, requestA.second, alternate);
+        pump();
+        CHECK(imageHasColors(editor, topic, requestB.first));
+        editor.reloadImages();
+        CHECK(QTest::qWaitFor([&] { return requests.size() == 3; }, 5000));
+        CHECK(requests.back().second > requestB.second);
+        editor.provideImage(requestB.first, requestB.second, alternate);
+        pump();
+        checkImageSize(nodeImageRect(editor, topic, requestB.first), QSizeF(120, 90));
+        const QImage pending = paintScene(editor, nodeImageRect(editor, topic, requestB.first));
+        editor.provideImage(requests.back().first, requests.back().second, QImage());
+        CHECK(QTest::qWaitFor([&] {
+            return paintScene(editor, nodeImageRect(editor, topic, requestB.first)) != pending;
+        }, 5000));
+        CHECK(imageHandle(editor) == nullptr && !imageHasColors(editor, topic, requestB.first));
+        CHECK(exported(editor) == retained && changed.isEmpty() && editor.lastError().isEmpty());
+        pump();
+        CHECK(requests.size() == 3); // Cached failures are not automatically retried.
+        editor.reloadImages();
+        CHECK(QTest::qWaitFor([&] { return requests.size() == 4; }, 5000));
+        editor.provideImage(requests.back().first, requests.back().second, pixels);
+        CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, requestB.first); }, 5000));
+        CHECK(exported(editor) == retained && changed.isEmpty());
+    }
+    {
+        Editor editor;
+        Json input = imageDocument();
+        for (auto &node : input.at("nodes")) if (node.at("id") == "a")
+            node["image"] = Json{{"url", utf8(url)}, {"width", 0}, {"height", 0}};
+        QSignalSpy requests(&editor, &Editor::imageRequested);
+        serve(editor);
+        CHECK(editor.loadJson(encoded(input)));
+        showEditor(editor);
+        CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, QStringLiteral("Alpha"), url); }, 5000));
+        CHECK(imageHasColors(editor, topic, url) && requests.size() == 1);
+        CHECK(editor.setExpanded(root, false));
+        CHECK(editor.setExpanded(root, true));
+        pump();
+        CHECK(requests.size() == 1 && imageHasColors(editor, QStringLiteral("Alpha"), url));
+    }
+    {
+        Editor editor;
+        Json input = imageDocument();
+        for (auto &node : input.at("nodes")) if (node.at("id") == "d")
+            node["image"] = Json{{"url", "memory:hidden"}, {"width", 0}, {"height", 0}};
+        for (auto &node : input.at("nodes")) if (node.at("id") == "a") node["expanded"] = false;
+        QSignalSpy requests(&editor, &Editor::imageRequested);
+        serve(editor);
+        CHECK(editor.loadJson(encoded(input)));
+        showEditor(editor);
+        CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, url); }, 5000));
+        CHECK(requests.size() == 1);
+        CHECK(editor.setExpanded(QStringLiteral("a"), true));
+        CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, QStringLiteral("Delta"), QStringLiteral("memory:hidden")); }, 5000));
+        CHECK(requests.size() == 2);
+        CHECK(editor.setExpanded(QStringLiteral("a"), false));
+        CHECK(editor.setExpanded(QStringLiteral("a"), true));
+        pump();
+        CHECK(requests.size() == 2 && imageHasColors(editor, QStringLiteral("Delta"), QStringLiteral("memory:hidden")));
+    }
+    {
+        Editor editor;
+        Json input = imageDocument(QStringLiteral("memory:old-root"));
+        for (auto &node : input.at("nodes")) if (node.at("id") == "a")
+            node["image"] = Json{{"url", "memory:old-child"}, {"width", 0}, {"height", 0}};
+        QStringList observed;
+        QObject::connect(&editor, &Editor::imageRequested, &editor, [&](const QString &source, quint64 id) {
+            observed.append(source);
+            if (observed.size() == 1) CHECK(editor.loadJson(encoded(imageDocument(QStringLiteral("memory:current")))));
+            else editor.provideImage(source, id, pixels);
+        });
+        CHECK(editor.loadJson(encoded(input)));
+        showEditor(editor);
+        CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, QStringLiteral("memory:current")); }, 5000));
+        CHECK(observed.size() == 2 && observed.back() == QStringLiteral("memory:current"));
+        CHECK(exported(editor) == nativeDocument(imageDocument(QStringLiteral("memory:current"))));
+    }
+    {
+        QPointer<Editor> editor = new Editor;
+        Json input = imageDocument();
+        for (auto &node : input.at("nodes")) if (node.at("id") == "a")
+            node["image"] = Json{{"url", "memory:second"}, {"width", 0}, {"height", 0}};
+        int requests = 0;
+        QObject::connect(editor, &Editor::imageRequested, editor, [&](const QString &, quint64) {
+            ++requests;
+            delete editor.data();
+        });
+        CHECK(editor->loadJson(encoded(input)));
+        CHECK(QTest::qWaitFor([&] { return editor.isNull(); }, 5000));
+        CHECK(requests == 1);
+    }
 }
 
 static void render_case() {
@@ -2148,13 +2647,15 @@ static void hyperlinks_case() {
     };
     class RelativeEditor : public Editor {
     public:
-        QString base;
+        using Editor::Editor;
         mutable QStringList received;
         bool veto = false;
     protected:
         QString resolveDroppedFileUrl(const QString &filePath) const override {
             received.append(filePath);
-            return veto ? QString() : QDir(base).relativeFilePath(filePath);
+            // The hook knows this is a filename, so protect literal # and %
+            // before returning a relative URL reference for later activation.
+            return veto ? QString() : QUrl::fromLocalFile(QDir(resourceBasePath()).relativeFilePath(filePath)).path(QUrl::FullyEncoded);
         }
     };
     {
@@ -2194,8 +2695,9 @@ static void hyperlinks_case() {
         CHECK(editor.selectedNodeId() == a && view.transform() == transform);
     }
     {
-        RelativeEditor editor;
-        editor.base = directory.path();
+        m3::qt::EditorConfig config;
+        config.resourceBasePath = directory.path();
+        RelativeEditor editor(config);
         prepare(editor, false);
         CHECK(editor.selectNode(a));
         // Loading, ordinary field edits, and activation must bypass the resolver.
@@ -2210,12 +2712,12 @@ static void hyperlinks_case() {
         moveFile(editor, localFile, actions, labelPoint(editor, alpha));
         CHECK(editor.received.isEmpty() && exported(editor) == before);
         dropFile(editor, localFile, actions, labelPoint(editor, alpha));
-        const QString relative = QDir(directory.path()).relativeFilePath(path);
+        const QString relative = QUrl::fromLocalFile(QDir(directory.path()).relativeFilePath(path)).path(QUrl::FullyEncoded);
         CHECK(editor.received == QStringList{path});
         CHECK(exported(editor) == withUrl(before, a, relative));
         CHECK(changed.size() == 1 && selected.isEmpty() && activated.isEmpty() && errors.isEmpty());
         QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, linkPoint(editor, alpha));
-        CHECK(activated.size() == 1 && activated.back().at(0).toString() == a && activated.back().at(1).toString() == relative);
+        CHECK(activated.size() == 1 && activated.back().at(0).toString() == a && activated.back().at(1).toString() == fileUrl);
         CHECK(editor.received.size() == 1);
         editor.veto = true;
         const Json resolved = exported(editor);
@@ -2229,8 +2731,9 @@ static void hyperlinks_case() {
         CHECK(changed.isEmpty() && selected.isEmpty() && errors.isEmpty() && activated.size() == 1);
     }
     {
-        RelativeEditor editor;
-        editor.base = directory.path();
+        m3::qt::EditorConfig config;
+        config.resourceBasePath = directory.path();
+        RelativeEditor editor(config);
         prepare(editor, false);
         CHECK(editor.selectNode(b));
         auto &view = graphics(editor);
@@ -2278,7 +2781,8 @@ static void hyperlinks_case() {
         QCoreApplication::sendEvent(view.viewport(), &leave);
         CHECK(editor.received.isEmpty() && exported(editor) == before && editor.selectedNodeId() == b);
         CHECK(changed.isEmpty() && selected.isEmpty() && activated.isEmpty() && errors.isEmpty());
-        const QString root = QStringLiteral("r"), relativeUrl = QDir(directory.path()).relativeFilePath(path);
+        const QString root = QStringLiteral("r");
+        const QString relativeUrl = QUrl::fromLocalFile(QDir(directory.path()).relativeFilePath(path)).path(QUrl::FullyEncoded);
         const QString rootTopic = qs(record(before, "nodes", root).at("topic"));
         enterFile(editor, localFile, actions, blankPoint(view));
         moveFile(editor, localFile, actions, labelPoint(editor, rootTopic));
@@ -2544,6 +3048,62 @@ static void emoji_category_popup_case() {
 
 static void properties_case() {
     emoji_category_popup_case();
+    {
+        Editor imageEditor;
+        CHECK(imageEditor.loadJson(encoded(editorFixture())));
+        showEditor(imageEditor, QSize(1100, 900));
+        auto *field = imageEditor.findChild<QLineEdit *>(QStringLiteral("nodeImageUrl"));
+        auto *url = imageEditor.findChild<QLineEdit *>(QStringLiteral("nodeUrl"));
+        auto *note = imageEditor.findChild<QPlainTextEdit *>(QStringLiteral("nodeNote"));
+        auto *scroll = imageEditor.findChild<QScrollArea *>();
+        CHECK(field && url && note && scroll);
+        CHECK(field->text() == QString::fromUtf8("memory:絵"));
+        Json expected = exported(imageEditor);
+        auto imageRecord = [&](const char *id) -> Json & {
+            for (auto &node : expected.at("nodes")) if (node.at("id") == id) return node;
+            throw std::runtime_error("Missing image node");
+        };
+        QSignalSpy changed(&imageEditor, &Editor::documentChanged);
+        QSignalSpy selected(&imageEditor, &Editor::selectionChanged);
+        const auto zoom = graphics(imageEditor).transform();
+        field->setText(QString::fromUtf8("memory:replacement-世界"));
+        imageRecord("r")["image"]["url"] = "memory:replacement-世界";
+        CHECK(exported(imageEditor) == expected && changed.size() == 1 && selected.isEmpty());
+        const QString rootTopic = qs(record(expected, "nodes", QStringLiteral("r")).at("topic"));
+        const qreal withImageHeight = topicRect(imageEditor, rootTopic).height();
+        field->clear();
+        imageRecord("r")["image"]["url"] = "";
+        CHECK(exported(imageEditor) == expected && changed.size() == 2);
+        CHECK(nodeImageItem(imageEditor, rootTopic, QString::fromUtf8("memory:replacement-世界")) == nullptr);
+        CHECK(topicRect(imageEditor, rootTopic).height() < withImageHeight);
+        CHECK(imageEditor.selectNode(QStringLiteral("a")));
+        CHECK(field->text().isEmpty() && changed.size() == 2);
+        field->setText(QStringLiteral("memory:new"));
+        imageRecord("a")["image"] = Json{{"url", "memory:new"}, {"width", 0}, {"height", 0}};
+        CHECK(exported(imageEditor) == expected && changed.size() == 3);
+        auto *accessible = QAccessible::queryAccessibleInterface(field);
+        CHECK(accessible != nullptr);
+        accessible->setText(QAccessible::Value, QStringLiteral("memory:accessible"));
+        imageRecord("a")["image"]["url"] = "memory:accessible";
+        CHECK(exported(imageEditor) == expected && changed.size() == 4);
+        CHECK(graphics(imageEditor).transform() == zoom);
+        scroll->ensureWidgetVisible(url);
+        url->setFocus();
+        QTest::keyClick(url, Qt::Key_Tab);
+        CHECK(field->hasFocus());
+        scroll->ensureWidgetVisible(field);
+        pump();
+        CHECK(scroll->viewport()->rect().contains(field->mapTo(scroll->viewport(), field->rect().center())));
+        QTest::keyClick(field, Qt::Key_Tab);
+        CHECK(note->hasFocus());
+        CHECK(imageEditor.selectNode(QStringLiteral("r")));
+        field->setFocus();
+        CHECK(field->hasFocus());
+        imageRecord("r")["image"] = Json{{"url", "memory:loaded"}, {"width", 33}, {"height", 22}};
+        CHECK(imageEditor.loadJson(encoded(expected)));
+        CHECK(field->text() == QStringLiteral("memory:loaded") && changed.size() == 5);
+        CHECK(exported(imageEditor) == expected);
+    }
     Editor editor;
     Json input = editorFixture();
     for (auto &entry : input.at("nodes")) if (entry.at("id") == "a")
@@ -3856,6 +4416,97 @@ static void inline_edit_case() {
 }
 
 static void configuration_case() {
+    {
+        QTemporaryDir first, second;
+        CHECK(first.isValid() && second.isValid());
+        const QString imageReference = QString::fromUtf8("images/世界.png");
+        const QString linkReference = QStringLiteral("docs/read me.txt#section");
+        Json input = imageDocument(imageReference);
+        for (auto &node : input.at("nodes")) if (node.at("id") == "r") node["hyperLink"] = utf8(linkReference);
+        const Json literal = nativeDocument(input);
+        auto fileUrl = [](const QString &path) { return QUrl::fromLocalFile(QDir::cleanPath(path)).toString(QUrl::FullyEncoded); };
+        auto checkLink = [&](Editor &target, const QString &expected) {
+            QSignalSpy activated(&target, &Editor::nodeLinkActivated);
+            const QPoint point = nodeLinkPoint(target, QStringLiteral("Image root"));
+            QTest::mouseClick(graphics(target).viewport(), Qt::LeftButton, Qt::NoModifier, point);
+            pump();
+            CHECK(activated.size() == 1 && activated.front().at(0).toString() == QStringLiteral("r"));
+            CHECK(activated.front().at(1).toString() == expected);
+        };
+        m3::qt::EditorConfig firstConfig, secondConfig;
+        firstConfig.resourceBasePath = first.path();
+        secondConfig.resourceBasePath = second.path();
+        Editor left(firstConfig), right(secondConfig);
+        QSignalSpy leftRequests(&left, &Editor::imageRequested), rightRequests(&right, &Editor::imageRequested);
+        CHECK(left.loadJson(encoded(input)) && right.loadJson(encoded(input)));
+        showEditor(left);
+        showEditor(right);
+        CHECK(QTest::qWaitFor([&] { return leftRequests.size() == 1 && rightRequests.size() == 1; }, 5000));
+        CHECK(leftRequests.front().at(0).toString() == fileUrl(first.filePath(imageReference)));
+        CHECK(rightRequests.front().at(0).toString() == fileUrl(second.filePath(imageReference)));
+        checkLink(left, fileUrl(first.filePath(QStringLiteral("docs/read me.txt"))) + QStringLiteral("#section"));
+        checkLink(right, fileUrl(second.filePath(QStringLiteral("docs/read me.txt"))) + QStringLiteral("#section"));
+        CHECK(exported(left) == literal && exported(right) == literal);
+        CHECK(left.toMarkdown() == right.toMarkdown());
+        CHECK(HtmlPage(left.toHtml()).values(QStringLiteral("article")) == HtmlPage(right.toHtml()).values(QStringLiteral("article")));
+        CHECK(HtmlPage(right.toHtml()).values(QStringLiteral("article")).join(QString()).contains(imageReference));
+        CHECK(!left.toMarkdown().contains(first.path()) && !left.toHtml().contains(first.path()));
+
+        struct RestoreDirectory {
+            QString path = QDir::currentPath();
+            ~RestoreDirectory() { QDir::setCurrent(path); }
+        } restore;
+        CHECK(QDir::setCurrent(first.path()));
+        Editor captured;
+        m3::qt::EditorConfig relativeConfig;
+        relativeConfig.resourceBasePath = QStringLiteral("assets/../resources");
+        Editor relative(relativeConfig);
+        const QString capturedBase = QDir::cleanPath(first.path());
+        const QString relativeBase = QDir::cleanPath(first.filePath(QStringLiteral("resources")));
+        CHECK(captured.resourceBasePath() == capturedBase && relative.resourceBasePath() == relativeBase);
+        CHECK(QDir::setCurrent(second.path()));
+        for (auto *target : {&captured, &relative}) {
+            const QString base = target == &captured ? capturedBase : relativeBase;
+            QSignalSpy requests(target, &Editor::imageRequested);
+            CHECK(target->loadJson(encoded(input)));
+            showEditor(*target);
+            CHECK(QTest::qWaitFor([&] { return requests.size() == 1; }, 5000));
+            const QString expected = fileUrl(QDir(base).filePath(imageReference));
+            CHECK(requests.front().at(0).toString() == expected);
+            const quint64 oldId = requests.front().at(1).toULongLong();
+            target->reloadImages();
+            CHECK(QTest::qWaitFor([&] { return requests.size() == 2; }, 5000));
+            CHECK(requests.back().at(0).toString() == expected && requests.back().at(1).toULongLong() > oldId);
+            checkLink(*target, fileUrl(QDir(base).filePath(QStringLiteral("docs/read me.txt"))) + QStringLiteral("#section"));
+            CHECK(exported(*target) == literal && target->resourceBasePath() == base);
+            CHECK(target->newDocument());
+            CHECK(target->loadJson(encoded(input)) && target->resourceBasePath() == base);
+        }
+        // References are URLs: delimiters survive; literal filename delimiters are encoded.
+        const QString absolute = first.filePath(QString::fromUtf8("absolute 世界.png"));
+        const std::vector<std::pair<QString, QString>> references{
+            {QString::fromUtf8("../images/世界.png"), fileUrl(first.filePath(QString::fromUtf8("../images/世界.png")))},
+            {QString::fromUtf8("file:images/世界.png"), fileUrl(first.filePath(imageReference))},
+            {QStringLiteral("images/a b.png?version=2#part"), fileUrl(first.filePath(QStringLiteral("images/a b.png"))) + QStringLiteral("?version=2#part")},
+            {QStringLiteral("images/hash%23question%3Fpercent%25.png"), fileUrl(first.filePath(QStringLiteral("images/hash#question?percent%.png")))},
+            {absolute, fileUrl(absolute)},
+            {QUrl::fromLocalFile(absolute).toString(QUrl::FullyEncoded), fileUrl(absolute)},
+            {QStringLiteral("https://example.invalid/a%20b.png?q=1#part"), QStringLiteral("https://example.invalid/a%20b.png?q=1#part")},
+            {QStringLiteral("http://example.invalid/image.png"), QStringLiteral("http://example.invalid/image.png")},
+            {QString::fromUtf8("opaque:世界/<literal>?q=1"), QString::fromUtf8("opaque:世界/<literal>?q=1")},
+            {QStringLiteral("images/bad%escape.png"), QStringLiteral("images/bad%escape.png")}
+        };
+        for (const auto &reference : references) {
+            Json document = imageDocument(reference.first);
+            for (auto &node : document.at("nodes")) if (node.at("id") == "r") node["hyperLink"] = utf8(reference.first);
+            QSignalSpy requests(&left, &Editor::imageRequested);
+            CHECK(left.loadJson(encoded(document)));
+            CHECK(QTest::qWaitFor([&] { return requests.size() == 1; }, 5000));
+            CHECK(requests.front().at(0).toString() == reference.second);
+            checkLink(left, reference.second);
+            CHECK(exported(left) == nativeDocument(document));
+        }
+    }
     auto configured = [] {
         m3::qt::EditorConfig config;
         config.shortcuts.addChild = {QKeySequence(Qt::CTRL | Qt::Key_J), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_J)};
@@ -4322,6 +4973,258 @@ static void controls_case() {
     topicKey(canceled, Qt::Key_Escape);
     CHECK(exported(canceled) == created && canceled.selectedNodeId() == blank && creationChanges.size() == 1);
 }
+
+#ifdef M3_QT_TEST_DEMO
+class ImageHttpServer final : public QTcpServer {
+public:
+    QByteArray png, alternate, oversizedPixels;
+    QPointer<QTcpSocket> delayed;
+    qsizetype overflowBytes = 0;
+    bool overflowDisconnected = false, declaredDisconnected = false;
+    explicit ImageHttpServer(QByteArray image, QByteArray other, QByteArray large)
+        : png(std::move(image)), alternate(std::move(other)), oversizedPixels(std::move(large)) {
+        CHECK(listen(QHostAddress::LocalHost, 0));
+        QObject::connect(this, &QTcpServer::newConnection, this, [this] {
+            while (hasPendingConnections()) {
+                auto *socket = nextPendingConnection();
+                socket->setParent(this);
+                QObject::connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+                QObject::connect(socket, &QTcpSocket::readyRead, socket,
+                    [this, socket, headers = QByteArray(), handled = false]() mutable {
+                    if (handled) return;
+                    headers += socket->readAll();
+                    if (!headers.contains("\r\n\r\n")) return;
+                    handled = true;
+                    const QByteArray path = headers.split(' ').value(1);
+                    if (path == "/delay") { delayed = socket; return; }
+                    if (path == "/404") { respond(socket, QByteArray("missing"), 404); return; }
+                    if (path == "/corrupt") { respond(socket, QByteArray("not an image")); return; }
+                    if (path == "/large") { respond(socket, oversizedPixels); return; }
+                    if (path == "/declared") {
+                        QObject::connect(socket, &QTcpSocket::disconnected, this, [this] { declaredDisconnected = true; });
+                        socket->write("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 16777217\r\n\r\n");
+                        return;
+                    }
+                    if (path == "/chunked") {
+                        overflowBytes = 0;
+                        overflowDisconnected = false;
+                        QObject::connect(socket, &QTcpSocket::disconnected, this, [this] { overflowDisconnected = true; });
+                        socket->write("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+                        auto *timer = new QTimer(socket);
+                        timer->setInterval(0);
+                        QObject::connect(timer, &QTimer::timeout, socket, [this, socket, timer] {
+                            if (socket->state() != QAbstractSocket::ConnectedState) { timer->stop(); return; }
+                            while (socket->bytesToWrite() <= 256 * 1024) {
+                                // Fill a bounded send window rather than pacing one chunk per test wait tick.
+                                // A valid PNG prefix exposes an incorrect unbounded read/decode.
+                                const QByteArray chunk = overflowBytes == 0 ? png : QByteArray(64 * 1024, 'x');
+                                socket->write(QByteArray::number(chunk.size(), 16) + "\r\n");
+                                socket->write(chunk);
+                                socket->write("\r\n");
+                                overflowBytes += chunk.size();
+                                if (overflowBytes >= 32 * 1024 * 1024) {
+                                    timer->stop();
+                                    socket->write("0\r\n\r\n");
+                                    socket->disconnectFromHost();
+                                    break;
+                                }
+                            }
+                        });
+                        timer->start();
+                        return;
+                    }
+                    if (path == "/redirect") {
+                        socket->write("HTTP/1.1 302 Found\r\nLocation: /ok\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        socket->disconnectFromHost();
+                        return;
+                    }
+                    respond(socket, path == "/alternate" ? alternate : png);
+                });
+            }
+        });
+    }
+    QString url(const QString &path) const {
+        return QStringLiteral("http://127.0.0.1:%1%2").arg(serverPort()).arg(path);
+    }
+    void respond(QTcpSocket *socket, const QByteArray &bytes, int status = 200) {
+        CHECK(socket != nullptr);
+        socket->write("HTTP/1.1 " + QByteArray::number(status) + (status == 200 ? " OK\r\n" : " Not Found\r\n") +
+                      "Content-Type: image/png\r\nContent-Length: " + QByteArray::number(bytes.size()) +
+                      "\r\nConnection: close\r\n\r\n");
+        socket->write(bytes);
+        socket->disconnectFromHost();
+    }
+};
+static void demo_images_case() {
+    QTemporaryDir first, second;
+    CHECK(first.isValid() && second.isValid());
+    const QString topic = QStringLiteral("Image root");
+    const QImage pixels = imagePixels();
+    const QColor green(13, 181, 67), purple(197, 29, 163);
+    const QImage other = imagePixels(green, purple);
+    auto pngBytes = [](const QImage &image) {
+        QByteArray bytes;
+        QBuffer buffer(&bytes);
+        CHECK(buffer.open(QIODevice::WriteOnly) && image.save(&buffer, "PNG"));
+        return bytes;
+    };
+    const QByteArray png = pngBytes(pixels), alternate = pngBytes(other);
+    // A valid image exceeds the pixel budget by one column while its encoding stays small.
+    QImage large(4097, 4096, QImage::Format_Mono);
+    large.setColor(0, qRgb(231, 37, 53));
+    large.setColor(1, qRgb(29, 71, 223));
+    large.fill(0);
+    const QByteArray oversizedPixels = pngBytes(large);
+    CHECK(oversizedPixels.size() < 16 * 1024 * 1024);
+    writeFile(first.filePath(QStringLiteral("image.png")), png);
+    writeFile(second.filePath(QStringLiteral("image.png")), alternate);
+    const QString unicodeFile = first.filePath(QString::fromUtf8("絵 世界.png"));
+    writeFile(unicodeFile, png);
+    writeFile(first.filePath(QStringLiteral("corrupt.png")), QByteArray("not an image"));
+    writeFile(first.filePath(QStringLiteral("large.png")), oversizedPixels);
+    writeFile(first.filePath(QStringLiteral("long.png")), png + QByteArray(16 * 1024 * 1024, 'x'));
+    const QString mapPath = first.filePath(QStringLiteral("map.json"));
+    m3::qt::EditorConfig config;
+    config.resourceBasePath = first.path();
+    DemoWindow window(config);
+    showDemo(window);
+    auto &editor = embedded(window);
+    auto openReference = [&](const QString &reference) {
+        writeFile(mapPath, encoded(imageDocument(reference)));
+        CHECK(window.openFile(mapPath));
+        CHECK(!window.isWindowModified());
+    };
+    for (const QString &reference : {QStringLiteral("image.png"), QUrl::fromLocalFile(unicodeFile).toString(QUrl::FullyEncoded), unicodeFile}) {
+        openReference(reference);
+        const Json before = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, reference); }, 5000));
+        checkImageLayout(editor, QSizeF(120, 60), reference);
+        CHECK(exported(editor) == before && changed.isEmpty() && !window.isWindowModified());
+    }
+    openReference(QStringLiteral("image.png"));
+    CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, QStringLiteral("image.png")); }, 5000));
+    const Json relativeDocument = exported(editor);
+    const QString movedMap = second.filePath(QStringLiteral("saved.json"));
+    dialogs({[&](QDialog *dialog) {
+        auto *file = qobject_cast<QFileDialog *>(dialog);
+        CHECK(file != nullptr);
+        auto *name = file->findChild<QLineEdit *>(QStringLiteral("fileNameEdit"));
+        CHECK(name != nullptr);
+        name->setText(movedMap);
+        static_cast<QDialog *>(file)->accept();
+    }}, [&] { hostAction(window, QKeySequence::SaveAs).trigger(); });
+    CHECK(sameFile(window.currentFilePath(), movedMap));
+    CHECK(fileDocument(movedMap) == relativeDocument);
+    editor.reloadImages();
+    CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, QStringLiteral("image.png")); }, 5000));
+    CHECK(editor.resourceBasePath() == QDir::cleanPath(first.path()) && !window.isWindowModified());
+    m3::qt::EditorConfig secondConfig;
+    secondConfig.resourceBasePath = second.path();
+    DemoWindow secondWindow(secondConfig);
+    CHECK(secondWindow.openFile(movedMap));
+    showDemo(secondWindow);
+    CHECK(QTest::qWaitFor([&] {
+        return imageHasColors(embedded(secondWindow), topic, QStringLiteral("image.png"), green, purple);
+    }, 5000));
+    CHECK(exported(embedded(secondWindow)) == relativeDocument && !secondWindow.isWindowModified());
+    window.activateWindow();
+    auto waitUnavailable = [&](const QString &reference, const QImage &pending) {
+        CHECK(QTest::qWaitFor([&] {
+            // Drain newly posted transfer events in a bounded slice: qWaitFor's
+            // single event pass plus sleep otherwise artificially throttles 16 MiB.
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+            return paintScene(editor, nodeImageRect(editor, topic, reference)) != pending;
+        }, 5000));
+        CHECK(imageHandle(editor) == nullptr && !imageHasColors(editor, topic, reference));
+        CHECK(editor.lastError().isEmpty() && QApplication::activeModalWidget() == nullptr);
+    };
+    for (const QString &reference : {QStringLiteral("missing.png"), QStringLiteral("corrupt.png"),
+                                     QStringLiteral("large.png"), QStringLiteral("long.png"), QStringLiteral("data:image/png;base64,AA==")}) {
+        openReference(reference);
+        const Json before = exported(editor);
+        const QImage pending = paintScene(editor, nodeImageRect(editor, topic, reference));
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        waitUnavailable(reference, pending);
+        CHECK(exported(editor) == before && changed.isEmpty() && !window.isWindowModified());
+    }
+
+    ImageHttpServer server(png, alternate, oversizedPixels);
+    const QString webMap = first.filePath(QStringLiteral("web.json"));
+    auto *field = editor.findChild<QLineEdit *>(QStringLiteral("nodeImageUrl"));
+    CHECK(field != nullptr);
+    auto enterUrl = [&](const QString &source) {
+        CHECK(editor.selectNode(QStringLiteral("r")));
+        field->setText(source);
+        CHECK(window.isWindowModified());
+        CHECK(window.saveFile(webMap));
+        CHECK(!window.isWindowModified());
+    };
+    const QString webUrl = server.url(QStringLiteral("/ok"));
+    enterUrl(webUrl);
+    const Json webDocument = exported(editor);
+    QSignalSpy changed(&editor, &Editor::documentChanged);
+    CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, webUrl); }, 5000));
+    CHECK(exported(editor) == webDocument && changed.isEmpty() && !window.isWindowModified());
+    shortcut(editor, Qt::Key_0, Qt::ControlModifier);
+    const QPoint end = startImageResize(editor, QPointF(60, 30));
+    CHECK(exported(editor) == webDocument && changed.isEmpty());
+    releaseImageResize(editor, end);
+    checkImageLayout(editor, QSizeF(180, 90), webUrl);
+    CHECK(changed.size() == 1 && window.isWindowModified());
+    CHECK(window.saveFile(webMap));
+    const Json resized = fileDocument(webMap);
+    CHECK(record(resized, "nodes", QStringLiteral("r")).at("image") ==
+          Json({{"url", utf8(webUrl)}, {"width", 180}, {"height", 90}}));
+    CHECK(window.openFile(webMap));
+    CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, webUrl); }, 5000));
+    checkImageLayout(editor, QSizeF(180, 90), webUrl);
+    CHECK(exported(editor) == resized && !window.isWindowModified());
+
+    for (const QString &path : {QStringLiteral("/404"), QStringLiteral("/corrupt"), QStringLiteral("/large"),
+                                QStringLiteral("/declared"), QStringLiteral("/chunked")}) {
+        const QString source = server.url(path);
+        enterUrl(source);
+        const Json before = exported(editor);
+        const QImage pending = paintScene(editor, nodeImageRect(editor, topic, source));
+        changed.clear();
+        waitUnavailable(source, pending);
+        CHECK(exported(editor) == before && changed.isEmpty() && !window.isWindowModified());
+        if (path == QStringLiteral("/declared")) CHECK(QTest::qWaitFor([&] { return server.declaredDisconnected; }, 5000));
+        if (path == QStringLiteral("/chunked")) {
+            CHECK(QTest::qWaitFor([&] { return server.overflowDisconnected; }, 5000));
+            CHECK(server.overflowBytes > 16 * 1024 * 1024 && server.overflowBytes < 32 * 1024 * 1024);
+        }
+    }
+    const QString redirected = server.url(QStringLiteral("/redirect"));
+    enterUrl(redirected);
+    CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, redirected); }, 5000));
+    CHECK(!window.isWindowModified());
+    const QString delayed = server.url(QStringLiteral("/delay"));
+    enterUrl(delayed);
+    CHECK(QTest::qWaitFor([&] { return !server.delayed.isNull(); }, 5000));
+    const QString current = server.url(QStringLiteral("/alternate"));
+    enterUrl(current);
+    CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, current, green, purple); }, 5000));
+    const Json currentDocument = exported(editor);
+    changed.clear();
+    server.respond(server.delayed, png);
+    CHECK(QTest::qWaitFor([&] { return server.delayed.isNull(); }, 5000));
+    pump();
+    CHECK(imageHasColors(editor, topic, current, green, purple));
+    CHECK(exported(editor) == currentDocument && changed.isEmpty() && !window.isWindowModified());
+    CHECK(window.newFile());
+    CHECK(editor.resourceBasePath() == QDir::cleanPath(first.path()));
+    CHECK(window.openFile(webMap) && editor.resourceBasePath() == QDir::cleanPath(first.path()));
+    CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, current, green, purple); }, 5000));
+    // A pending socket is canceled with its window; no raw editor callback survives.
+    auto dying = std::make_unique<DemoWindow>(config);
+    CHECK(embedded(*dying).loadJson(encoded(imageDocument(delayed))));
+    CHECK(QTest::qWaitFor([&] { return !server.delayed.isNull(); }, 5000));
+    dying.reset();
+    CHECK(QTest::qWaitFor([&] { return server.delayed.isNull(); }, 5000));
+}
+#endif
 
 #ifdef M3_QT_TEST_DEMO
 static void demo_html_case() {
@@ -4857,6 +5760,7 @@ int main(int argc, char **argv) {
         else if (name == "tree_edits") { tree_edits_case(); tree_edits_scene(); }
         else if (name == "collapse") { collapse_case(); collapse_scene(); }
         else if (name == "graph_edits") { graph_edits_case(); graph_edits_scene(); }
+        else if (name == "images") images_case();
         else if (name == "render") { render_case(); routing_case(); }
         else if (name == "navigation") navigation_case();
         else if (name == "node_drag") node_drag_case();
@@ -4868,6 +5772,7 @@ int main(int argc, char **argv) {
         else if (name == "shortcuts") shortcuts_case();
         else if (name == "lifetime") lifetime_case();
 #ifdef M3_QT_TEST_DEMO
+        else if (name == "demo_images") demo_images_case();
         else if (name == "demo_html") demo_html_case();
         else if (name == "demo_markdown") demo_markdown_case();
         else if (name == "demo_files") demo_files_case();

@@ -44,11 +44,12 @@ install(FILES ../../include/m3/qt/editor.h DESTINATION ${CMAKE_INSTALL_INCLUDEDI
 install(EXPORT m3QtTargets NAMESPACE m3:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/m3)
 
 if(M3_BUILD_QT_DEMO)
+    find_package(Qt6 6.5 REQUIRED COMPONENTS Network)
     add_executable(m3_qt_demo
         ../../examples/qt_demo.cpp
         ../../examples/qt_demo_window.h
         ../../examples/qt_demo_window.cpp)
-    target_link_libraries(m3_qt_demo PRIVATE m3::qt_editor)
+    target_link_libraries(m3_qt_demo PRIVATE m3::qt_editor Qt6::Network)
     m3_target_defaults(m3_qt_demo)
     set_target_properties(m3_qt_demo PROPERTIES
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)

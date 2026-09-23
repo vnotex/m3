@@ -88,6 +88,81 @@ protected:
 private:
     bool hovered = false;
 };
+QSizeF imageSize(const NodeImage &image, const QImage &pixels) {
+    if (pixels.isNull() && image.width > 0 && image.height > 0) {
+        const double longest = std::max(image.width, image.height);
+        const double bounded = std::min(longest, 4096.0);
+        return {image.width / longest * bounded, image.height / longest * bounded};
+    }
+    const double naturalWidth = pixels.isNull() ? 120.0 : pixels.width();
+    const double naturalHeight = pixels.isNull() ? 90.0 : pixels.height();
+    const double naturalLongest = std::max(naturalWidth, naturalHeight);
+    const double w = naturalWidth / naturalLongest, h = naturalHeight / naturalLongest;
+    double longest = 4096;
+    // Clamp before division so even imported DBL_MAX dimensions stay finite.
+    if (image.width > 0) longest = std::min(longest, std::min(image.width, 4096.0) / w);
+    if (image.height > 0) longest = std::min(longest, std::min(image.height, 4096.0) / h);
+    if (image.width <= 0 && image.height <= 0) longest = std::min(240.0, naturalLongest);
+    return {w * longest, h * longest};
+}
+class ImageResizeHandle final : public QGraphicsItem {
+public:
+    ImageResizeHandle(const QPalette &palette, QGraphicsItem *parent)
+        : QGraphicsItem(parent), colors(palette) {
+        setFlag(ItemIgnoresTransformations);
+        setAcceptedMouseButtons(Qt::NoButton);
+        setCursor(Qt::SizeFDiagCursor);
+        setToolTip(QCoreApplication::translate("MindMapView", "Resize image"));
+        hide();
+    }
+    QRectF boundingRect() const override { return QRectF(-5, -5, 10, 10); }
+    void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
+        p->setPen(QPen(colors.color(QPalette::Highlight), 1));
+        p->setBrush(colors.color(QPalette::HighlightedText));
+        p->drawRect(boundingRect().adjusted(0.5, 0.5, -0.5, -0.5));
+    }
+private:
+    QPalette colors;
+};
+class NodeImageItem final : public QGraphicsItem {
+public:
+    NodeImageItem(const NodePresentation &node, const QPalette &palette, QGraphicsItem *parent)
+        : QGraphicsItem(parent), pixels(node.imagePixels), rect(node.imageRectangle),
+          colors(palette), failed(node.imageFailed) {
+        setAcceptedMouseButtons(Qt::NoButton);
+        setToolTip(QStringLiteral("<qt>%1</qt>").arg(node.image->url.toHtmlEscaped()));
+        if (!pixels.isNull()) {
+            handle = new ImageResizeHandle(palette, this);
+            handle->setPos(rect.bottomRight());
+        }
+    }
+    QRectF boundingRect() const override { return rect; }
+    void setRectangle(const QRectF &rectangle) {
+        prepareGeometryChange();
+        rect = rectangle;
+        if (handle) handle->setPos(rect.bottomRight());
+        update();
+    }
+    void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
+        if (!pixels.isNull()) {
+            p->setRenderHint(QPainter::SmoothPixmapTransform);
+            p->drawImage(rect, pixels, QRectF(0, 0, pixels.width(), pixels.height()));
+        } else {
+            p->setPen(QPen(colors.color(QPalette::Mid), 1));
+            p->setBrush(colors.color(QPalette::AlternateBase));
+            p->drawRect(rect.adjusted(0.5, 0.5, -0.5, -0.5));
+            p->setPen(colors.color(QPalette::Text));
+            p->drawText(rect.adjusted(4, 4, -4, -4), Qt::AlignCenter | Qt::TextWordWrap,
+                QCoreApplication::translate("MindMapView", failed ? "Image unavailable" : "Loading image"));
+        }
+    }
+    QImage pixels;
+    ImageResizeHandle *handle = nullptr;
+private:
+    QRectF rect;
+    QPalette colors;
+    bool failed;
+};
 class NodeItem final : public QGraphicsItem {
 public:
     QString id, hyperlink;
@@ -98,10 +173,14 @@ public:
     QPalette colors;
     QColor backgroundColor;
     QGraphicsTextItem *label;
+    std::optional<NodeImage> image;
+    NodeImageItem *imageItem = nullptr;
     NodeItem(NodePresentation node, const QPalette &palette)
         : id(node.id), hyperlink(node.hyperlink), expanded(node.expanded), hasChildren(node.hasChildren),
           rect(QPointF(), node.rectangle.size()), colors(palette),
           backgroundColor(node.style.backgroundColor.isValid() ? node.style.backgroundColor : palette.color(QPalette::Button)) {
+        image = node.image;
+        if (image && !image->url.isEmpty()) imageItem = new NodeImageItem(node, palette, this);
         setPos(node.rectangle.topLeft());
         setZValue(2);
         setFlag(ItemIsSelectable);
@@ -134,6 +213,11 @@ public:
             auto *indicator = new NodeLinkItem(hyperlink, this);
             indicator->setPos(rect.right() - 32 - (hasChildren ? 18 : 0), rect.center().y() - 10);
         }
+    }
+    QVariant itemChange(GraphicsItemChange change, const QVariant &value) override {
+        if (change == ItemSelectedHasChanged && imageItem && imageItem->handle)
+            imageItem->handle->setVisible(value.toBool());
+        return QGraphicsItem::itemChange(change, value);
     }
     QRectF affordance() const { return QRectF(rect.right() - 22, rect.center().y() - 8, 18, 16); }
     QRectF boundingRect() const override { return rect.adjusted(-2, -2, 2, 2); }
@@ -470,6 +554,7 @@ MindMapView::MindMapView(QWidget *parent) : QGraphicsView(parent) {
     setBackgroundBrush(palette().brush(QPalette::Base));
 }
 MindMapView::~MindMapView() {
+    clearImageResize();
     qApp->removeEventFilter(this);
     if (topicEditor) {
         disconnect(topicEditor, nullptr, this, nullptr);
@@ -578,11 +663,11 @@ void MindMapView::updateTopicEditorGeometry() {
     topicEditor->setGeometry(x, y, width, height);
 }
 bool MindMapView::event(QEvent *event) {
-    if (handleNodeLinkEvent(event) || handleNodeDragEvent(event)) return true;
+    if (handleImageResizeEvent(event) || handleNodeLinkEvent(event) || handleNodeDragEvent(event)) return true;
     return QGraphicsView::event(event);
 }
 bool MindMapView::viewportEvent(QEvent *event) {
-    if (handleNodeLinkEvent(event) || handleNodeDragEvent(event)) return true;
+    if (handleImageResizeEvent(event) || handleNodeLinkEvent(event) || handleNodeDragEvent(event)) return true;
     return QGraphicsView::viewportEvent(event);
 }
 void MindMapView::dragEnterEvent(QDragEnterEvent *event) {
@@ -627,6 +712,57 @@ void MindMapView::dropEvent(QDropEvent *event) {
     event->accept();
     // The receiver may replace the scene or destroy the editor synchronously.
     emit fileDropped(nodeId, filePath);
+}
+void MindMapView::clearImageResize() {
+    if (resizedNodeId.isEmpty()) return;
+    if (resizedImageItem) static_cast<NodeImageItem *>(resizedImageItem)->setRectangle(initialImageRectangle);
+    resizedImageItem = nullptr;
+    resizedNodeId.clear();
+    resizedImageUrl.clear();
+    imageResizeDragging = false;
+    updatePanCursor(viewport()->mapFromGlobal(QCursor::pos()));
+}
+bool MindMapView::handleImageResizeEvent(QEvent *event) {
+    if (resizedNodeId.isEmpty()) return false;
+    switch (event->type()) {
+    case QEvent::ShortcutOverride:
+    case QEvent::KeyPress:
+        if (static_cast<QKeyEvent *>(event)->key() != Qt::Key_Escape) return false;
+        if (event->type() == QEvent::KeyPress) clearImageResize();
+        event->accept();
+        return true;
+    case QEvent::ContextMenu:
+        clearImageResize();
+        event->accept();
+        return true;
+    case QEvent::FocusOut:
+    case QEvent::Hide:
+    case QEvent::UngrabMouse:
+    case QEvent::WindowDeactivate:
+    case QEvent::Resize:
+        clearImageResize();
+        break;
+    default: break;
+    }
+    return false;
+}
+bool MindMapView::updateImageResize(const QPoint &position) {
+    if (!resizedImageItem) return false;
+    if (!imageResizeDragging && (position - imagePressPosition).manhattanLength() < QApplication::startDragDistance()) return true;
+    const QPointF v(initialImageRectangle.width(), initialImageRectangle.height());
+    const QPointF delta = mapToScene(position) - imagePressScenePosition;
+    const qreal longest = std::max(v.x(), v.y());
+    const qreal denominator = QPointF::dotProduct(v, v);
+    if (longest <= 0 || denominator <= 0) return false;
+    const qreal scale = QPointF::dotProduct(v + delta, v) / denominator;
+    if (!std::isfinite(scale)) return false;
+    const qreal bounded = std::clamp(scale, 16 / longest, 4096 / longest);
+    const QSizeF size(v.x() * bounded, v.y() * bounded);
+    if (!std::isfinite(size.width()) || !std::isfinite(size.height())) return false;
+    imageResizeDragging = true;
+    resizedImageSize = size;
+    static_cast<NodeImageItem *>(resizedImageItem)->setRectangle(QRectF(initialImageRectangle.topLeft(), size));
+    return true;
 }
 void MindMapView::clearNodeLinkPress() {
     pressedLinkNodeId.clear();
@@ -738,6 +874,7 @@ bool MindMapView::eventFilter(QObject *watched, QEvent *event) {
     return false;
 }
 void MindMapView::scrollContentsBy(int dx, int dy) {
+    clearImageResize();
     QGraphicsView::scrollContentsBy(dx, dy);
     updateTopicEditorGeometry();
 }
@@ -794,11 +931,17 @@ void MindMapView::prepare(NodePresentation &node) const {
         }
         contentBottom = rowTop + rowHeight;
     }
+    if (node.image && !node.image->url.isEmpty()) {
+        node.imageRectangle = QRectF(QPointF(12, contentBottom + 8), imageSize(*node.image, node.imagePixels));
+        contentWidth = qMax(contentWidth, node.imageRectangle.width());
+        contentBottom = node.imageRectangle.bottom();
+    }
     node.rectangle = QRectF(0, 0, qMax(qreal(72), contentWidth + 24 +
                                     (node.hyperlink.isEmpty() ? 0 : 24) + (node.hasChildren ? 18 : 0)),
                             qMax(qreal(36), contentBottom + 8));
 }
 void MindMapView::install(Presentation presentation, bool fit) {
+    clearImageResize();
     clearNodeLinkPress();
     QHash<QString, QString> parents;
     for (const auto &edge : presentation.treeEdges) parents.insert(edge.target, edge.source);
@@ -857,6 +1000,7 @@ QImage MindMapView::renderImage(Presentation presentation) const {
     return image;
 }
 void MindMapView::showError(const QString &message) {
+    clearImageResize();
     clearNodeLinkPress();
     finishTopicEdit(false);
     clearNodeDrag();
@@ -870,6 +1014,7 @@ void MindMapView::showError(const QString &message) {
     fitContents();
 }
 void MindMapView::setSelection(const QString &node, const QString &link) {
+    if (node != resizedNodeId || !link.isEmpty()) clearImageResize();
     if (topicEditor && (node != editedId || !link.isEmpty())) finishTopicEdit(false);
     for (auto *item : scene()->items()) {
         if (auto *n = dynamic_cast<NodeItem *>(item)) n->setSelected(n->id == node);
@@ -897,6 +1042,7 @@ void MindMapView::centerNode(const QString &id) {
     }
 }
 void MindMapView::fitContents() {
+    clearImageResize();
     if (!isVisible() || viewport()->width() <= 0 || viewport()->height() <= 0) { pendingFit = true; return; }
     pendingFit = false;
     setSceneRect(scene()->sceneRect());
@@ -904,6 +1050,7 @@ void MindMapView::fitContents() {
     updateTopicEditorGeometry();
 }
 void MindMapView::zoom(qreal factor) {
+    clearImageResize();
     pendingFit = false;
     const QPointF center = sceneCenter(*this, viewport()->size());
     const qreal current = transform().m11();
@@ -913,6 +1060,7 @@ void MindMapView::zoom(qreal factor) {
     updateTopicEditorGeometry();
 }
 void MindMapView::resetZoom() {
+    clearImageResize();
     pendingFit = false;
     const QPointF center = sceneCenter(*this, viewport()->size());
     resetTransform(); preserveCenter(center);
@@ -953,6 +1101,7 @@ void MindMapView::clearNodeDrag() {
 }
 void MindMapView::updatePanCursor(const QPoint &position) {
     if (panning != Qt::NoButton) viewport()->setCursor(Qt::ClosedHandCursor);
+    else if (!resizedNodeId.isEmpty() || dynamic_cast<ImageResizeHandle *>(itemAt(position))) viewport()->setCursor(Qt::SizeFDiagCursor);
     else if (nodeDragging) viewport()->setCursor(dropTargetId.isEmpty() ? Qt::ForbiddenCursor : Qt::DragMoveCursor);
     else if (dynamic_cast<NodeLinkItem *>(itemAt(position))) viewport()->setCursor(Qt::PointingHandCursor);
     else if (!targetAt(position)) viewport()->setCursor(Qt::OpenHandCursor);
@@ -994,6 +1143,52 @@ bool MindMapView::pick(QMouseEvent *event, bool activate) {
     return target == Target::Empty;
 }
 void MindMapView::mousePressEvent(QMouseEvent *event) {
+    if (!resizedNodeId.isEmpty()) {
+        if (event->button() == Qt::RightButton) clearImageResize();
+        event->accept();
+        return;
+    }
+    if (event->button() == Qt::LeftButton && panning == Qt::NoButton &&
+        draggedNodeId.isEmpty() && pressedLinkNodeId.isEmpty()) {
+        QString id, url;
+        QSizeF original;
+        {
+            if (auto *handle = dynamic_cast<ImageResizeHandle *>(itemAt(event->position().toPoint()))) {
+                auto *node = static_cast<NodeItem *>(handle->parentItem()->parentItem());
+                if (node->isSelected() && node->image) {
+                    id = node->id;
+                    url = node->image->url;
+                    original = QSizeF(node->image->width, node->image->height);
+                }
+            }
+        }
+        if (!id.isEmpty()) {
+            event->accept();
+            QPointer<MindMapView> alive(this);
+            finishTopicEdit(true);
+            if (!alive) return;
+            setFocus(Qt::MouseFocusReason);
+            // Reacquire by semantic identity, never an old pointer or hit coordinate.
+            for (auto *item : scene()->items()) {
+                auto *node = dynamic_cast<NodeItem *>(item);
+                if (!node || node->id != id || !node->isSelected() || !node->image ||
+                    node->image->url != url || QSizeF(node->image->width, node->image->height) != original ||
+                    node->imageItem == nullptr || !node->imageItem->handle || !node->imageItem->handle->isVisible()) continue;
+                resizedNodeId = id;
+                resizedImageUrl = url;
+                originalImageSize = original;
+                resizedImageItem = node->imageItem;
+                initialImageRectangle = node->imageItem->boundingRect();
+                resizedImageSize = initialImageRectangle.size();
+                imagePressPosition = event->position().toPoint();
+                imagePressScenePosition = mapToScene(imagePressPosition);
+                imageResizeDragging = false;
+                break;
+            }
+            updatePanCursor(event->position().toPoint());
+            return;
+        }
+    }
     if (panning != Qt::NoButton || !draggedNodeId.isEmpty() || !pressedLinkNodeId.isEmpty()) {
         event->accept();
         return;
@@ -1046,6 +1241,11 @@ void MindMapView::mousePressEvent(QMouseEvent *event) {
     updatePanCursor(event->position().toPoint());
 }
 void MindMapView::mouseMoveEvent(QMouseEvent *event) {
+    if (!resizedNodeId.isEmpty()) {
+        if (!event->buttons().testFlag(Qt::LeftButton) || !updateImageResize(event->position().toPoint())) clearImageResize();
+        event->accept();
+        return;
+    }
     if (!pressedLinkNodeId.isEmpty()) {
         const QPoint position = event->position().toPoint();
         if (!event->buttons().testFlag(Qt::LeftButton) ||
@@ -1083,6 +1283,23 @@ void MindMapView::mouseMoveEvent(QMouseEvent *event) {
     updatePanCursor(event->position().toPoint());
 }
 void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
+    if (!resizedNodeId.isEmpty()) {
+        event->accept();
+        if (event->button() != Qt::LeftButton) return;
+        const bool validPosition = updateImageResize(event->position().toPoint());
+        const QString id = resizedNodeId, url = resizedImageUrl;
+        const QSizeF original = originalImageSize, size = resizedImageSize;
+        bool commit = false;
+        if (validPosition && imageResizeDragging && size != initialImageRectangle.size()) {
+            auto *node = static_cast<NodeItem *>(resizedImageItem->parentItem());
+            commit = node->isSelected() && node->id == id && node->image && node->image->url == url &&
+                QSizeF(node->image->width, node->image->height) == original;
+        }
+        clearImageResize();
+        // Receivers may rebuild or destroy this view. Keep only copied arguments.
+        if (commit) emit imageResizeRequested(id, url, original, size);
+        return;
+    }
     if (!pressedLinkNodeId.isEmpty()) {
         const QPoint position = event->position().toPoint();
         event->accept();
@@ -1123,6 +1340,11 @@ void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
     updatePanCursor(event->position().toPoint());
 }
 void MindMapView::mouseDoubleClickEvent(QMouseEvent *event) {
+    if (!resizedNodeId.isEmpty() || dynamic_cast<ImageResizeHandle *>(itemAt(event->position().toPoint()))) {
+        clearImageResize();
+        event->accept();
+        return;
+    }
     const bool nodeLink = !pressedLinkNodeId.isEmpty() ||
         dynamic_cast<NodeLinkItem *>(itemAt(event->position().toPoint()));
     clearNodeLinkPress();
@@ -1136,6 +1358,7 @@ void MindMapView::mouseDoubleClickEvent(QMouseEvent *event) {
     else QGraphicsView::mouseDoubleClickEvent(event);
 }
 void MindMapView::wheelEvent(QWheelEvent *event) {
+    clearImageResize();
     if (event->modifiers().testFlag(Qt::ControlModifier)) {
         const QPoint position = event->position().toPoint();
         const QPointF before = mapToScene(position);
@@ -1154,6 +1377,7 @@ void MindMapView::preserveCenter(const QPointF &center) {
     centerOn(center);
 }
 void MindMapView::resizeEvent(QResizeEvent *event) {
+    clearImageResize();
     const QPointF center = sceneCenter(*this, event->oldSize());
     QGraphicsView::resizeEvent(event);
     if (pendingFit) fitContents();
@@ -1168,6 +1392,7 @@ void MindMapView::showEvent(QShowEvent *event) {
 void MindMapView::changeEvent(QEvent *event) {
     QGraphicsView::changeEvent(event);
     if (event->type() == QEvent::ActivationChange && !isActiveWindow()) {
+        clearImageResize();
         clearNodeLinkPress();
         clearNodeDrag();
     }

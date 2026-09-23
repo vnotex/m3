@@ -4,6 +4,7 @@
 #include "m3/m3.h"
 #include "presentation.h"
 #include <QSet>
+#include <QHash>
 #include <memory>
 
 namespace m3::qt {
@@ -11,7 +12,11 @@ class MindMapView;
 class MindMapController : public QObject {
     Q_OBJECT
 public:
-    explicit MindMapController(MindMapView &view, QObject *parent);
+    explicit MindMapController(MindMapView &view, const QString &resourceBasePath, QObject *parent);
+    QString resourceBasePath() const { return resourceBase; }
+    QString resolveResourceUrl(const QString &value) const;
+    void provideImage(const QString &url, quint64 requestId, const QImage &image);
+    void reloadImages();
     bool newDocument(const QString &topic);
     bool loadJson(const QByteArray &json);
     QByteArray toJson();
@@ -44,11 +49,23 @@ signals:
     void selectionChanged(const QString &nodeId, const QString &linkId);
     void errorOccurred(const QString &message);
     void commandSucceeded();
+    void imageRequested(const QString &url, quint64 requestId);
 private:
     using Map = std::unique_ptr<M3Mindmap, decltype(&m3_mindmap_destroy)>;
     Map model{nullptr, m3_mindmap_destroy};
     MindMapView &view;
     QString error, selectedNode, selectedLink;
+    QString resourceBase;
+    struct ImageResource {
+        quint64 requestId = 0;
+        QImage pixels;
+        bool completed = false;
+    };
+    QHash<QString, ImageResource> imageResources;
+    quint64 nextImageRequestId = 1, imageGeneration = 0;
+    bool imageRequestsScheduled = false, imageRefreshScheduled = false;
+    void scheduleImageRequests();
+    void scheduleImageRefresh();
     QSet<QString> visibleNodes, visibleLinks;
     MindMapEditor::LayoutDirection direction = MindMapEditor::LayoutDirection::Balanced;
     bool fail(const QString &message);
@@ -56,7 +73,7 @@ private:
     bool strings(std::initializer_list<QString> values);
     void success();
     QByteArray snapshot(const M3Mindmap *map);
-    Presentation prepare(const M3Mindmap *map, MindMapEditor::LayoutDirection requested);
+    Presentation prepare(const M3Mindmap *map, MindMapEditor::LayoutDirection requested, bool useImageCache = true);
     void install(Presentation presentation, bool fit);
     bool replace(Map candidate);
     bool changed(M3Status result, const QString &preferredNode = {}, const QString &preferredLink = {});

@@ -1,18 +1,44 @@
 #include "qt_demo_window.h"
-#include "m3/qt/editor.h"
 #include <QAction>
+#include <QBuffer>
 #include <QCloseEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QImageReader>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QSaveFile>
 #include <QStatusBar>
+#include <QTimer>
+#include <QUrl>
+#include <memory>
 
-DemoWindow::DemoWindow(QWidget *parent)
-    : QMainWindow(parent), editor(new m3::qt::MindMapEditor(this)) {
+namespace {
+constexpr qint64 imageByteLimit = 16 * 1024 * 1024;
+constexpr int imagePixelLimit = 16777216;
+
+QImage decodeImage(const QByteArray &bytes) {
+    if (bytes.isEmpty() || bytes.size() > imageByteLimit) return {};
+    QBuffer buffer;
+    buffer.setData(bytes);
+    if (!buffer.open(QIODevice::ReadOnly)) return {};
+    QImageReader reader(&buffer);
+    reader.setAutoTransform(true);
+    const QSize size = reader.size();
+    if (size.width() <= 0 || size.height() <= 0 || size.width() > imagePixelLimit / size.height()) return {};
+    return reader.read();
+}
+}
+
+DemoWindow::DemoWindow(const m3::qt::EditorConfig &config, QWidget *parent)
+    : QMainWindow(parent), editor(new m3::qt::MindMapEditor(config, this)),
+      imageNetwork(new QNetworkAccessManager(this)) {
     setCentralWidget(editor);
+    connect(editor, &m3::qt::MindMapEditor::imageRequested, this, &DemoWindow::loadImage);
     resize(1100, 750);
     auto *file = menuBar()->addMenu(tr("&File"));
     auto *create = file->addAction(tr("&New")); create->setShortcut(QKeySequence::New);
@@ -46,6 +72,63 @@ DemoWindow::DemoWindow(QWidget *parent)
         {"id":"l4","source":"a","target":"b","directed":true,"topic":"Feedback"}]})"));
     setWindowModified(false);
     updateTitle();
+}
+void DemoWindow::loadImage(const QString &url, quint64 requestId) {
+    const QUrl source(url, QUrl::StrictMode);
+    if (!source.isValid() || source.isRelative()) {
+        editor->provideImage(url, requestId, {});
+        return;
+    }
+    if (source.isLocalFile()) {
+        QFile input(source.toLocalFile());
+        if (!QFileInfo(input).isAbsolute() || !input.open(QIODevice::ReadOnly) || input.size() > imageByteLimit) {
+            editor->provideImage(url, requestId, {});
+            return;
+        }
+        const QByteArray bytes = input.read(qMin(input.size(), imageByteLimit));
+        const QImage image = input.error() == QFileDevice::NoError && input.atEnd() ? decodeImage(bytes) : QImage();
+        editor->provideImage(url, requestId, image);
+        return;
+    }
+    if (source.scheme() != QStringLiteral("http") && source.scheme() != QStringLiteral("https")) {
+        editor->provideImage(url, requestId, {});
+        return;
+    }
+    QNetworkRequest request(source);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setMaximumRedirectsAllowed(5);
+    request.setTransferTimeout(15000);
+    auto *reply = imageNetwork->get(request);
+    reply->setReadBufferSize(64 * 1024);
+    struct Download {
+        QByteArray bytes;
+        bool rejected = false;
+    };
+    const auto download = std::make_shared<Download>();
+    const auto receive = [reply, download] {
+        if (download->rejected || reply->error() != QNetworkReply::NoError) return;
+        const qint64 length = reply->header(QNetworkRequest::ContentLengthHeader).toLongLong();
+        const qint64 originalLength = reply->attribute(QNetworkRequest::OriginalContentLengthAttribute).toLongLong();
+        const qint64 available = reply->bytesAvailable();
+        if (length > imageByteLimit || originalLength > imageByteLimit || available > imageByteLimit - download->bytes.size()) {
+            download->rejected = true;
+            if (!reply->isFinished()) reply->abort();
+            return;
+        }
+        if (available > 0) download->bytes.append(reply->read(available));
+    };
+    connect(reply, &QNetworkReply::metaDataChanged, reply, receive);
+    connect(reply, &QNetworkReply::readyRead, reply, receive);
+    connect(reply, &QNetworkReply::finished, editor, [this, reply, download, receive, url, requestId] {
+        receive();
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QImage image = !download->rejected && reply->error() == QNetworkReply::NoError && status >= 200 && status < 300
+            ? decodeImage(download->bytes) : QImage();
+        reply->deleteLater();
+        editor->provideImage(url, requestId, image);
+    });
+    // Bound the whole request as well as periods with no transfer activity.
+    QTimer::singleShot(15000, reply, [reply] { if (!reply->isFinished()) reply->abort(); });
 }
 bool DemoWindow::report(const QString &message) {
     statusBar()->showMessage(message);

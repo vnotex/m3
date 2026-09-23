@@ -1,6 +1,7 @@
 #ifndef M3_QT_PRESENTATION_H
 #define M3_QT_PRESENTATION_H
 #include <QColor>
+#include <QImage>
 #include <QRectF>
 #include <QString>
 #include <QStringList>
@@ -16,10 +17,15 @@ struct NodeStyle {
     std::optional<bool> bold, italic;
     QColor textColor, backgroundColor;
 };
+struct NodeImage {
+    QString url;
+    double width = 0, height = 0;
+};
 struct NodeProperties {
     QString id, topic, hyperlink, note;
     QStringList tags, icons;
     bool root = false;
+    std::optional<NodeImage> image;
     NodeStyle style;
 };
 struct NodeTagPresentation {
@@ -33,6 +39,10 @@ struct NodePresentation {
     std::vector<NodeTagPresentation> tags;
     bool root = false, expanded = true, hasChildren = false;
     QRectF rectangle;
+    std::optional<NodeImage> image;
+    QRectF imageRectangle;
+    QImage imagePixels;
+    bool imageFailed = false;
     NodeStyle style;
     std::unique_ptr<QTextDocument> text, iconText;
 };

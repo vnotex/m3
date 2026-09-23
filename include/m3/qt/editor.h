@@ -1,6 +1,7 @@
 #ifndef M3_QT_EDITOR_H
 #define M3_QT_EDITOR_H
 #include <QByteArray>
+#include <QImage>
 #include <QString>
 #include <QKeySequence>
 #include <QList>
@@ -40,8 +41,16 @@
 // extend beyond the viewport.
 // Topics/labels are plain Unicode text. Embedded NULs are rejected.
 // A selected node has a floating properties card; links/empty selection hide it.
-// Appearance, tags, icons, URL and note edits persist immediately without changing
-// selection or zoom. Tags/icons accept comma-separated entries. Icons display as
+// Appearance, tags, icons, URL, Image URL and note edits persist immediately without changing
+// selection or zoom. Blank Image URL hides the image while retaining its dimensions.
+// Images appear beneath tags, preserving decoded aspect ratio within stored bounds;
+// unspecified dimensions use natural size, capped at 240 without upscaling. Display
+// is capped at 4096 scene units without rewriting imported metadata. Pending/failed
+// resources reserve a placeholder. Selected decoded images have a proportional
+// resize handle: motion previews only; release persists one width/height edit.
+// Escape or interrupted gestures cancel without a semantic change. Loading images
+// never changes the document; hosts supply pixels through the GUI-thread protocol.
+// Tags/icons accept comma-separated entries. Icons display as
 // literal Unicode text above the topic, wrapping within the node; names are not
 // mapped to an icon library. The Icons field opens a searchable, categorized
 // Unicode 15.1 emoji picker on focus; a choice replaces the current entry or a
@@ -51,7 +60,8 @@
 // Direct typing still saves immediately; glyph availability depends on host fonts.
 // Empty icons reserve no space. Nonempty URLs
 // show an indicator beside the topic. Activating it emits nodeLinkActivated with
-// the node ID and unchanged URL; the host decides whether and how to open it.
+// the node ID and resolved target: relative paths become absolute file URLs,
+// absolute/opaque URLs stay unchanged. The host decides whether and how to open it.
 // Dropping one local file onto a canvas node sets or replaces its URL through
 // resolveDroppedFileUrl, without changing selection.
 // Collapsing the card leaves only its top-right toggle, without changing selection.
@@ -105,6 +115,10 @@ struct EditorConfig {
     } shortcuts;
     // UI policy only: the removeNode() API never prompts.
     bool confirmSubtreeDeletion = true;
+    // Filesystem directory for relative image/link references; empty captures cwd.
+    // Relative bases become absolute at construction, without canonicalizing or
+    // requiring existence. Fixed for this editor lifetime; never persisted.
+    QString resourceBasePath;
 };
 class M3_QT_API MindMapEditor : public QWidget {
     Q_OBJECT
@@ -115,6 +129,18 @@ public:
     explicit MindMapEditor(QWidget *parent = nullptr);
     explicit MindMapEditor(const EditorConfig &config, QWidget *parent = nullptr);
     ~MindMapEditor() override;
+    QString resourceBasePath() const;
+    // GUI-thread host image protocol. Connect imageRequested before loading, or
+    // call reloadImages after attaching. The URL is a resolved resource/cache key;
+    // supply that URL and request ID unchanged. Null pixels mean unavailable.
+    // Only the first matching response is accepted; stale/unknown IDs are ignored.
+    // Requests are deferred, editor-local, and monotonically numbered across loads.
+    // Hosts own decoding/I/O; retain asynchronous editors with QObject context or
+    // QPointer. Without a response, the widget keeps a placeholder and does no I/O.
+    void provideImage(const QString &url, quint64 requestId, const QImage &image);
+    // Clears cached success/failure/pending responses without changing the base,
+    // document, selection, zoom or inline draft; requests visible images again.
+    void reloadImages();
     bool newDocument(const QString &topic = QStringLiteral("Central topic"));
     bool loadJson(const QByteArray &json);
     QByteArray toJson() const;
@@ -150,6 +176,7 @@ signals:
     void documentChanged();
     void selectionChanged(const QString &nodeId, const QString &linkId);
     void nodeLinkActivated(const QString &nodeId, const QString &url);
+    void imageRequested(const QString &url, quint64 requestId);
     void errorOccurred(const QString &message);
 protected:
     // Called once per eligible canvas drop with the decoded absolute local path,

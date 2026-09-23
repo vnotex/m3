@@ -1,10 +1,11 @@
 #ifndef M3_QT_DEMO_WINDOW_H
 #define M3_QT_DEMO_WINDOW_H
+#include "m3/qt/editor.h"
 #include <QMainWindow>
-namespace m3::qt { class MindMapEditor; }
+class QNetworkAccessManager;
 class DemoWindow : public QMainWindow {
 public:
-    explicit DemoWindow(QWidget *parent = nullptr);
+    explicit DemoWindow(const m3::qt::EditorConfig &config = {}, QWidget *parent = nullptr);
     bool newFile();
     bool openFile(const QString &path);
     bool saveFile(const QString &path);
@@ -15,7 +16,9 @@ protected:
     void closeEvent(QCloseEvent *event) override;
 private:
     m3::qt::MindMapEditor *editor;
+    QNetworkAccessManager *imageNetwork;
     QString filename;
+    void loadImage(const QString &url, quint64 requestId);
     bool mayReplace();
     bool save();
     bool saveAs();

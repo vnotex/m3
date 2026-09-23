@@ -1,6 +1,7 @@
 #include "qt_demo_window.h"
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QFileInfo>
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("m3_qt_demo"));
@@ -11,7 +12,9 @@ int main(int argc, char **argv) {
     parser.process(app);
     const QStringList files = parser.positionalArguments();
     if (files.size() > 1) parser.showHelp(2);
-    DemoWindow window;
+    m3::qt::EditorConfig config;
+    if (!files.isEmpty()) config.resourceBasePath = QFileInfo(files.front()).absolutePath();
+    DemoWindow window(config);
     if (!files.isEmpty()) window.openFile(files.front());
     window.show();
     return app.exec();

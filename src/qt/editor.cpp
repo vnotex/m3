@@ -284,6 +284,8 @@ public:
         icons = new EmojiLineEdit(body);
         line("nodeIcons", tr("&Icons"), tr("Icons"), icons);
         url = line("nodeUrl", tr("&URL"), tr("URL"));
+        imageUrl = line("nodeImageUrl", tr("Image URL"), tr("Image URL"));
+        imageUrl->setPlaceholderText(tr("Image URL or reference"));
         tags->setPlaceholderText(tr("Separate with commas"));
         icons->setPlaceholderText(tr("Search emoji names or paste emoji"));
         icons->setToolTip(tr(
@@ -360,6 +362,12 @@ public:
         connect(url, &QLineEdit::textChanged, this, [this](const QString &text) {
             apply({{QStringLiteral("hyperLink"), text}});
         });
+        connect(imageUrl, &QLineEdit::textChanged, this, [this](const QString &text) {
+            if (refreshing || boundId.isEmpty() || (!currentImage && text.isEmpty())) return;
+            apply({{QStringLiteral("image"), QJsonObject{{QStringLiteral("url"), text},
+                {QStringLiteral("width"), currentImage ? currentImage->width : 0},
+                {QStringLiteral("height"), currentImage ? currentImage->height : 0}}}});
+        });
         connect(note, &QPlainTextEdit::textChanged, this, [this] {
             apply({{QStringLiteral("note"), note->toPlainText()}});
         });
@@ -399,12 +407,13 @@ private:
     QScrollArea *scroll;
     QComboBox *fontSize;
     QToolButton *toggle, *bold, *italic, *reset, *textColor, *fillColor, *defaultColor;
-    QLineEdit *tags, *url;
+    QLineEdit *tags, *url, *imageUrl;
     EmojiLineEdit *icons;
     QPlainTextEdit *note;
     QList<QToolButton *> swatches;
     QString boundId;
     NodeStyle currentStyle;
+    std::optional<NodeImage> currentImage;
     int presetCount = 0;
     bool refreshing = false;
     static QStringList commaValues(const QString &text) {
@@ -445,6 +454,7 @@ private:
         const QScopedValueRollback<bool> guard(refreshing, true);
         boundId = properties.id;
         currentStyle = properties.style;
+        currentImage = properties.image;
         subtitle->setText(properties.topic);
         subtitle->setToolTip(QStringLiteral("<qt>%1</qt>").arg(properties.topic.toHtmlEscaped()));
         auto refreshList = [this, sameNode](QLineEdit *input, const QStringList &values) {
@@ -460,6 +470,11 @@ private:
         if (!sameNode || url->text() != properties.hyperlink) {
             const QSignalBlocker blocker(url);
             url->setText(properties.hyperlink);
+        }
+        const QString imageText = currentImage ? currentImage->url : QString();
+        if (!sameNode || imageUrl->text() != imageText) {
+            const QSignalBlocker blocker(imageUrl);
+            imageUrl->setText(imageText);
         }
         if (!sameNode || note->toPlainText() != properties.note) {
             const QSignalBlocker blocker(note);
@@ -696,7 +711,7 @@ public:
         view = new MindMapView(editor);
         error = new QLabel(editor);
         error->setTextFormat(Qt::PlainText); error->setWordWrap(true); error->hide();
-        controller = new MindMapController(*view, editor);
+        controller = new MindMapController(*view, config.resourceBasePath, editor);
         toolbar = new QToolBar(editor);
         layout->addWidget(toolbar);
         addChild = action("addChild", tr("Add child"), config.shortcuts.addChild, [this] { createNode(TopicOperation::Child); });
@@ -766,8 +781,12 @@ public:
             error->setText(message); error->show(); emit editor->errorOccurred(message);
         });
         QObject::connect(controller, &MindMapController::commandSucceeded, editor, [this] { error->clear(); error->hide(); updateActions(); });
+        QObject::connect(controller, &MindMapController::imageRequested, editor, &MindMapEditor::imageRequested);
         QObject::connect(view, &MindMapView::nodePicked, controller, &MindMapController::selectNode);
-        QObject::connect(view, &MindMapView::nodeLinkActivated, editor, &MindMapEditor::nodeLinkActivated);
+        QObject::connect(view, &MindMapView::nodeLinkActivated, editor, [this, editor](const QString &id, const QString &url) {
+            const QString resolved = controller->resolveResourceUrl(url);
+            emit editor->nodeLinkActivated(id, resolved);
+        });
         QObject::connect(view, &MindMapView::fileDropped, editor, [this, editor](const QString &nodeId, const QString &filePath) {
             const QString resolvedUrl = editor->resolveDroppedFileUrl(filePath);
             if (resolvedUrl.isEmpty()) return;
@@ -775,6 +794,16 @@ public:
             const QByteArray json = QJsonDocument(patch).toJson(QJsonDocument::Compact);
             controller->updateNodeProperties(nodeId, json);
         });
+        QObject::connect(view, &MindMapView::imageResizeRequested, controller,
+            [this](const QString &id, const QString &url, const QSizeF &original, const QSizeF &size) {
+                const auto node = controller->nodeProperties(id);
+                if (controller->selectedNodeId() != id || !node.image || node.image->url != url ||
+                    QSizeF(node.image->width, node.image->height) != original) return;
+                const QJsonObject image{{QStringLiteral("url"), url},
+                    {QStringLiteral("width"), size.width()}, {QStringLiteral("height"), size.height()}};
+                controller->updateNodeProperties(id,
+                    QJsonDocument(QJsonObject{{QStringLiteral("image"), image}}).toJson(QJsonDocument::Compact));
+            });
         QObject::connect(view, &MindMapView::nodeMoveRequested, controller, &MindMapController::moveNode);
         QObject::connect(view, &MindMapView::linkPicked, controller, &MindMapController::selectLink);
         QObject::connect(view, &MindMapView::emptyPicked, controller, &MindMapController::clearSelection);
@@ -802,6 +831,9 @@ QByteArray MindMapEditor::toJson() const { return d->controller->toJson(); }
 QString MindMapEditor::toMarkdown() const { return d->controller->toMarkdown(); }
 QString MindMapEditor::toHtml() const { return d->controller->toHtml(); }
 QString MindMapEditor::lastError() const { return d->controller->lastError(); }
+QString MindMapEditor::resourceBasePath() const { return d->controller->resourceBasePath(); }
+void MindMapEditor::provideImage(const QString &url, quint64 requestId, const QImage &image) { d->controller->provideImage(url, requestId, image); }
+void MindMapEditor::reloadImages() { d->controller->reloadImages(); }
 QString MindMapEditor::addNode(const QString &parent, const QString &topic, int index) { return d->controller->addNode(parent, topic, index); }
 bool MindMapEditor::renameNode(const QString &id, const QString &topic) { return d->controller->renameNode(id, topic); }
 bool MindMapEditor::removeNode(const QString &id) { return d->controller->removeNode(id); }
