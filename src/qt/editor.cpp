@@ -290,6 +290,8 @@ public:
             button->setAccessibleName(description);
             button->setToolTip(description);
             const int index = int(swatches.size()) + 1;
+            button->setText(QString::number((index / 6 + 1) * 10 + index % 6 + 1));
+            button->setToolButtonStyle(Qt::ToolButtonTextOnly);
             palette->addWidget(button, index / 6, index % 6);
             swatches.append(button);
             connect(button, &QToolButton::toggled, this, [this, hex](bool checked) {
@@ -361,6 +363,7 @@ public:
         layout->addWidget(scroll, 1);
         textColor->setChecked(true);
         connect(toggle, &QToolButton::toggled, this, [this] {
+            pendingColorRow = 0;
             reposition();
             toggle->setFocus(Qt::OtherFocusReason);
         });
@@ -411,6 +414,8 @@ public:
         });
         connect(controller, &MindMapController::selectionChanged, this, [this] { refresh(); });
         connect(controller, &MindMapController::documentChanged, this, [this] { refresh(); });
+        for (auto *button : {textColor, fillColor, defaultColor}) button->installEventFilter(this);
+        for (auto *button : swatches) button->installEventFilter(this);
         host->installEventFilter(this);
         view->installEventFilter(this);
         view->viewport()->installEventFilter(this);
@@ -448,6 +453,38 @@ public:
     }
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override {
+        auto *button = qobject_cast<QToolButton *>(watched);
+        if (button && button != reset && (button == textColor || button == fillColor || button == defaultColor || swatches.contains(button))) {
+            if (event->type() == QEvent::FocusOut || event->type() == QEvent::MouseButtonPress || event->type() == QEvent::Hide)
+                pendingColorRow = 0;
+            if (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) {
+                auto *key = static_cast<QKeyEvent *>(event);
+                const auto modifiers = key->modifiers() & ~Qt::KeypadModifier;
+                const int digit = key->key() - Qt::Key_0;
+                if (modifiers != Qt::NoModifier || digit < 0 || digit > 9 ||
+                    !button->hasFocus() || !button->isVisible() || !button->isEnabled()) {
+                    pendingColorRow = 0;
+                    return false;
+                }
+                key->accept();
+                if (event->type() == QEvent::ShortcutOverride || key->isAutoRepeat()) return true;
+                if (pendingColorRow == 0) {
+                    if (digit >= 1 && digit <= 4) pendingColorRow = digit;
+                    return true;
+                }
+                const int row = pendingColorRow;
+                pendingColorRow = 0;
+                if (digit >= 1 && digit <= 6) {
+                    const int index = (row - 1) * 6 + digit - 1;
+                    auto *target = index == 0 ? defaultColor : swatches.at(index - 1);
+                    target->click();
+                    // Applying a color may synchronously destroy the editor.
+                }
+                return true;
+            }
+            // Color controls do not drive the card's geometry or font refresh.
+            return false;
+        }
         switch (event->type()) {
         case QEvent::Resize:
         case QEvent::Move:
@@ -483,6 +520,7 @@ private:
     NodeStyle currentStyle;
     std::optional<NodeImage> currentImage;
     int presetCount = 0;
+    int pendingColorRow = 0;
     bool refreshing = false;
     static QStringList commaValues(const QString &text) {
         QStringList values;
@@ -508,6 +546,7 @@ private:
         if (guard) refresh();
     }
     void refreshColors() {
+        pendingColorRow = 0;
         const QColor color = fillColor->isChecked() ? currentStyle.backgroundColor : currentStyle.textColor;
         for (auto *button : swatches) {
             const QSignalBlocker blocker(button);
@@ -673,7 +712,11 @@ public:
         const QString left = section(tr("Canvas"), canvas) + section(tr("During drag or image resize"),
             row(tr("Cancel gesture"), {QKeySequence(Qt::Key_Escape)}));
         const QString right = section(tr("Selected node on canvas"), nodes) + section(tr("Inline topic"), inlineEdit)
-            + section(tr("Node properties"), row(tr("Collapse card"), {QKeySequence(Qt::Key_Escape)}))
+            + section(tr("Node properties"), row(tr("Collapse card"), {QKeySequence(Qt::Key_Escape)})
+                + QStringLiteral("<tr><td colspan=2>%1<br>%2<br>%3</td></tr>").arg(
+                    tr("With Text, Fill or a swatch focused:").toHtmlEscaped(),
+                    tr("Type row (1-4), then column (1-6).").toHtmlEscaped(),
+                    tr("11 selects Auto.").toHtmlEscaped()))
             + section(tr("Emoji picker"), emoji);
         return QStringLiteral("<qt><b>%1</b><p>%2</p><table cellspacing=12><tr>"
             "<td valign=top>%3</td><td valign=top>%4</td></tr></table></qt>")

@@ -4924,7 +4924,7 @@ static void node_shortcuts_case() {
             CHECK(button(editor, mode.second)->isChecked() && changed.size() == count);
             const QRectF rect = topicRect(editor, QStringLiteral("Alpha"));
             const QImage before = paintScene(editor, rect);
-            QTest::mouseClick(button(editor, "nodeColor_e74c3c"), Qt::LeftButton);
+            QTest::keyClicks(button(editor, mode.second), "22");
             pump();
             jsonNode(expected, "a")["style"][mode.first == Qt::Key_C ? "color" : "background"] = "#e74c3c";
             CHECK(exported(editor) == expected && changed.size() == count + 1);
@@ -4945,6 +4945,103 @@ static void node_shortcuts_case() {
         }
         CHECK(changed.size() == 2 && selected.isEmpty());
         CHECK(editor.selectedNodeId() == QStringLiteral("a") && graphics(editor).transform() == zoom);
+    }
+    {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(QStringLiteral("a")));
+        showEditor(editor);
+        Json expected = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        auto type = [&](const char *digits) { QTest::keyClicks(QApplication::focusWidget(), digits); pump(); };
+        shortcut(editor, Qt::Key_C);
+        type("1");
+        QKeyEvent repeat(QEvent::KeyPress, Qt::Key_1, Qt::NoModifier, QStringLiteral("1"), true);
+        QCoreApplication::sendEvent(QApplication::focusWidget(), &repeat);
+        CHECK(exported(editor) == expected && changed.isEmpty());
+        type("2");
+        jsonNode(expected, "a")["style"]["color"] = "#ffffff";
+        CHECK(exported(editor) == expected && changed.size() == 1);
+        type("46");
+        jsonNode(expected, "a")["style"]["color"] = "#a9d6f5";
+        CHECK(exported(editor) == expected && changed.size() == 2);
+        type("11");
+        jsonNode(expected, "a")["style"].erase("color");
+        CHECK(exported(editor) == expected && changed.size() == 3);
+        type("11");
+        CHECK(exported(editor) == expected && changed.size() == 3);
+        shortcut(editor, Qt::Key_F);
+        QTest::keyClick(QApplication::focusWidget(), Qt::Key_3, Qt::KeypadModifier);
+        QTest::keyClick(QApplication::focusWidget(), Qt::Key_1, Qt::KeypadModifier);
+        jsonNode(expected, "a")["style"]["background"] = "#27ae60";
+        CHECK(exported(editor) == expected && changed.size() == 4);
+        type("11");
+        jsonNode(expected, "a")["style"].erase("background");
+        CHECK(exported(editor) == expected && changed.size() == 5);
+
+        // Invalid digits, modified keys and unrelated keys discard incomplete codes.
+        type("09529");
+        type("6");
+        CHECK(exported(editor) == expected && changed.size() == 5);
+        type("2");
+        QTest::keyClick(QApplication::focusWidget(), Qt::Key_X);
+        type("6");
+        type("2");
+        QTest::keyClick(QApplication::focusWidget(), Qt::Key_1, Qt::ControlModifier);
+        type("6");
+        CHECK(exported(editor) == expected && changed.size() == 5);
+
+        // Focus and mouse input must not carry a row into a different action.
+        type("2");
+        button(editor, "nodeDefaultColor")->setFocus();
+        type("6");
+        CHECK(exported(editor) == expected && changed.size() == 5);
+        type("2");
+        QTest::mouseClick(button(editor, "nodeDefaultColor"), Qt::LeftButton);
+        type("6");
+        CHECK(exported(editor) == expected && changed.size() == 5);
+        type("2");
+        button(editor, "nodeTextColor")->setChecked(true);
+        type("6");
+        CHECK(exported(editor) == expected && changed.size() == 5);
+
+        // Selection changes and same-ID document replacement cancel pending input.
+        type("2");
+        CHECK(editor.selectNode(QStringLiteral("b")));
+        type("6");
+        CHECK(exported(editor) == expected && changed.size() == 5);
+        type("2");
+        CHECK(editor.loadJson(encoded(expected)));
+        type("6");
+        CHECK(exported(editor) == expected && changed.size() == 6);
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        shortcut(editor, Qt::Key_C);
+        type("2");
+        QTest::keyClick(QApplication::focusWidget(), Qt::Key_Escape);
+        CHECK(!button(editor, "nodePropertiesToggle")->isChecked() && graphics(editor).hasFocus());
+        shortcut(editor, Qt::Key_C);
+        type("6");
+        CHECK(exported(editor) == expected && changed.size() == 6);
+        button(editor, "nodeColor_e74c3c")->setFocus();
+        type("22");
+        jsonNode(expected, "a")["style"]["color"] = "#e74c3c";
+        CHECK(exported(editor) == expected && changed.size() == 7);
+        type("22");
+        CHECK(exported(editor) == expected && changed.size() == 7);
+
+        // Numeric codes are plain text outside color controls, even after a prefix.
+        type("2");
+        shortcut(editor, Qt::Key_T);
+        auto *tags = editor.findChild<QLineEdit *>(QStringLiteral("nodeTags"));
+        CHECK(tags);
+        tags->selectAll();
+        type("1146");
+        jsonNode(expected, "a")["tags"] = Json::array({"1146"});
+        CHECK(exported(editor) == expected);
+        shortcut(editor, Qt::Key_E);
+        QTest::keyClicks(&topicInput(editor), "1146");
+        CHECK(topicInput(editor).toPlainText() == QStringLiteral("1146"));
+        CHECK(exported(editor) == expected);
+        topicKey(editor, Qt::Key_Escape);
     }
     {
         Editor editor;
@@ -5212,6 +5309,17 @@ static void node_shortcuts_case() {
         QObject::connect(editor, &Editor::documentChanged, qApp, [&] { delete editor.data(); });
         QKeyEvent press(QEvent::KeyPress, Qt::Key_B, Qt::NoModifier, QStringLiteral("b"));
         QCoreApplication::sendEvent(viewport, &press);
+        CHECK(editor.isNull());
+        pump();
+    }
+    {
+        QPointer<Editor> editor = new Editor;
+        showEditor(*editor);
+        shortcut(*editor, Qt::Key_F);
+        QTest::keyClick(QApplication::focusWidget(), Qt::Key_2);
+        QObject::connect(editor, &Editor::documentChanged, qApp, [&] { delete editor.data(); });
+        QKeyEvent press(QEvent::KeyPress, Qt::Key_2, Qt::NoModifier, QStringLiteral("2"));
+        QCoreApplication::sendEvent(QApplication::focusWidget(), &press);
         CHECK(editor.isNull());
         pump();
     }

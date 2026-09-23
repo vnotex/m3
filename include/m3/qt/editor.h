@@ -80,6 +80,9 @@ namespace m3::qt {
 // With a selected node and canvas focus, B/I/R toggle bold/italic or reset appearance
 // without expanding the properties card or moving focus. C/F expand and reveal the
 // Text/Fill color mode; T/O/N expand and reveal Tags/Icons/Note, focusing that control.
+// With Text, Fill or a swatch focused, type row (1-4) then column (1-6) to apply
+// that color; 11 selects Auto. Leaving the control or interrupting the code cancels
+// a partial entry. Digits in text fields remain ordinary input.
 // E begins inline topic editing for nodes only; F2 still edits nodes or links. These
 // letters remain ordinary input while typing, including in the inline topic draft.
 // P toggles the selected node's properties card, keeping focus on the canvas.
