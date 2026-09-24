@@ -4056,6 +4056,196 @@ static void inline_tags_case() {
     }
 }
 
+static QPoint linkHandlePoint(Editor &editor, const QString &topic) {
+    auto &view = graphics(editor);
+    auto *node = ownerItem(textItem(editor, topic));
+    const QRectF bounds = node->deviceTransform(view.viewportTransform()).mapRect(node->boundingRect());
+    for (auto *child : node->childItems()) {
+        if (!child->isVisible() || !child->flags().testFlag(QGraphicsItem::ItemIgnoresTransformations)) continue;
+        const QRectF rect = child->deviceTransform(view.viewportTransform()).mapRect(child->boundingRect());
+        if (rect.center().x() > bounds.right() && rect.center().y() < bounds.top()) {
+            const QPoint point = rect.center().toPoint();
+            CHECK(view.viewport()->rect().contains(rect.toAlignedRect()) && view.itemAt(point) == child);
+            return point;
+        }
+    }
+    throw std::runtime_error("Missing selected-node link handle");
+}
+static void link_interaction_case() {
+    {
+        // Scene padding alone shrinks below a device-sized arrow on a tall fitted map.
+        Json children = Json::array(), nodes = Json::array();
+        for (int i = 0; i < 90; ++i) {
+            const std::string id = "n" + std::to_string(i);
+            children.push_back(id);
+            nodes.push_back(Json{{"id", id}, {"topic", "Row " + std::to_string(i)}});
+        }
+        nodes.push_back(Json{{"id", "r"}, {"topic", "Tall root"}, {"children", children}});
+        Editor editor;
+        CHECK(editor.loadJson(encoded(Json{{"schemaVersion", 1}, {"rootId", "r"}, {"nodes", nodes}})));
+        CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Outline));
+        showEditor(editor);
+        CHECK(editor.selectNode(QStringLiteral("r")));
+        const Json before = exported(editor);
+        editor.fitToContents(); pump();
+        linkHandlePoint(editor, QStringLiteral("Tall root"));
+        CHECK(editor.selectNode(QStringLiteral("n89")));
+        linkHandlePoint(editor, QStringLiteral("Row 89"));
+        CHECK(editor.selectNode(QStringLiteral("r")));
+        linkHandlePoint(editor, QStringLiteral("Tall root"));
+        CHECK(exported(editor) == before);
+    }
+    {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+        showEditor(editor);
+        trigger(editor, "resetZoom");
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        auto &view = graphics(editor);
+        const QPoint target = labelPoint(editor, QStringLiteral("Beta"));
+        const QPoint handle = linkHandlePoint(editor, QStringLiteral("Alpha"));
+        const Json original = exported(editor);
+        const QTransform zoom = view.transform();
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, handle);
+        movePointer(view, target, Qt::LeftButton);
+        CHECK(exported(editor) == original && changed.isEmpty());
+        CHECK(editor.selectedNodeId() == QStringLiteral("a") && view.transform() == zoom);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, target);
+        pump();
+        const QString id = editor.selectedLinkId();
+        CHECK(!id.isEmpty() && editor.selectedNodeId().isEmpty() && changed.size() == 1);
+        const Json inserted = exported(editor);
+        const Json link = record(inserted, "crossLinks", id);
+        CHECK(link.at("source") == "a" && link.at("target") == "b" && link.at("directed") == false);
+        CHECK(link.at("topic") == "" && inserted.at("nodes") == original.at("nodes"));
+        CHECK(topicInput(editor).toPlainText().isEmpty());
+        const QString topic = QStringLiteral("#literal ## Unicode \u03a9\nSecond line");
+        topicInput(editor).setPlainText(topic);
+        CHECK(exported(editor) == inserted && changed.size() == 1);
+        topicKey(editor, Qt::Key_Return);
+        Json expectedLink = link;
+        expectedLink["topic"] = utf8(topic);
+        CHECK(record(exported(editor), "crossLinks", id) == expectedLink && changed.size() == 2);
+        CHECK(exported(editor).at("nodes") == original.at("nodes"));
+        clickLabel(editor, topic, true);
+        CHECK(topicInput(editor).toPlainText() == topic);
+        topicInput(editor).setPlainText(QStringLiteral("Discard this"));
+        topicKey(editor, Qt::Key_Escape);
+        CHECK(record(exported(editor), "crossLinks", id) == expectedLink && changed.size() == 2);
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Click outside saves"));
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, blankPoint(view));
+        pump();
+        CHECK(record(exported(editor), "crossLinks", id).at("topic") == "Click outside saves");
+        CHECK(changed.size() == 3 && !activeTopicInput(editor));
+    }
+    {
+        // Node and link IDs are separate namespaces; refresh must preserve only the right draft.
+        Json data = editorFixture();
+        data["crossLinks"][0]["id"] = "a";
+        data["crossLinks"][0]["topic"] = "#original ##";
+        Editor editor;
+        CHECK(editor.loadJson(encoded(data)));
+        showEditor(editor);
+        CHECK(editor.selectLink(QStringLiteral("a")));
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        const Json before = exported(editor);
+        shortcut(editor, Qt::Key_F2);
+        CHECK(topicInput(editor).toPlainText() == QStringLiteral("#original ##"));
+        topicInput(editor).setPlainText(QStringLiteral("#draft ##"));
+        CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Left));
+        CHECK(topicInput(editor).toPlainText() == QStringLiteral("#draft ##"));
+        CHECK(exported(editor) == before && changed.isEmpty());
+        topicKey(editor, Qt::Key_Return);
+        Json expected = before;
+        for (auto &link : expected["crossLinks"]) if (link["id"] == "a") link["topic"] = "#draft ##";
+        CHECK(exported(editor) == expected && changed.size() == 1);
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Must not rename node"));
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        CHECK(!activeTopicInput(editor) && exported(editor) == expected);
+        CHECK(editor.selectLink(QStringLiteral("a")));
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Stale removed link"));
+        CHECK(editor.removeLink(QStringLiteral("a")));
+        pump();
+        CHECK(!activeTopicInput(editor) && !hasRecord(exported(editor), "crossLinks", QStringLiteral("a")));
+        CHECK(record(exported(editor), "nodes", QStringLiteral("a")) == record(before, "nodes", QStringLiteral("a")));
+        CHECK(changed.size() == 2);
+    }
+    {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        trigger(editor, "resetZoom");
+        auto &view = graphics(editor);
+        const Json before = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        auto start = [&] {
+            CHECK(editor.selectNode(QStringLiteral("a")));
+            const QPoint target = labelPoint(editor, QStringLiteral("Beta"));
+            QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier,
+                              linkHandlePoint(editor, QStringLiteral("Alpha")));
+            movePointer(view, target, Qt::LeftButton);
+            return target;
+        };
+        QPoint target = start();
+        QTest::keyClick(view.viewport(), Qt::Key_Escape);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, target);
+        pump();
+        CHECK(editor.selectedNodeId() == QStringLiteral("a") && exported(editor) == before && changed.isEmpty());
+        start();
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, blankPoint(view));
+        pump();
+        CHECK(exported(editor) == before && changed.isEmpty() && !activeTopicInput(editor));
+        start();
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier,
+                            view.mapFromScene(topicRect(editor, QStringLiteral("Alpha")).center()));
+        pump();
+        CHECK(exported(editor) == before && changed.isEmpty());
+        target = start();
+        CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Left));
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, target);
+        pump();
+        CHECK(exported(editor) == before && changed.isEmpty() && !activeTopicInput(editor));
+        // Cancelling the automatically opened topic retains the newly committed blank link.
+        target = start();
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, target);
+        pump();
+        const QString id = editor.selectedLinkId();
+        CHECK(!id.isEmpty() && topicInput(editor).toPlainText().isEmpty());
+        topicInput(editor).setPlainText(QStringLiteral("Uncommitted"));
+        topicKey(editor, Qt::Key_Escape);
+        CHECK(record(exported(editor), "crossLinks", id).at("topic") == "" && changed.size() == 1);
+    }
+    for (bool onSelection : {false, true}) {
+        // Hosts may close the editor from either notification during link creation.
+        auto *editor = new Editor;
+        QPointer<Editor> alive(editor);
+        CHECK(editor->loadJson(encoded(editorFixture())));
+        showEditor(*editor);
+        trigger(*editor, "resetZoom");
+        CHECK(editor->selectNode(QStringLiteral("a")));
+        auto &view = graphics(*editor);
+        const QPoint target = labelPoint(*editor, QStringLiteral("Beta"));
+        const QPoint handle = linkHandlePoint(*editor, QStringLiteral("Alpha"));
+        if (onSelection)
+            QObject::connect(editor, &Editor::selectionChanged, editor, [editor](const QString &, const QString &link) {
+                if (!link.isEmpty()) delete editor;
+            });
+        else QObject::connect(editor, &Editor::documentChanged, editor, [editor] { delete editor; });
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, handle);
+        movePointer(view, target, Qt::LeftButton);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(target), QPointF(view.viewport()->mapToGlobal(target)),
+                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(view.viewport(), &release);
+        CHECK(alive.isNull());
+        pump();
+    }
+}
+
 static void inline_edit_case() {
     inline_tags_case();
     {
@@ -4444,7 +4634,9 @@ static void shortcut_help_case() {
     auto outside = [&](Editor &editor, QWidget &target, QPoint point = QPoint(4, 4)) {
         auto *dialog = popup(editor);
         CHECK(dialog && target.windowHandle());
-        CHECK(!dialog->frameGeometry().contains(target.mapToGlobal(point)));
+        const QPoint global = target.mapToGlobal(point);
+        // Exercise outside-click handling independently of toolbar width and screen placement.
+        if (dialog->frameGeometry().contains(global)) dialog->move(global + QPoint(24, 24));
         // Use the window-system path, not QWidget delivery that bypasses popup grabs.
         QTest::mouseClick(target.windowHandle(), Qt::LeftButton, Qt::NoModifier, point);
         pump();
@@ -5191,16 +5383,13 @@ static void node_shortcuts_case() {
         CHECK(editor.selectLink(QStringLiteral("l1")));
         dialogs({}, [&] { shortcut(editor, Qt::Key_E); });
         CHECK(!activeTopicInput(editor) && exported(editor) == expected && changed.size() == 1);
-        dialogs({[&](QDialog *dialog) {
-            auto *input = dialog->findChild<QLineEdit *>(QStringLiteral("linkTopic"));
-            CHECK(input && input->text() == QStringLiteral("Related"));
-            dialog->activateWindow(); input->setFocus();
-            CHECK(QTest::qWaitFor([&] { return input->hasFocus(); }, 5000));
-            input->selectAll(); QTest::keyClicks(input, "bircftone");
-            CHECK(input->hasFocus() && input->text() == QStringLiteral("bircftone"));
-            CHECK(exported(editor) == expected);
-            dialog->reject();
-        }}, [&] { shortcut(editor, Qt::Key_F2); });
+        shortcut(editor, Qt::Key_F2);
+        auto &input = topicInput(editor);
+        CHECK(input.toPlainText() == QStringLiteral("Related"));
+        input.selectAll(); QTest::keyClicks(&input, "bircftone");
+        CHECK(input.hasFocus() && input.toPlainText() == QStringLiteral("bircftone"));
+        CHECK(exported(editor) == expected);
+        topicKey(editor, Qt::Key_Escape);
         CHECK(exported(editor) == expected && changed.size() == 1);
     }
     {
@@ -5695,12 +5884,11 @@ static void controls_case() {
     CHECK(record(exported(editor), "crossLinks", uiLink).at("directed") == true);
     const Json beforeLinkCancel = exported(editor);
     const auto linkCount = changed.size();
-    dialogs({[&](QDialog *dialog) {
-        auto *topic = dialog->findChild<QLineEdit *>(QStringLiteral("linkTopic"));
-        CHECK(topic != nullptr && topic->text() == QStringLiteral("UI self link"));
-        topic->setText(QStringLiteral("Canceled link"));
-        dialog->reject();
-    }}, [&] { shortcut(editor, Qt::Key_F2); });
+    CHECK(topicInput(editor).toPlainText() == QStringLiteral("UI self link"));
+    topicKey(editor, Qt::Key_Escape);
+    shortcut(editor, Qt::Key_F2);
+    topicInput(editor).setPlainText(QStringLiteral("Canceled link"));
+    topicKey(editor, Qt::Key_Escape);
     CHECK(exported(editor) == beforeLinkCancel && changed.size() == linkCount);
     dialogs({[&](QDialog *dialog) {
         auto *source = dialog->findChild<QComboBox *>(QStringLiteral("sourceNode"));
@@ -5714,7 +5902,7 @@ static void controls_case() {
         topic->setText(QStringLiteral("UI hidden endpoint"));
         directed->setChecked(false);
         dialog->accept();
-    }}, [&] { clickLabel(editor, QStringLiteral("UI self link"), true); });
+    }}, [&] { trigger(editor, "editLink"); });
     CHECK(record(exported(editor), "crossLinks", uiLink).at("target") == utf8(added));
     CHECK(record(exported(editor), "crossLinks", uiLink).at("topic") == "UI hidden endpoint");
     CHECK(record(exported(editor), "crossLinks", uiLink).at("directed") == false);
@@ -6593,6 +6781,7 @@ int main(int argc, char **argv) {
         else if (name == "hyperlinks") hyperlinks_case();
         else if (name == "controls") controls_case();
         else if (name == "inline_edit") inline_edit_case();
+        else if (name == "link_interaction") link_interaction_case();
         else if (name == "configuration") configuration_case();
         else if (name == "shortcut_help") shortcut_help_case();
         else if (name == "shortcuts") shortcuts_case();

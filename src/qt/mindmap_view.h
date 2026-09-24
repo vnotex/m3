@@ -17,6 +17,7 @@ public:
     explicit MindMapView(QWidget *parent = nullptr);
     ~MindMapView() override;
     void beginTopicEdit(const QString &id, const QList<QKeySequence> &acceptShortcuts);
+    void beginLinkTopicEdit(const QString &id, const QList<QKeySequence> &acceptShortcuts);
     void finishTopicEdit(bool commit, bool restoreFocus = false);
     void prepare(NodePresentation &node) const;
     void install(Presentation presentation, bool fit);
@@ -30,6 +31,8 @@ public:
     void resetZoom();
 signals:
     void topicEditRequested(const QString &id, const QString &topic);
+    void linkTopicEditRequested(const QString &id, const QString &topic);
+    void linkCreationRequested(const QString &source, const QString &target);
     void topicEditingChanged(bool editing);
     void nodePicked(const QString &id);
     void nodeLinkActivated(const QString &nodeId, const QString &url);
@@ -46,6 +49,7 @@ protected:
     bool viewportEvent(QEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
     void scrollContentsBy(int dx, int dy) override;
+    void drawForeground(QPainter *painter, const QRectF &rect) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dragMoveEvent(QDragMoveEvent *event) override;
     void dragLeaveEvent(QDragLeaveEvent *event) override;
@@ -63,6 +67,11 @@ private:
     bool pendingFit = false;
     QPointF panPosition;
     QHash<QString, QString> nodeParents;
+    QGraphicsItem *linkCreationHandle = nullptr;
+    QString linkSourceId;
+    QPoint linkCreationPressPosition;
+    QPointF linkPreviewStart, linkPreviewEnd;
+    bool linkCreating = false, suppressLinkContextMenu = false;
     QString pressedLinkNodeId, pressedLinkUrl;
     QPoint linkPressPosition;
     QString draggedNodeId, dropTargetId;
@@ -75,11 +84,20 @@ private:
     QPointF imagePressScenePosition;
     QGraphicsItem *resizedImageItem = nullptr;
     bool imageResizeDragging = false;
+    enum class TopicKind { Node, Link };
+    TopicKind editedKind = TopicKind::Node;
+    bool topicLabelVisible = false;
     QPointer<QPlainTextEdit> topicEditor;
     QPointer<QGraphicsTextItem> topicLabel;
     QString editedId, originalTopic, originalTopicDraft;
     Qt::FocusPolicy viewFocusPolicy = Qt::NoFocus, viewportFocusPolicy = Qt::NoFocus;
+    static QGraphicsTextItem *findTopicLabel(QGraphicsScene *scene, const QString &id, TopicKind kind);
+    void beginTopicEdit(TopicKind kind, const QString &id, const QList<QKeySequence> &acceptShortcuts);
     void updateTopicEditorGeometry();
+    void clearLinkCreation();
+    bool handleLinkCreationEvent(QEvent *event);
+    void updateLinkCreation(const QPoint &position);
+    QString linkTargetAt(const QPoint &position) const;
     QGraphicsItem *targetAt(const QPoint &position) const;
     void updatePanCursor(const QPoint &position);
     QString dropTargetAt(const QPoint &position) const;

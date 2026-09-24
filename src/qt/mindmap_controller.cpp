@@ -311,7 +311,9 @@ void MindMapController::install(Presentation presentation, bool fit) {
     QSet<QString> nodes, links;
     for (const auto &n : presentation.nodes) nodes.insert(n.id);
     for (const auto &l : presentation.links) links.insert(l.id);
+    const QPointer<MindMapController> guard(this);
     view.install(std::move(presentation), fit);
+    if (!guard) return;
     visibleNodes.swap(nodes);
     visibleLinks.swap(links);
     ++imageGeneration; // Also stop request delivery across a reentrant visual/semantic rebuild.
@@ -324,8 +326,11 @@ void MindMapController::selection(const QString &node, const QString &link) {
     }
     selectedNode = node;
     selectedLink = link;
+    const QPointer<MindMapController> guard(this);
     view.setSelection(node, link);
+    if (!guard) return;
     view.ensureNodeVisible(node);
+    if (!guard) return;
     emit selectionChanged(node, link);
 }
 bool MindMapController::replace(Map candidate) {
@@ -368,9 +373,12 @@ bool MindMapController::selectLink(const QString &id) {
 void MindMapController::clearSelection() { success(); selection({}, {}); }
 bool MindMapController::changed(M3Status result, const QString &preferredNode, const QString &preferredLink) {
     if (!status(result)) return false;
+    const QPointer<MindMapController> guard(this);
     success();
+    if (!guard) return true;
     try {
         install(prepare(model.get(), direction), false);
+        if (!guard) return true;
         if (visibleNodes.contains(preferredNode)) selection(preferredNode, {});
         else if (visibleLinks.contains(preferredLink)) selection({}, preferredLink);
         else if (visibleNodes.contains(selectedNode)) view.setSelection(selectedNode, {});
@@ -379,9 +387,12 @@ bool MindMapController::changed(M3Status result, const QString &preferredNode, c
     } catch (const std::exception &e) {
         visibleNodes.clear(); visibleLinks.clear();
         view.showError(QString::fromUtf8(e.what()));
+        if (!guard) return true;
         selection({}, {});
+        if (!guard) return true;
         fail(QString::fromUtf8(e.what()));
     }
+    if (!guard) return true;
     emit documentChanged();
     return true;
 }
@@ -495,6 +506,11 @@ bool MindMapController::updateLink(const QString &id, const QString &source, con
     if (!strings({id, source, target, topic})) return false;
     const auto patch = Json{{"source", utf8(source)}, {"target", utf8(target)},
                             {"directed", directed}, {"topic", utf8(topic)}}.dump();
+    return changed(m3_mindmap_update_link(model.get(), id.toUtf8().constData(), patch.c_str()));
+}
+bool MindMapController::commitLinkTopicEdit(const QString &id, const QString &topic) {
+    if (!strings({id, topic})) return false;
+    const auto patch = Json{{"topic", utf8(topic)}}.dump();
     return changed(m3_mindmap_update_link(model.get(), id.toUtf8().constData(), patch.c_str()));
 }
 bool MindMapController::removeLink(const QString &id) {

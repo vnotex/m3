@@ -14,7 +14,7 @@ A C++17 mind-map library with a public C API and an optional Qt Widgets editor. 
 - **Portable documents:** native JSON preserves the semantic map. Import also accepts simple nested trees and compatible Mind Elixir documents.
 - **Export:** Markdown and a six-level outline JSON projection in the core; standalone HTML export in the Qt editor. These exports are not full-fidelity round-trip formats.
 - **Layout:** balanced, left, right and outline layouts, with collapsed branches retained in the document.
-- **Interactive editing:** inline topics, drag-and-drop moving, node properties, configurable shortcuts, zoom and pan.
+- **Interactive editing:** inline node/link topics, drag-to-link creation, drag-and-drop moving, node properties, configurable shortcuts, zoom and pan.
 
 ## Build the core
 
@@ -75,6 +75,8 @@ target_link_libraries(my_app PRIVATE m3::qt_editor)
 ```
 
 [`m3::qt::MindMapEditor`](include/m3/qt/editor.h) is a `QWidget` that owns its model. Hosts provide a `QApplication`, use the GUI thread, and retain control of file handling and URL activation. Selection, layout direction, zoom and pan are view state, not persisted JSON. Core-only package discovery does not require Qt.
+
+Select a node to show its top-right arrow. Drag the arrow onto another node to create an undirected cross-link and immediately edit its topic. F2 or double-click edits an existing node/link topic inline; Enter accepts, Escape cancels the draft, and clicking outside saves. Canceling the first draft keeps the newly created link. Use **Link properties** in the toolbar or link context menu to change endpoints or direction.
 
 For shared-library builds, make the m3 runtime libraries available to your application; the Qt editor also needs its matching Qt runtime and plugins. See the installed-package [core consumer](tests/consumer/CMakeLists.txt) and [Qt consumer](tests/qt_consumer/CMakeLists.txt) examples for linking and Windows DLL copying.
 

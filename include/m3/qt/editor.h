@@ -38,6 +38,10 @@
 // Node context menus separate creation from editing/reordering and omit viewport actions.
 // With no selection the menu contains only Focus Main Node, Fit, Zoom In, Zoom Out and 100%.
 // Collapse/Expand, Move and Add Link remain available through the toolbar and shortcuts.
+// Selected nodes show a small arrow outside their top-right corner. Drag it onto
+// another visible node to create an undirected cross-link without moving either node.
+// Escape, an interrupted gesture, or an invalid drop cancels without changing the document.
+// Link properties in the toolbar/link menu edits endpoints and direction.
 // Selecting a node or accepting an inline topic scrolls its full bounds into view
 // without changing zoom; oversized nodes can only be partially shown by scrolling.
 // Expanding a node centers it at the current zoom; large branches may still
@@ -87,15 +91,18 @@ namespace m3::qt {
 // swatch in the current Text/Fill mode: row (1-4), then column (1-6); 11 selects Auto.
 // Child inputs and active shortcuts take priority. Changing focus or interrupting
 // the code cancels a partial entry. Digits in text fields remain ordinary input.
-// E begins inline topic editing for nodes only; F2 still edits nodes or links. These
-// letters remain ordinary input while typing, including in the inline topic draft.
+// E begins inline topic editing for nodes only; F2 and double-click edit node or
+// link topics inline. Link topics are literal text, without node hashtag parsing.
+// These letters remain ordinary input while typing, including in the inline draft.
 // P toggles the selected node's properties card, keeping focus on the canvas.
 // With canvas focus, ? opens shortcut help for any selection. Escape or an outside
 // click dismisses it; Escape returns focus to the canvas without clearing selection.
 // acceptTopic applies only during
-// inline editing, while map shortcuts are suspended. UI creation inserts a blank
-// node and starts inline editing. Escape cancels the draft (keeping a newly created
-// blank node); clicking outside saves. Programmatic addNode does not start editing.
+// inline editing, while map shortcuts are suspended. UI node creation inserts a
+// blank node and starts inline editing. UI link creation (arrow drag or Add Link
+// dialog) selects the new visible link and starts inline editing; the dialog also
+// defaults to undirected. Escape cancels only the draft, keeping the created node
+// or link; clicking outside saves. Programmatic addNode/addLink do not start editing.
 // Example: config.shortcuts.addChild = {QKeySequence(QStringLiteral("Ctrl+J"))};
 //          MindMapEditor editor(config);
 struct EditorConfig {

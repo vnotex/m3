@@ -655,7 +655,7 @@ public:
     QToolBar *toolbar;
     QComboBox *direction;
     QAction *addChild, *addSibling, *addSiblingBefore, *editSelection, *deleteSelection, *toggleExpanded, *move, *up, *down, *addLink;
-    QAction *rootSelection, *clearSelectionAction;
+    QAction *rootSelection, *clearSelectionAction, *editLink;
     QList<QAction *> nodeNavigation;
     NodePropertiesPanel *properties;
     QList<QAction *> nodeEditingActions;
@@ -766,6 +766,7 @@ public:
         rootSelection->setEnabled(!nodes.empty());
         clearSelectionAction->setEnabled(node || hasLink);
         editSelection->setEnabled(node || hasLink);
+        editLink->setEnabled(hasLink);
         deleteSelection->setEnabled(movable || hasLink);
         move->setEnabled(movable);
         toggleExpanded->setEnabled(node && !node->children.isEmpty());
@@ -818,28 +819,40 @@ public:
         const QString id = controller->selectedLinkId();
         const auto link = insert ? LinkPresentation{} : controller->linkChoice(id);
         if (!insert && link.id.isEmpty()) return;
-        QDialog dialog(host);
-        dialog.setWindowTitle(insert ? tr("Add link") : tr("Edit link"));
-        auto *form = new QFormLayout(&dialog);
-        auto *source = new QComboBox(&dialog), *target = new QComboBox(&dialog);
+        const QPointer<MindMapEditor> guard(host);
+        QPointer<QDialog> dialog(new QDialog(host));
+        dialog->setWindowTitle(insert ? tr("Add link") : tr("Edit link"));
+        auto *form = new QFormLayout(dialog);
+        auto *source = new QComboBox(dialog), *target = new QComboBox(dialog);
         source->setObjectName(QStringLiteral("sourceNode")); target->setObjectName(QStringLiteral("targetNode"));
         populate(source, nodes); populate(target, nodes);
         source->setCurrentIndex(source->findData(insert ? controller->selectedNodeId() : link.source));
         target->setCurrentIndex(target->findData(insert ? controller->selectedNodeId() : link.target));
-        auto *topic = new QLineEdit(link.topic, &dialog);
+        auto *topic = new QLineEdit(link.topic, dialog);
         topic->setObjectName(QStringLiteral("linkTopic"));
-        auto *directed = new QCheckBox(tr("Directed"), &dialog);
-        directed->setObjectName(QStringLiteral("directed")); directed->setChecked(insert || link.directed);
+        auto *directed = new QCheckBox(tr("Directed"), dialog);
+        directed->setObjectName(QStringLiteral("directed")); directed->setChecked(!insert && link.directed);
         form->addRow(tr("Source"), source); form->addRow(tr("Target"), target);
         form->addRow(tr("Topic"), topic); form->addRow(directed);
-        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
         form->addRow(buttons);
-        QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-        QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-        if (dialog.exec() == QDialog::Accepted) {
-            if (insert) controller->addLink(source->currentData().toString(), target->currentData().toString(), directed->isChecked(), topic->text());
-            else controller->updateLink(id, source->currentData().toString(), target->currentData().toString(), directed->isChecked(), topic->text());
-        }
+        QObject::connect(buttons, &QDialogButtonBox::accepted, dialog.data(), &QDialog::accept);
+        QObject::connect(buttons, &QDialogButtonBox::rejected, dialog.data(), &QDialog::reject);
+        const bool accepted = dialog->exec() == QDialog::Accepted;
+        if (!guard || !dialog) return;
+        if (!accepted) { delete dialog.data(); return; }
+        const QString sourceId = source->currentData().toString(), targetId = target->currentData().toString();
+        const QString linkTopic = topic->text();
+        const bool isDirected = directed->isChecked();
+        delete dialog.data();
+        if (!guard) return;
+        if (insert) {
+            const QString created = controller->addLink(sourceId, targetId, isDirected, linkTopic);
+            if (guard && !created.isEmpty() && controller->selectedLinkId() == created) {
+                host->activateWindow();
+                if (guard) view->beginLinkTopicEdit(created, config.shortcuts.acceptTopic);
+            }
+        } else controller->updateLink(id, sourceId, targetId, isDirected, linkTopic);
     }
     void moveDialog() {
         const auto nodes = controller->choices();
@@ -895,7 +908,7 @@ public:
         editSelection = action("editSelection", tr("Rename/Edit"), config.shortcuts.editSelection, [this] {
             if (controller->selectedLinkId().isEmpty())
                 view->beginTopicEdit(controller->selectedNodeId(), config.shortcuts.acceptTopic);
-            else linkDialog(false);
+            else view->beginLinkTopicEdit(controller->selectedLinkId(), config.shortcuts.acceptTopic);
         });
         deleteSelection = action("deleteSelection", tr("Delete"), config.shortcuts.deleteSelection, [this] {
             const auto link = controller->selectedLinkId(), node = controller->selectedNodeId();
@@ -913,6 +926,7 @@ public:
         up = action("moveUp", tr("Move Up"), config.shortcuts.moveUp, [this] { reorder(-1); });
         down = action("moveDown", tr("Move Down"), config.shortcuts.moveDown, [this] { reorder(1); });
         addLink = action("addLink", tr("Add link"), config.shortcuts.addLink, [this] { linkDialog(true); });
+        editLink = action("editLink", tr("Link properties..."), {}, [this] { linkDialog(false); });
         toolbar = new QToolBar(editor);
         layout->addWidget(toolbar);
         auto *zoomIn = action("zoomIn", tr("Zoom In"), config.shortcuts.zoomIn, [this] { view->zoom(1.2); });
@@ -964,7 +978,9 @@ public:
         shortcutHelpText = shortcutHelp();
         view->setContextMenuPolicy(Qt::CustomContextMenu);
         QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this, zoomIn, zoomOut, resetZoom, fit](const QPoint &point) {
+            const QPointer<MindMapEditor> guard(host);
             view->finishTopicEdit(true);
+            if (!guard) return;
             const QString nodeId = controller->selectedNodeId();
             const bool hasNode = nodeId.isEmpty() == false;
             const bool hasLink = controller->selectedLinkId().isEmpty() == false;
@@ -973,6 +989,7 @@ public:
                 menu.addActions({addChild, addSibling, addSiblingBefore});
                 menu.addSeparator();
                 menu.addAction(editSelection);
+                if (hasLink) menu.addAction(editLink);
                 menu.addAction(tr("Add URL"), host, [this, nodeId] { host->onAddUrl(nodeId); })->setEnabled(hasNode);
                 menu.addAction(tr("Add Image"), host, [this, nodeId] { host->onAddImage(nodeId); })->setEnabled(hasNode);
                 menu.addSeparator();
@@ -1022,6 +1039,13 @@ public:
         QObject::connect(view, &MindMapView::appearanceChanged, controller, &MindMapController::refreshAppearance);
         QObject::connect(view, &MindMapView::editRequested, editSelection, &QAction::trigger);
         QObject::connect(view, &MindMapView::topicEditRequested, controller, &MindMapController::commitTopicEdit);
+        QObject::connect(view, &MindMapView::linkTopicEditRequested, controller, &MindMapController::commitLinkTopicEdit);
+        QObject::connect(view, &MindMapView::linkCreationRequested, editor, [this](const QString &source, const QString &target) {
+            const QPointer<MindMapEditor> guard(host);
+            const QString created = controller->addLink(source, target, false, {});
+            if (guard && !created.isEmpty() && controller->selectedLinkId() == created)
+                view->beginLinkTopicEdit(created, config.shortcuts.acceptTopic);
+        });
         controller->newDocument(QStringLiteral("Central topic"));
         updateActions();
     }
