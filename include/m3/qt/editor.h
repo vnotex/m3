@@ -214,6 +214,11 @@ protected:
     // mutation, preserving any existing URL. This is a synchronous conversion
     // hook, not an asynchronous operation or document-mutation callback.
     virtual QString resolveDroppedFileUrl(const QString &filePath) const;
+    // Synchronous context-menu hooks, called after any inline draft is committed.
+    // nodeId is the selected node when the menu opens. Defaults do nothing;
+    // subclasses own URL/image editing and any resulting document changes.
+    virtual void onAddUrl(const QString &nodeId);
+    virtual void onAddImage(const QString &nodeId);
 private:
     class Private;
     std::unique_ptr<Private> d;

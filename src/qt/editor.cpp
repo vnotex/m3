@@ -965,13 +965,18 @@ public:
         view->setContextMenuPolicy(Qt::CustomContextMenu);
         QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this, zoomIn, zoomOut, resetZoom, fit](const QPoint &point) {
             view->finishTopicEdit(true);
-            const bool hasNode = controller->selectedNodeId().isEmpty() == false;
+            const QString nodeId = controller->selectedNodeId();
+            const bool hasNode = nodeId.isEmpty() == false;
             const bool hasLink = controller->selectedLinkId().isEmpty() == false;
             QMenu menu(host);
             if (hasNode || hasLink) {
                 menu.addActions({addChild, addSibling, addSiblingBefore});
                 menu.addSeparator();
-                menu.addActions({editSelection, deleteSelection, up, down});
+                menu.addAction(editSelection);
+                menu.addAction(tr("Add URL"), host, [this, nodeId] { host->onAddUrl(nodeId); })->setEnabled(hasNode);
+                menu.addAction(tr("Add Image"), host, [this, nodeId] { host->onAddImage(nodeId); })->setEnabled(hasNode);
+                menu.addSeparator();
+                menu.addActions({deleteSelection, up, down});
             }
             if (!hasNode) {
                 if (hasLink) menu.addSeparator();
@@ -1031,6 +1036,8 @@ MindMapEditor::~MindMapEditor() {
 QString MindMapEditor::resolveDroppedFileUrl(const QString &filePath) const {
     return QUrl::fromLocalFile(filePath).toString(QUrl::FullyEncoded);
 }
+void MindMapEditor::onAddUrl(const QString &) {}
+void MindMapEditor::onAddImage(const QString &) {}
 bool MindMapEditor::newDocument(const QString &topic) { return d->controller->newDocument(topic); }
 bool MindMapEditor::loadJson(const QByteArray &json) { return d->controller->loadJson(json); }
 QByteArray MindMapEditor::toJson() const { return d->controller->toJson(); }
