@@ -661,7 +661,6 @@ public:
     QList<QAction *> nodeEditingActions;
     enum class TopicOperation { Child, SiblingAfter, SiblingBefore };
     enum class Navigation { Parent, Child, PreviousSibling, NextSibling };
-    QList<QAction *> menuActions;
     QString shortcutHelpText;
     QPointer<ShortcutHelpPopup> helpPopup;
     void showHelp() {
@@ -736,10 +735,7 @@ public:
         result->setToolTip(keys.isEmpty() ? text : text + QStringLiteral(" (%1)").arg(keys.join(QStringLiteral(", "))));
         result->setShortcutContext(Qt::WidgetWithChildrenShortcut);
         view->addAction(result);
-        if (showInToolbar) {
-            toolbar->addAction(result);
-            menuActions.append(result);
-        }
+        if (showInToolbar) toolbar->addAction(result);
         QObject::connect(view, &MindMapView::topicEditingChanged, result, [result, shortcuts](bool editing) {
             result->setShortcuts(editing ? QList<QKeySequence>{} : shortcuts);
         });
@@ -893,9 +889,9 @@ public:
         controller = new MindMapController(*view, config.resourceBasePath, editor);
         toolbar = new QToolBar(editor);
         layout->addWidget(toolbar);
-        addChild = action("addChild", tr("Add child"), config.shortcuts.addChild, [this] { createNode(TopicOperation::Child); });
-        addSibling = action("addSibling", tr("Add sibling"), config.shortcuts.addSibling, [this] { createNode(TopicOperation::SiblingAfter); });
-        addSiblingBefore = action("addSiblingBefore", tr("Add sibling before"), config.shortcuts.addSiblingBefore, [this] { createNode(TopicOperation::SiblingBefore); });
+        addChild = action("addChild", tr("Add Child"), config.shortcuts.addChild, [this] { createNode(TopicOperation::Child); });
+        addSibling = action("addSibling", tr("Add Sibling"), config.shortcuts.addSibling, [this] { createNode(TopicOperation::SiblingAfter); });
+        addSiblingBefore = action("addSiblingBefore", tr("Add Sibling Before"), config.shortcuts.addSiblingBefore, [this] { createNode(TopicOperation::SiblingBefore); });
         editSelection = action("editSelection", tr("Rename/Edit"), config.shortcuts.editSelection, [this] {
             if (controller->selectedLinkId().isEmpty())
                 view->beginTopicEdit(controller->selectedNodeId(), config.shortcuts.acceptTopic);
@@ -914,16 +910,16 @@ public:
             if (node) controller->setExpanded(node->id, !node->expanded);
         });
         move = action("moveNode", tr("Move..."), config.shortcuts.moveNode, [this] { moveDialog(); });
-        up = action("moveUp", tr("Move up"), config.shortcuts.moveUp, [this] { reorder(-1); });
-        down = action("moveDown", tr("Move down"), config.shortcuts.moveDown, [this] { reorder(1); });
+        up = action("moveUp", tr("Move Up"), config.shortcuts.moveUp, [this] { reorder(-1); });
+        down = action("moveDown", tr("Move Down"), config.shortcuts.moveDown, [this] { reorder(1); });
         addLink = action("addLink", tr("Add link"), config.shortcuts.addLink, [this] { linkDialog(true); });
         toolbar = new QToolBar(editor);
         layout->addWidget(toolbar);
-        action("zoomIn", tr("Zoom +"), config.shortcuts.zoomIn, [this] { view->zoom(1.2); });
-        action("zoomOut", tr("Zoom -"), config.shortcuts.zoomOut, [this] { view->zoom(1 / 1.2); });
-        action("resetZoom", tr("100%"), config.shortcuts.resetZoom, [this] { view->resetZoom(); });
-        action("fit", tr("Fit"), config.shortcuts.fit, [this] { view->fitContents(); });
-        rootSelection = action("selectRoot", tr("Focus main node"), config.shortcuts.selectRoot, [this] { host->focusRoot(); });
+        auto *zoomIn = action("zoomIn", tr("Zoom In"), config.shortcuts.zoomIn, [this] { view->zoom(1.2); });
+        auto *zoomOut = action("zoomOut", tr("Zoom Out"), config.shortcuts.zoomOut, [this] { view->zoom(1 / 1.2); });
+        auto *resetZoom = action("resetZoom", tr("100%"), config.shortcuts.resetZoom, [this] { view->resetZoom(); });
+        auto *fit = action("fit", tr("Fit"), config.shortcuts.fit, [this] { view->fitContents(); });
+        rootSelection = action("selectRoot", tr("Focus Main Node"), config.shortcuts.selectRoot, [this] { host->focusRoot(); });
         direction = new QComboBox(toolbar);
         direction->setObjectName(QStringLiteral("layoutDirection"));
         direction->addItem(tr("Balanced"), int(LayoutDirection::Balanced));
@@ -967,9 +963,21 @@ public:
         // Snapshot configured bindings before inline editing temporarily clears them.
         shortcutHelpText = shortcutHelp();
         view->setContextMenuPolicy(Qt::CustomContextMenu);
-        QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this](const QPoint &point) {
+        QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this, zoomIn, zoomOut, resetZoom, fit](const QPoint &point) {
             view->finishTopicEdit(true);
-            QMenu menu(host); menu.addActions(menuActions); menu.exec(view->mapToGlobal(point));
+            const bool hasNode = controller->selectedNodeId().isEmpty() == false;
+            const bool hasLink = controller->selectedLinkId().isEmpty() == false;
+            QMenu menu(host);
+            if (hasNode || hasLink) {
+                menu.addActions({addChild, addSibling, addSiblingBefore});
+                menu.addSeparator();
+                menu.addActions({editSelection, deleteSelection, up, down});
+            }
+            if (!hasNode) {
+                if (hasLink) menu.addSeparator();
+                menu.addActions({rootSelection, fit, zoomIn, zoomOut, resetZoom});
+            }
+            menu.exec(view->mapToGlobal(point));
         });
         QObject::connect(controller, &MindMapController::documentChanged, editor, [this, editor] { updateActions(); emit editor->documentChanged(); });
         QObject::connect(controller, &MindMapController::selectionChanged, editor, [this, editor](const QString &node, const QString &link) {

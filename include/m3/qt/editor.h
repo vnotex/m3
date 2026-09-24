@@ -35,6 +35,9 @@
 // Selection, layout direction, zoom/pan and fit never change persisted JSON.
 // Drag empty space with the left mouse button to pan; the middle button pans anywhere.
 // Empty space shows an open hand cursor, closing during a pan. Empty clicks clear selection.
+// Node context menus separate creation from editing/reordering and omit viewport actions.
+// With no selection the menu contains only Focus Main Node, Fit, Zoom In, Zoom Out and 100%.
+// Collapse/Expand, Move and Add Link remain available through the toolbar and shortcuts.
 // Selecting a node or accepting an inline topic scrolls its full bounds into view
 // without changing zoom; oversized nodes can only be partially shown by scrolling.
 // Expanding a node centers it at the current zoom; large branches may still
