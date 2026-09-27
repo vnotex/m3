@@ -180,9 +180,9 @@ struct EditorConfig {
     // Prefer colors unused by current main branches, comparing their effective
     // QColor values (local override or inherited root color); nested overrides
     // do not reserve colors. Once all 23 are used, allow any palette color.
-    // Disabled by default. Creation only: loading/moving nodes never recolors them.
+    // Enabled by default. Creation only: loading/moving nodes never recolors them.
     // The setting is copied, not persisted; each assigned branchColor is persisted.
-    bool autoRandomBranchColor = false;
+    bool autoRandomBranchColor = true;
 };
 class M3_QT_API MindMapEditor : public QWidget {
     Q_OBJECT

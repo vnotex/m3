@@ -3210,7 +3210,9 @@ static void branch_color_case() {
         {"id":"a1x","topic":"Leaf"},{"id":"a2","topic":"Sibling"},
         {"id":"b","topic":"Beta"}],"crossLinks":[
         {"id":"cross","source":"a2","target":"b","directed":false,"topic":"Cross"}]})");
-    Editor editor;
+    m3::qt::EditorConfig config;
+    config.autoRandomBranchColor = false;
+    Editor editor(config);
     htmlAppearance(editor);
     CHECK(editor.loadJson(encoded(input)));
     CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
@@ -3480,7 +3482,6 @@ static void branch_color_case() {
 
 static void auto_branch_color_case() {
     m3::qt::EditorConfig config;
-    config.autoRandomBranchColor = true;
     Editor editor(config);
     config.autoRandomBranchColor = false;
     Editor disabled(config);
