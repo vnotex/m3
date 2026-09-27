@@ -47,6 +47,21 @@
 #include <QUrl>
 namespace m3::qt {
 namespace {
+struct ColorSwatch { const char *hex; const char *name; };
+constexpr ColorSwatch nodeColors[] = {
+    {"#ffffff", QT_TR_NOOP("White")}, {"#ecf0f1", QT_TR_NOOP("Cloud")},
+    {"#95a5a6", QT_TR_NOOP("Gray")}, {"#34495e", QT_TR_NOOP("Slate")},
+    {"#2c3e50", QT_TR_NOOP("Midnight")}, {"#000000", QT_TR_NOOP("Black")},
+    {"#e74c3c", QT_TR_NOOP("Red")}, {"#e67e22", QT_TR_NOOP("Orange")},
+    {"#f39c12", QT_TR_NOOP("Amber")}, {"#f1c40f", QT_TR_NOOP("Yellow")},
+    {"#2ecc71", QT_TR_NOOP("Green")}, {"#27ae60", QT_TR_NOOP("Forest")},
+    {"#1abc9c", QT_TR_NOOP("Teal")}, {"#16a085", QT_TR_NOOP("Jade")},
+    {"#3498db", QT_TR_NOOP("Blue")}, {"#2980b9", QT_TR_NOOP("Ocean")},
+    {"#9b59b6", QT_TR_NOOP("Purple")}, {"#8e44ad", QT_TR_NOOP("Violet")},
+    {"#ffb6c1", QT_TR_NOOP("Pink")}, {"#f4a6a6", QT_TR_NOOP("Rose")},
+    {"#ffd3a5", QT_TR_NOOP("Peach")}, {"#a8e6cf", QT_TR_NOOP("Mint")},
+    {"#a9d6f5", QT_TR_NOOP("Sky")}
+};
 QString loadStyleSheet(const QString &path) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly))
@@ -267,22 +282,7 @@ public:
         defaultColor->setToolButtonStyle(Qt::ToolButtonTextOnly);
         defaultColor->setAccessibleName(tr("Default color"));
         palette->addWidget(defaultColor, 0, 0);
-        struct Swatch { const char *hex; const char *name; };
-        const Swatch colors[] = {
-            {"#ffffff", QT_TR_NOOP("White")}, {"#ecf0f1", QT_TR_NOOP("Cloud")},
-            {"#95a5a6", QT_TR_NOOP("Gray")}, {"#34495e", QT_TR_NOOP("Slate")},
-            {"#2c3e50", QT_TR_NOOP("Midnight")}, {"#000000", QT_TR_NOOP("Black")},
-            {"#e74c3c", QT_TR_NOOP("Red")}, {"#e67e22", QT_TR_NOOP("Orange")},
-            {"#f39c12", QT_TR_NOOP("Amber")}, {"#f1c40f", QT_TR_NOOP("Yellow")},
-            {"#2ecc71", QT_TR_NOOP("Green")}, {"#27ae60", QT_TR_NOOP("Forest")},
-            {"#1abc9c", QT_TR_NOOP("Teal")}, {"#16a085", QT_TR_NOOP("Jade")},
-            {"#3498db", QT_TR_NOOP("Blue")}, {"#2980b9", QT_TR_NOOP("Ocean")},
-            {"#9b59b6", QT_TR_NOOP("Purple")}, {"#8e44ad", QT_TR_NOOP("Violet")},
-            {"#ffb6c1", QT_TR_NOOP("Pink")}, {"#f4a6a6", QT_TR_NOOP("Rose")},
-            {"#ffd3a5", QT_TR_NOOP("Peach")}, {"#a8e6cf", QT_TR_NOOP("Mint")},
-            {"#a9d6f5", QT_TR_NOOP("Sky")}
-        };
-        for (const auto &entry : colors) {
+        for (const auto &entry : nodeColors) {
             const QString hex = QString::fromLatin1(entry.hex);
             const QString description = tr("%1 (%2)").arg(tr(entry.name), hex);
             const QString contrast = QColor(hex).lightnessF() > 0.55 ? QStringLiteral("#202020") : QStringLiteral("#ffffff");
@@ -1013,11 +1013,41 @@ public:
             const QString linkId = controller->selectedLinkId();
             QMenu menu(host);
             if (hasNode) {
+                const auto node = controller->nodeProperties(nodeId);
+                if (!guard || node.id.isEmpty()) return;
                 menu.addActions({addChild, addSibling, addSiblingBefore});
                 menu.addSeparator();
                 menu.addAction(editSelection);
                 menu.addAction(tr("Add URL"), host, [this, nodeId] { host->onAddUrl(nodeId); })->setEnabled(hasNode);
                 menu.addAction(tr("Add Image"), host, [this, nodeId] { host->onAddImage(nodeId); })->setEnabled(hasNode);
+                auto *branchMenu = menu.addMenu(tr("Set Branch Color"));
+                auto *branchGroup = new QActionGroup(branchMenu);
+                branchGroup->setExclusive(true);
+                auto addBranchColor = [&](const QString &label, const QColor &color, const QJsonValue &value) {
+                    auto *action = branchMenu->addAction(label);
+                    action->setCheckable(true);
+                    branchGroup->addAction(action);
+                    action->setChecked(color == node.style.branchColor);
+                    if (color.isValid()) {
+                        QPixmap swatch(16, 16);
+                        swatch.fill(color);
+                        QPainter painter(&swatch);
+                        painter.setPen(branchMenu->palette().color(QPalette::Mid));
+                        painter.drawRect(0, 0, 15, 15);
+                        painter.end();
+                        action->setIcon(QIcon(swatch));
+                    }
+                    QObject::connect(action, &QAction::triggered, host, [this, nodeId, value] {
+                        const QJsonObject patch{{QStringLiteral("style"),
+                            QJsonObject{{QStringLiteral("branchColor"), value}}}};
+                        controller->updateNodeProperties(nodeId, QJsonDocument(patch).toJson(QJsonDocument::Compact));
+                    });
+                };
+                addBranchColor(tr("Auto"), QColor(), QJsonValue(QJsonValue::Null));
+                for (const auto &entry : nodeColors) {
+                    const QString hex = QString::fromLatin1(entry.hex);
+                    addBranchColor(tr("%1 (%2)").arg(tr(entry.name), hex), QColor(hex), hex);
+                }
                 menu.addSeparator();
                 menu.addActions({deleteSelection, up, down});
             } else if (!linkId.isEmpty()) {

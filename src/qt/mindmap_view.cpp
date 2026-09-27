@@ -196,14 +196,15 @@ public:
     QRectF rect;
     std::vector<QRectF> tagRectangles;
     QPalette colors;
-    QColor backgroundColor;
+    QColor backgroundColor, branchColor;
     QGraphicsTextItem *label;
     std::optional<NodeImage> image;
     NodeImageItem *imageItem = nullptr;
     NodeItem(NodePresentation node, const QPalette &palette)
         : id(node.id), hyperlink(node.hyperlink), expanded(node.expanded), hasChildren(node.hasChildren),
           rect(QPointF(), node.rectangle.size()), colors(palette),
-          backgroundColor(node.style.backgroundColor.isValid() ? node.style.backgroundColor : palette.color(QPalette::Button)) {
+          backgroundColor(node.style.backgroundColor.isValid() ? node.style.backgroundColor : palette.color(QPalette::Button)),
+          branchColor(node.style.branchColor) {
         image = node.image;
         if (image && !image->url.isEmpty()) imageItem = new NodeImageItem(node, palette, this);
         setPos(node.rectangle.topLeft());
@@ -248,7 +249,8 @@ public:
     QRectF boundingRect() const override { return rect.adjusted(-2, -2, 2, 2); }
     QPainterPath shape() const override { QPainterPath path; path.addRoundedRect(rect, 8, 8); return path; }
     void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
-        p->setPen(QPen(colors.color(dropTarget || isSelected() ? QPalette::Highlight : QPalette::Mid),
+        p->setPen(QPen(branchColor.isValid() ? branchColor :
+                       colors.color(dropTarget || isSelected() ? QPalette::Highlight : QPalette::Mid),
                        dropTarget || isSelected() ? 3 : 1, dropTarget ? Qt::DashLine : Qt::SolidLine));
         p->setBrush(backgroundColor);
         p->drawRoundedRect(rect, 8, 8);
@@ -527,18 +529,19 @@ QPointF boundary(const QRectF &rect, const QPointF &towards) {
 }
 std::unique_ptr<QGraphicsScene> buildScene(Presentation presentation, const QFont &font, const QPalette &palette) {
     auto replacement = std::make_unique<QGraphicsScene>();
-    QHash<QString, QRectF> rectangles;
+    QHash<QString, const NodePresentation *> nodePresentations;
     std::vector<QRectF> nodes;
     nodes.reserve(presentation.nodes.size());
     std::vector<QRectF> occupied;
     occupied.reserve(presentation.nodes.size() + presentation.links.size());
     for (const auto &node : presentation.nodes) {
-        rectangles.insert(node.id, node.rectangle);
+        nodePresentations.insert(node.id, &node);
         nodes.push_back(node.rectangle);
         occupied.push_back(node.rectangle.adjusted(-2, -2, 2, 2));
     }
     for (const auto &edge : presentation.treeEdges) {
-        const QRectF parent = rectangles.value(edge.source), child = rectangles.value(edge.target);
+        const auto *target = nodePresentations.value(edge.target);
+        const QRectF parent = nodePresentations.value(edge.source)->rectangle, child = target->rectangle;
         QPainterPath path;
         if (presentation.outline) {
             const qreal trunk = parent.left() + 16;
@@ -553,7 +556,8 @@ std::unique_ptr<QGraphicsScene> buildScene(Presentation presentation, const QFon
             path.moveTo(from);
             path.cubicTo(QPointF(middle, from.y()), QPointF(middle, to.y()), to);
         }
-        auto *item = replacement->addPath(path, QPen(palette.color(QPalette::Mid), 1));
+        const QColor color = target->style.branchColor.isValid() ? target->style.branchColor : palette.color(QPalette::Mid);
+        auto *item = replacement->addPath(path, QPen(color, 1));
         item->setAcceptedMouseButtons(Qt::NoButton);
     }
     const LinkRouter router(nodes);
@@ -563,13 +567,15 @@ std::unique_ptr<QGraphicsScene> buildScene(Presentation presentation, const QFon
         groups[{std::min(link.source, link.target), std::max(link.source, link.target)}].push_back(&link);
     for (const auto &group : groups) {
         const auto &links = group.second;
-        const QRectF canonicalFrom = rectangles.value(group.first.first), canonicalTo = rectangles.value(group.first.second);
+        const QRectF canonicalFrom = nodePresentations.value(group.first.first)->rectangle,
+                     canonicalTo = nodePresentations.value(group.first.second)->rectangle;
         QPointF normal = canonicalTo.center() - canonicalFrom.center();
         const qreal length = std::hypot(normal.x(), normal.y());
         if (length > 0) normal = QPointF(-normal.y(), normal.x()) / length;
         for (size_t i = 0; i < links.size(); ++i) {
             const auto &link = *links[i];
-            const QRectF source = rectangles.value(link.source), target = rectangles.value(link.target);
+            const QRectF source = nodePresentations.value(link.source)->rectangle,
+                         target = nodePresentations.value(link.target)->rectangle;
             QPainterPath path;
             if (link.source == link.target) {
                 const qreal radius = 36 + 18 * i;
@@ -587,6 +593,7 @@ std::unique_ptr<QGraphicsScene> buildScene(Presentation presentation, const QFon
             replacement->addItem(new LinkItem(link, std::move(path), font, palette, occupied, router, source, target));
         }
     }
+    // The index above borrows stable presentation nodes; do not read it after moving them.
     for (auto &node : presentation.nodes) {
         auto *item = new NodeItem(std::move(node), palette);
         replacement->addItem(item);

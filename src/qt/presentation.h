@@ -11,11 +11,13 @@
 #include <vector>
 
 namespace m3::qt {
-// Zero, nullopt and invalid colors inherit the editor's appearance.
+// Zero, nullopt and invalid text/fill colors inherit the editor's appearance.
+// Both paths parse local style: NodeProperties keeps the parsed branch override;
+// only NodePresentation resolves an invalid branch color from its ancestors.
 struct NodeStyle {
     qreal fontSize = 0;
     std::optional<bool> bold, italic;
-    QColor textColor, backgroundColor;
+    QColor textColor, backgroundColor, branchColor;
 };
 struct NodeImage {
     QString url;

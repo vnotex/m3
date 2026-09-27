@@ -117,6 +117,8 @@ NodeStyle nodeStyle(const Json &style) {
         result.textColor = QColor(string(*color));
     if (const auto color = style.find("background"); color != style.end() && color->is_string())
         result.backgroundColor = QColor(string(*color));
+    if (const auto color = style.find("branchColor"); color != style.end() && color->is_string())
+        result.branchColor = QColor(string(*color));
     return result;
 }
 LinkPresentation linkPresentation(const Json &j) {
@@ -258,10 +260,12 @@ Presentation MindMapController::prepare(const M3Mindmap *map, MindMapEditor::Lay
     for (const auto &n : nodes) index.emplace(n.at("id").get<std::string>(), &n);
     Presentation result;
     result.outline = requested == MindMapEditor::LayoutDirection::Outline;
-    std::vector<const Json *> pending{index.at(data.at("rootId").get<std::string>())};
+    struct Frame { const Json *record; QColor inheritedBranchColor; };
+    std::vector<Frame> pending{{index.at(data.at("rootId").get<std::string>()), {}}};
     while (!pending.empty()) {
-        const auto &record = *pending.back();
+        const auto frame = pending.back();
         pending.pop_back();
+        const auto &record = *frame.record;
         NodePresentation node;
         node.id = string(record.at("id"));
         node.topic = string(record.at("topic"));
@@ -285,10 +289,11 @@ Presentation MindMapController::prepare(const M3Mindmap *map, MindMapEditor::Lay
         const auto &children = record.at("children");
         node.hasChildren = children.empty() == false;
         node.style = nodeStyle(record.at("style"));
+        if (!node.style.branchColor.isValid()) node.style.branchColor = frame.inheritedBranchColor;
         view.prepare(node);
         if (node.expanded)
             for (auto it = children.rbegin(); it != children.rend(); ++it)
-                pending.push_back(index.at(it->get<std::string>()));
+                pending.push_back({index.at(it->get<std::string>()), node.style.branchColor});
         result.nodes.push_back(std::move(node));
     }
     std::vector<QByteArray> ids;

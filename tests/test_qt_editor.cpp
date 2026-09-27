@@ -3201,6 +3201,283 @@ static void properties_visibility_case() {
     CHECK(!panel->isVisible() && center() == beforeLinkCenter && bars() == beforeLinkBars);
 }
 
+static void branch_color_case() {
+    const Json input = Json::parse(R"({"schemaVersion":1,"rootId":"r","nodes":[
+        {"id":"r","topic":"Root","children":["a","b"]},
+        {"id":"a","topic":"Alpha","children":["a1","a2"],
+         "style":{"color":"#34495e","background":"#ecf0f1","custom":{"keep":true}}},
+        {"id":"a1","topic":"Nested","children":["a1x"]},
+        {"id":"a1x","topic":"Leaf"},{"id":"a2","topic":"Sibling"},
+        {"id":"b","topic":"Beta"}],"crossLinks":[
+        {"id":"cross","source":"a2","target":"b","directed":false,"topic":"Cross"}]})");
+    Editor editor;
+    htmlAppearance(editor);
+    CHECK(editor.loadJson(encoded(input)));
+    CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+    showEditor(editor, QSize(1100, 800));
+    auto &view = graphics(editor);
+    QSignalSpy changed(&editor, &Editor::documentChanged), errors(&editor, &Editor::errorOccurred);
+    const QString red = QStringLiteral("Red (#e74c3c)"), blue = QStringLiteral("Blue (#3498db)");
+    const QString green = QStringLiteral("Green (#2ecc71)"), orange = QStringLiteral("Orange (#e67e22)");
+    const QString automatic = QStringLiteral("Auto");
+    const QColor redColor("#e74c3c"), blueColor("#3498db"), greenColor("#2ecc71"), orangeColor("#e67e22");
+    const QColor mid = view.palette().color(QPalette::Mid);
+    auto menu = [&](const QString &id, const QString &choice, const QString &checked, bool keyboard = false) {
+        if (!id.isEmpty()) CHECK(editor.selectNode(id));
+        pump();
+        const QString selected = editor.selectedNodeId(), link = editor.selectedLinkId();
+        const QTransform zoom = view.transform();
+        const bool hasNode = selected.isEmpty() == false;
+        const QPoint point = hasNode ? labelPoint(editor, qs(record(exported(editor), "nodes", selected).at("topic"))) : blankPoint(view);
+        std::exception_ptr failure;
+        QPointer<QMenu> parentMenu, submenu;
+        bool visited = false;
+        QTimer dismiss;
+        dismiss.setSingleShot(true);
+        QObject::connect(&dismiss, &QTimer::timeout, &editor, [&] {
+            if (submenu) submenu->close();
+            if (parentMenu) parentMenu->close();
+            if (auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget())) popup->close();
+        });
+        dismiss.start(5000);
+        QTimer::singleShot(0, &editor, [&] {
+            parentMenu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+            try {
+                CHECK(parentMenu);
+                pump();
+                if (!hasNode) {
+                    for (auto *action : parentMenu->actions()) CHECK(action->text() != QStringLiteral("Set Branch Color"));
+                } else {
+                    auto &action = textAction(*parentMenu, {QStringLiteral("Set Branch Color")});
+                    submenu = action.menu();
+                    CHECK(submenu);
+                    parentMenu->setActiveAction(&action);
+                    QTest::keyClick(parentMenu, Qt::Key_Right);
+                    if (!QTest::qWaitFor([&] { return submenu && submenu->isVisible(); }, 1000))
+                        submenu->popup(parentMenu->mapToGlobal(parentMenu->actionGeometry(&action).topRight()));
+                    CHECK(QTest::qWaitFor([&] { return submenu && submenu->isVisible(); }, 1000));
+                    const auto actions = submenu->actions();
+                    CHECK(actions.size() == 24 && actions.front()->text() == automatic);
+                    QStringList paletteLabels{automatic};
+                    for (auto *button : editor.findChildren<QToolButton *>())
+                        if (button->property("color").isValid()) paletteLabels.append(button->accessibleName());
+                    CHECK(paletteLabels.size() == actions.size());
+                    for (qsizetype i = 0; i < actions.size(); ++i) {
+                        CHECK(actions[i]->text() == paletteLabels[i]);
+                        CHECK(actions[i]->isCheckable() && actions[i]->isChecked() == (actions[i]->text() == checked));
+                    }
+                    if (!choice.isEmpty()) {
+                        auto &picked = textAction(*submenu, {choice});
+                        if (keyboard) {
+                            submenu->setActiveAction(actions.front());
+                            for (qsizetype i = 0; i < actions.indexOf(&picked); ++i) QTest::keyClick(submenu, Qt::Key_Down);
+                            CHECK(submenu->activeAction() == &picked);
+                            QTest::keyClick(submenu, Qt::Key_Return);
+                        } else QTest::mouseClick(submenu, Qt::LeftButton, Qt::NoModifier, submenu->actionGeometry(&picked).center());
+                    }
+                }
+                visited = true;
+            } catch (...) { failure = std::current_exception(); }
+            if (submenu) submenu->close();
+            if (parentMenu) parentMenu->close();
+        });
+        QContextMenuEvent event(QContextMenuEvent::Mouse, point, view.viewport()->mapToGlobal(point));
+        QCoreApplication::sendEvent(view.viewport(), &event);
+        dismiss.stop();
+        pump();
+        if (failure) std::rethrow_exception(failure);
+        CHECK(visited && editor.selectedNodeId() == selected && editor.selectedLinkId() == link);
+        CHECK(view.transform() == zoom);
+    };
+    auto raster = [&](const QRectF &source) {
+        QImage image(QSize(int(std::ceil(source.width() * 4)), int(std::ceil(source.height() * 4))), QImage::Format_ARGB32_Premultiplied);
+        image.fill(view.palette().color(QPalette::Base));
+        QPainter painter(&image);
+        painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
+        view.scene()->render(&painter, QRectF(QPointF(), image.size()), source, Qt::IgnoreAspectRatio);
+        CHECK(painter.end());
+        return image;
+    };
+    auto matches = [](QRgb pixel, const QColor &color) {
+        return std::abs(qRed(pixel) - color.red()) <= 2 && std::abs(qGreen(pixel) - color.green()) <= 2 &&
+               std::abs(qBlue(pixel) - color.blue()) <= 2;
+    };
+    auto colorPixels = [&](const QImage &image, const QColor &color) {
+        int count = 0;
+        for (int y = 0; y < image.height(); ++y) for (int x = 0; x < image.width(); ++x)
+            if (matches(image.pixel(x, y), color)) ++count;
+        return count;
+    };
+    auto atColor = [&](QPointF point, const QColor &color) {
+        CHECK(colorPixels(raster(QRectF(point - QPointF(2, 2), QSizeF(4, 4))), color) >= 4);
+    };
+    auto borderRegion = [&](const QString &topic) {
+        // Node scene bounds include two units of padding around the painted rect.
+        const QRectF rect = topicRect(editor, topic).adjusted(2, 2, -2, -2);
+        return QRectF(rect.left() + 12, rect.top() - 2, rect.width() - 24, 4);
+    };
+    auto border = [&](const QString &topic, const QColor &color) {
+        const QRectF region = borderRegion(topic);
+        atColor(region.center(), color);
+    };
+    auto edge = [&](const QString &topic, const QColor &color) {
+        const QRectF child = topicRect(editor, topic).adjusted(2, 2, -2, -2);
+        bool found = false;
+        for (auto *item : view.scene()->items()) {
+            auto *pathItem = dynamic_cast<QGraphicsPathItem *>(item);
+            if (!pathItem || pathItem->parentItem()) continue;
+            const QPainterPath path = pathItem->mapToScene(pathItem->path());
+            if (!child.adjusted(-0.1, -0.1, 0.1, 0.1).contains(path.pointAtPercent(1))) continue;
+            QPointF point = path.pointAtPercent(0.7);
+            if (editor.layoutDirection() == Editor::LayoutDirection::Outline) {
+                const auto elbow = path.elementAt(path.elementCount() - 2);
+                point = (QPointF(elbow.x, elbow.y) + path.pointAtPercent(1)) / 2;
+            }
+            atColor(point, color);
+            found = true;
+        }
+        CHECK(found);
+    };
+    auto branch = [&](const QString &topic, const QColor &color) { border(topic, color); edge(topic, color); };
+    auto localStyle = [&](const QString &id) { return record(exported(editor), "nodes", id).at("style"); };
+    auto crossImage = [&] {
+        auto *cross = ownerItem(textItem(editor, QStringLiteral("Cross")));
+        QList<QGraphicsItem *> hidden;
+        for (auto *item : view.scene()->items()) if (!item->parentItem() && item != cross && item->isVisible()) {
+            item->hide(); hidden.append(item);
+        }
+        const QImage image = raster(cross->sceneBoundingRect());
+        for (auto *item : hidden) item->show();
+        return image;
+    };
+    editor.clearSelection();
+    const QImage originalCross = crossImage();
+    CHECK(colorPixels(originalCross, view.palette().color(QPalette::Dark)) > 20);
+    const Json before = exported(editor);
+    menu("a", red, automatic, true);
+    CHECK(changed.size() == 1);
+    Json expected = before;
+    for (auto &node : expected["nodes"]) if (node["id"] == "a") node["style"]["branchColor"] = "#e74c3c";
+    CHECK(exported(editor) == expected);
+    menu("a", red, red);
+    menu("a", {}, red);
+    CHECK(changed.size() == 1 && exported(editor) == expected);
+    const int selectedPixels = colorPixels(raster(borderRegion("Alpha")), redColor);
+    editor.clearSelection();
+    const int normalPixels = colorPixels(raster(borderRegion("Alpha")), redColor);
+    CHECK(selectedPixels > normalPixels * 2);
+    for (const auto *topic : {"Alpha", "Nested", "Leaf", "Sibling"}) branch(topic, redColor);
+    border("Root", mid); branch("Beta", mid);
+    CHECK(crossImage() == originalCross);
+    CHECK(textItem(editor, "Alpha")->defaultTextColor() == QColor("#34495e"));
+    const QRectF alpha = topicRect(editor, "Alpha").adjusted(2, 2, -2, -2);
+    atColor(QPointF(alpha.center().x(), alpha.bottom() - 4), QColor("#ecf0f1"));
+    menu({}, {}, {});
+    CHECK(editor.selectLink("cross"));
+    menu({}, {}, {});
+    CHECK(changed.size() == 1);
+
+    // A colored drop target keeps its color, with thick ink and visible dash gaps.
+    const QPoint from = labelPoint(editor, "Beta");
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, from);
+    const QPoint target = labelPoint(editor, "Alpha");
+    movePointer(view, target, Qt::LeftButton);
+    CHECK(view.viewport()->cursor().shape() == Qt::DragMoveCursor);
+    const QImage drop = raster(borderRegion("Alpha"));
+    CHECK(colorPixels(drop, redColor) > normalPixels);
+    int emptyColumns = 0;
+    for (int x = 0; x < drop.width(); ++x) {
+        bool colored = false;
+        for (int y = 0; y < drop.height(); ++y) colored = colored || matches(drop.pixel(x, y), redColor);
+        if (!colored) ++emptyColumns;
+    }
+    CHECK(emptyColumns > 4);
+    QTest::keyClick(&view, Qt::Key_Escape);
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, target);
+    CHECK(exported(editor) == expected && changed.size() == 1);
+
+    menu("a1", blue, automatic);
+    menu("a", green, red);
+    editor.clearSelection();
+    branch("Alpha", greenColor); branch("Sibling", greenColor);
+    branch("Nested", blueColor); branch("Leaf", blueColor);
+    menu("a1", automatic, blue);
+    CHECK(!localStyle("a1").contains("branchColor"));
+    menu("a1", {}, automatic);
+    editor.clearSelection();
+    branch("Nested", greenColor); branch("Leaf", greenColor);
+    menu("a", automatic, green);
+    const auto cleared = changed.size();
+    menu("a", automatic, automatic);
+    CHECK(changed.size() == cleared && localStyle("a") == record(before, "nodes", "a").at("style"));
+    editor.clearSelection();
+    for (const auto *topic : {"Alpha", "Nested", "Leaf", "Sibling"}) branch(topic, mid);
+    menu("a", red, automatic);
+    auto *reset = editor.findChild<QToolButton *>(QStringLiteral("nodeResetAppearance"));
+    CHECK(reset);
+    reset->click();
+    CHECK(localStyle("a") == Json({{"branchColor", "#e74c3c"}, {"custom", {{"keep", true}}}}));
+    menu("a1", blue, automatic);
+    CHECK(editor.setExpanded("a", false));
+    CHECK(texts(editor, "Nested").isEmpty());
+    menu("a", green, red);
+    CHECK(editor.setExpanded("a", true));
+    editor.clearSelection();
+    branch("Sibling", greenColor); branch("Nested", blueColor); branch("Leaf", blueColor);
+    const QString added = editor.addNode("a", "Inserted");
+    CHECK(!added.isEmpty() && !localStyle(added).contains("branchColor"));
+    editor.clearSelection(); branch("Inserted", greenColor);
+    menu("b", orange, automatic);
+    CHECK(editor.moveNode("a2", "b"));
+    CHECK(!localStyle("a2").contains("branchColor"));
+    editor.clearSelection(); branch("Sibling", orangeColor);
+    CHECK(editor.moveNode("a1", "b"));
+    editor.clearSelection(); branch("Nested", blueColor); branch("Leaf", blueColor);
+    menu("r", red, automatic);
+    const QString rootChild = editor.addNode("r", "Root child");
+    CHECK(!rootChild.isEmpty() && !localStyle(rootChild).contains("branchColor"));
+    editor.clearSelection();
+    border("Root", redColor); branch("Root child", redColor);
+    branch("Alpha", greenColor); branch("Beta", orangeColor); branch("Nested", blueColor);
+    const Json saved = exported(editor);
+    CHECK(editor.loadJson(encoded(saved)) && exported(editor) == saved);
+    editor.clearSelection();
+    border("Root", redColor); branch("Root child", redColor); branch("Alpha", greenColor);
+    branch("Beta", orangeColor); branch("Sibling", orangeColor); branch("Nested", blueColor); branch("Leaf", blueColor);
+
+    Json imported = saved;
+    for (auto &node : imported["nodes"]) {
+        if (node["id"] == "a2") node["style"]["branchColor"] = 42;
+        if (node["id"] == utf8(added)) node["style"]["branchColor"] = "not-a-color";
+        if (node["id"] == utf8(rootChild)) node["style"]["branchColor"] = "#123456";
+    }
+    CHECK(editor.loadJson(encoded(imported)) && exported(editor) == imported);
+    editor.clearSelection();
+    branch("Sibling", orangeColor); branch("Inserted", greenColor); branch("Root child", QColor("#123456"));
+    menu(rootChild, {}, {});
+    menu("a2", automatic, automatic);
+    menu(added, automatic, automatic);
+    CHECK(!localStyle("a2").contains("branchColor") && !localStyle(added).contains("branchColor"));
+    const Json finalDocument = exported(editor);
+    for (auto direction : {Editor::LayoutDirection::Balanced, Editor::LayoutDirection::Left,
+                           Editor::LayoutDirection::Right, Editor::LayoutDirection::Outline}) {
+        CHECK(editor.setLayoutDirection(direction));
+        editor.clearSelection();
+        QTest::mouseMove(view.viewport(), blankPoint(view));
+        pump();
+        border("Root", redColor); branch("Alpha", greenColor); branch("Inserted", greenColor);
+        branch("Beta", orangeColor); branch("Sibling", orangeColor);
+        branch("Nested", blueColor); branch("Leaf", blueColor); branch("Root child", QColor("#123456"));
+        const QTransform zoom = view.transform();
+        const QPointF camera = view.mapToScene(view.viewport()->rect().center());
+        const HtmlPage html(editor.toHtml());
+        compareHtmlScene(editor, html.image());
+        CHECK(exported(editor) == finalDocument && editor.selectedNodeId().isEmpty() && editor.selectedLinkId().isEmpty());
+        CHECK(view.transform() == zoom && view.mapToScene(view.viewport()->rect().center()) == camera);
+    }
+    CHECK(errors.isEmpty());
+}
+
 static void properties_case() {
     properties_visibility_case();
     emoji_category_popup_case();
@@ -6942,6 +7219,7 @@ int main(int argc, char **argv) {
         else if (name == "navigation") navigation_case();
         else if (name == "node_drag") node_drag_case();
         else if (name == "properties") properties_case();
+        else if (name == "branch_color") branch_color_case();
         else if (name == "hyperlinks") hyperlinks_case();
         else if (name == "controls") controls_case();
         else if (name == "inline_edit") inline_edit_case();

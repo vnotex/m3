@@ -91,8 +91,16 @@
 // and document changes; links/empty selection hide either form without resetting it.
 // The renderer recognizes style.color/background, fontSize (1-256 pixels, numeric
 // or "Npx"), fontWeight (normal/bold or CSS weight 100-900), and fontStyle
-// (normal/italic, inheriting the editor font when unset). Other style data stays
-// opaque and is preserved when a property is edited or appearance is reset.
+// (normal/italic, inheriting the editor font when unset), and branchColor (a QColor
+// string). Branch color controls a node border and its incoming tree edge, inherited
+// by descendants until their own valid override; cross-links are unchanged. Invalid
+// or absent colors inherit the nearest colored ancestor, or the normal appearance.
+// The node-only "Set Branch Color" context submenu offers Auto and the properties
+// palette. Auto removes only that node's override, not descendant overrides; its
+// checkmark reflects local intent, not inherited color. Selection/drop feedback
+// retains thicker/dashed borders without replacing an explicit branch color.
+// Reset appearance clears only font/text/fill, preserving branchColor and opaque
+// style data. Imported invalid values remain unchanged until explicitly edited.
 namespace m3::qt {
 // Widget policy, copied at construction; no Qt-specific configuration enters the core.
 // Replace a shortcut list to rebind it, or clear it to disable its keyboard binding
