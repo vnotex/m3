@@ -33,6 +33,10 @@
 // IDs are case-sensitive. Index -1 appends; move indexes apply after removal.
 // Only visible nodes/links can be selected, exclusively; hidden data is preserved.
 // Selection, layout direction, zoom/pan and fit never change persisted JSON.
+// Shift+vertical wheel scrolls horizontally; with normal left-to-right controls,
+// down/negative deltas move the viewport right and up/positive deltas move it left.
+// Ctrl+wheel (including Ctrl+Shift) zooms at the pointer. Unmodified and native
+// horizontal wheel behavior is unchanged.
 // Drag empty space with the left mouse button to pan; the middle button pans anywhere.
 // Empty space shows an open hand cursor, closing during a pan. Empty clicks clear selection.
 // Node context menus separate creation from editing/reordering and omit viewport actions.

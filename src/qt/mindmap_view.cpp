@@ -21,6 +21,7 @@
 #include <QPainter>
 #include <QPainterPathStroker>
 #include <QResizeEvent>
+#include <QScrollBar>
 #include <limits>
 #include <QTimer>
 #include <QWheelEvent>
@@ -1868,6 +1869,25 @@ void MindMapView::wheelEvent(QWheelEvent *event) {
         preserveCenter(sceneCenter(*this, viewport()->size()) + before - after);
         updateTopicEditorGeometry();
         event->accept();
+    } else if (event->modifiers().testFlag(Qt::ShiftModifier) &&
+               event->angleDelta().x() == 0 && event->pixelDelta().x() == 0) {
+        if (event->pixelDelta().y() != 0) {
+            auto *bar = horizontalScrollBar();
+            const int before = bar->value();
+            qint64 delta = event->pixelDelta().y();
+            if (bar->invertedControls()) delta = -delta;
+            bar->setValue(static_cast<int>(std::clamp(qint64(before) + delta,
+                                                     qint64(bar->minimum()), qint64(bar->maximum()))));
+            event->setAccepted(bar->value() != before);
+        } else {
+            // Strip Shift so Qt keeps normal line stepping and fine-angle accumulation.
+            QWheelEvent horizontal(event->position(), event->globalPosition(), QPoint(),
+                                   QPoint(event->angleDelta().y(), 0), event->buttons(),
+                                   event->modifiers() & ~Qt::ShiftModifier, event->phase(),
+                                   event->inverted(), event->source(), event->pointingDevice());
+            QGraphicsView::wheelEvent(&horizontal);
+            event->setAccepted(horizontal.isAccepted());
+        }
     } else QGraphicsView::wheelEvent(event);
 }
 void MindMapView::preserveCenter(const QPointF &center) {

@@ -4237,7 +4237,201 @@ static void focus_root_case() {
     CHECK(exported(editor) == expected);
 }
 
+static void shift_scroll_case() {
+    const Json input{{"schemaVersion", 1}, {"rootId", "r"},
+                     {"nodes", Json::array({{{"id", "r"}, {"topic", "Root"}, {"children", {"a"}}},
+                                            {{"id", "a"}, {"topic", "Alpha"}}})},
+                     {"crossLinks", Json::array()}};
+    Editor editor;
+    CHECK(editor.loadJson(encoded(input)));
+    showEditor(editor);
+    trigger(editor, "resetZoom");
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    auto *toggle = editor.findChild<QToolButton *>(QStringLiteral("nodePropertiesToggle"));
+    CHECK(toggle != nullptr);
+    if (toggle->isChecked()) toggle->click();
+    pump();
+    auto &view = graphics(editor);
+    auto *horizontal = view.horizontalScrollBar();
+    auto *vertical = view.verticalScrollBar();
+    const QRectF padded = view.sceneRect().adjusted(-2000, -2000, 2000, 2000);
+    view.setSceneRect(padded);
+    auto midpoint = [&] {
+        horizontal->setValue((horizontal->minimum() + horizontal->maximum()) / 2);
+        vertical->setValue((vertical->minimum() + vertical->maximum()) / 2);
+        pump();
+    };
+    midpoint();
+    const int startX = horizontal->value(), startY = vertical->value();
+    CHECK(startX > horizontal->minimum() && startX < horizontal->maximum());
+    CHECK(startY > vertical->minimum() && startY < vertical->maximum());
+    const QTransform transform = view.transform();
+    CHECK(std::abs(transform.m11() - 1.0) < 1e-6);
+    const Json original = exported(editor);
+    const QString nodeId = editor.selectedNodeId(), linkId = editor.selectedLinkId();
+    QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+    auto unchanged = [&] {
+        CHECK(exported(editor) == original);
+        CHECK(editor.selectedNodeId() == nodeId && editor.selectedLinkId() == linkId);
+        CHECK(changed.isEmpty() && selected.isEmpty());
+    };
+    auto horizontalOnly = [&](int y) {
+        CHECK(vertical->value() == y && view.transform() == transform);
+        unchanged();
+    };
+    auto inject = [&](QPoint angle, QPoint pixels, Qt::KeyboardModifiers modifiers,
+                      Qt::ScrollPhase phase = Qt::NoScrollPhase, bool inverted = false) {
+        const QPoint point = blankPoint(view);
+        CHECK(view.viewport()->childAt(point) == nullptr);
+        QWheelEvent event(QPointF(point), QPointF(view.viewport()->mapToGlobal(point)), pixels,
+                          angle, Qt::NoButton, modifiers, phase, inverted);
+        QCoreApplication::sendEvent(view.viewport(), &event);
+        pump();
+    };
+    auto shift = [&](int delta) {
+        const QPoint point = blankPoint(view);
+        CHECK(view.viewport()->childAt(point) == nullptr);
+        wheel(view, point, delta, Qt::ShiftModifier);
+    };
+
+    // Match native horizontal line stepping rather than Shift's default page step.
+    inject(QPoint(-120, 0), {}, Qt::NoModifier);
+    const int nativeStep = horizontal->value() - startX;
+    CHECK(nativeStep > 0);
+    horizontalOnly(startY);
+    midpoint();
+    shift(-120);
+    CHECK(horizontal->value() == startX + nativeStep);
+    horizontalOnly(startY);
+    shift(120);
+    CHECK(horizontal->value() == startX);
+    horizontalOnly(startY);
+    for (int i = 0; i < 4; ++i) {
+        shift(-30);
+        horizontalOnly(startY);
+    }
+    CHECK(horizontal->value() == startX + nativeStep);
+
+    midpoint();
+    inject({}, QPoint(0, -17), Qt::ShiftModifier);
+    CHECK(horizontal->value() == startX + 17);
+    horizontalOnly(startY);
+    inject({}, QPoint(0, 17), Qt::ShiftModifier);
+    CHECK(horizontal->value() == startX);
+    horizontalOnly(startY);
+    inject(QPoint(0, -120), QPoint(0, -17), Qt::ShiftModifier);
+    CHECK(horizontal->value() == startX + 17);
+    horizontalOnly(startY);
+    midpoint();
+    inject({}, QPoint(0, -17), Qt::ShiftModifier, Qt::NoScrollPhase, true);
+    CHECK(horizontal->value() == startX + 17);
+    horizontalOnly(startY);
+    midpoint();
+    const bool invertedControls = horizontal->invertedControls();
+    horizontal->setInvertedControls(false);
+    inject({}, QPoint(0, -17), Qt::ShiftModifier);
+    const int reversedPixel = horizontal->value() - startX;
+    midpoint();
+    shift(-120);
+    const int reversedAngle = horizontal->value() - startX;
+    horizontal->setInvertedControls(invertedControls);
+    CHECK(reversedPixel == -17 && reversedAngle == -nativeStep);
+    horizontalOnly(startY);
+
+    midpoint();
+    wheel(view, blankPoint(view), -120, Qt::NoModifier);
+    CHECK(horizontal->value() == startX && vertical->value() > startY);
+    CHECK(view.transform() == transform);
+    unchanged();
+    midpoint();
+    inject(QPoint(-120, 0), {}, Qt::ShiftModifier);
+    CHECK(horizontal->value() > startX);
+    horizontalOnly(startY);
+    midpoint();
+    inject(QPoint(-240, -120), {}, Qt::ShiftModifier);
+    CHECK(horizontal->value() > startX);
+    horizontalOnly(startY);
+    midpoint();
+    const QPoint pointer = blankPoint(view);
+    const QPointF anchor = view.mapToScene(pointer);
+    wheel(view, pointer, 120, Qt::ControlModifier | Qt::ShiftModifier);
+    CHECK(std::abs(view.transform().m11() - 1.2) < 1e-6);
+    CHECK(QLineF(anchor, view.mapToScene(pointer)).length() < 3.0);
+    unchanged();
+    trigger(editor, "resetZoom");
+    view.setSceneRect(padded);
+    midpoint();
+
+    // Exhausted horizontal ranges must not turn back into vertical scrolling.
+    for (bool maximum : {true, false}) {
+        const int edge = maximum ? horizontal->maximum() : horizontal->minimum();
+        horizontal->setValue(edge);
+        shift(maximum ? -120 : 120);
+        CHECK(horizontal->value() == edge);
+        horizontalOnly(startY);
+        inject({}, QPoint(0, maximum ? -17 : 17), Qt::ShiftModifier);
+        CHECK(horizontal->value() == edge);
+        horizontalOnly(startY);
+    }
+    const int minimum = horizontal->minimum(), maximum = horizontal->maximum();
+    horizontal->setRange(0, 0);
+    shift(-120);
+    CHECK(horizontal->value() == 0);
+    horizontalOnly(startY);
+    inject({}, QPoint(0, -17), Qt::ShiftModifier);
+    CHECK(horizontal->value() == 0);
+    horizontalOnly(startY);
+    horizontal->setRange(minimum, maximum);
+    midpoint();
+    for (auto phase : {Qt::ScrollBegin, Qt::ScrollEnd}) {
+        inject({}, {}, Qt::ShiftModifier, phase);
+        CHECK(horizontal->value() == startX);
+        horizontalOnly(startY);
+    }
+
+    // QWidget RTL must keep pixel/angle direction consistent with native x input.
+    view.setLayoutDirection(Qt::RightToLeft);
+    midpoint();
+    const int rtlX = horizontal->value(), rtlY = vertical->value();
+    inject(QPoint(-120, 0), {}, Qt::NoModifier);
+    const int rtlStep = horizontal->value() - rtlX;
+    CHECK(rtlStep != 0);
+    horizontalOnly(rtlY);
+    midpoint();
+    shift(-120);
+    CHECK(horizontal->value() == rtlX + rtlStep);
+    horizontalOnly(rtlY);
+    midpoint();
+    inject({}, QPoint(0, -17), Qt::ShiftModifier);
+    CHECK(horizontal->value() == rtlX + (rtlStep > 0 ? 17 : -17));
+    horizontalOnly(rtlY);
+    view.setLayoutDirection(Qt::LeftToRight);
+    view.setSceneRect(padded);
+    view.centerOn(topicRect(editor, QStringLiteral("Alpha")).center());
+    pump();
+
+    // Scrolling moves the live draft through scrollContentsBy without committing it.
+    shortcut(editor, Qt::Key_F2);
+    const QString draft = QStringLiteral("Uncommitted horizontal scroll");
+    topicInput(editor).setPlainText(draft);
+    pump();
+    QPointer<QPlainTextEdit> inputWidget = &topicInput(editor);
+    const QRect geometry = inputWidget->geometry();
+    const int draftX = horizontal->value(), draftY = vertical->value();
+    unchanged();
+    inject({}, QPoint(0, -17), Qt::ShiftModifier);
+    CHECK(horizontal->value() == draftX + 17);
+    CHECK(inputWidget && activeTopicInput(editor) == inputWidget.data());
+    CHECK(inputWidget->isVisible() && inputWidget->hasFocus() && inputWidget->toPlainText() == draft);
+    CHECK(inputWidget->geometry() == geometry.translated(-17, 0));
+    horizontalOnly(draftY);
+    topicKey(editor, Qt::Key_Escape);
+    CHECK(activeTopicInput(editor) == nullptr);
+    unchanged();
+}
+
 static void navigation_case() {
+    shift_scroll_case();
     focus_root_case();
     empty_space_panning_case();
     Json input = editorFixture();
