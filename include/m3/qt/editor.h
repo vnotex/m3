@@ -54,6 +54,11 @@
 // updateLink and the toolbar's Directed checkbox retain this style preference.
 // Selecting a node or accepting an inline topic scrolls its full bounds into view
 // without changing zoom; oversized nodes can only be partially shown by scrolling.
+// Presenting expanded node properties (including for a different selected node)
+// also scrolls the node clear of the panel, preserving zoom and keyboard focus.
+// If it cannot fit, scrolling exposes the largest portion in a clear viewport region.
+// An already-presented panel does not constrain subsequent pan or property edits.
+// Startup fit and explicit fit/centering commands retain their camera placement.
 // Expanding a node centers it at the current zoom; large branches may still
 // extend beyond the viewport.
 // Topics/labels are plain Unicode text. Embedded NULs are rejected.

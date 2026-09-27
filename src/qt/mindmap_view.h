@@ -24,7 +24,7 @@ public:
     QImage renderImage(Presentation presentation) const;
     void showError(const QString &message);
     void setSelection(const QString &node, const QString &link);
-    void ensureNodeVisible(const QString &id);
+    void ensureNodeVisible(const QString &id, const QRect &occlusion = {});
     void centerNode(const QString &id);
     void fitContents();
     void zoom(qreal factor);

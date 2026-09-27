@@ -3050,7 +3050,159 @@ static void emoji_category_popup_case() {
     CHECK(!popup->isVisible());
 }
 
+static void properties_visibility_case() {
+    Editor editor;
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+    showEditor(editor, QSize(1100, 900));
+    shortcut(editor, Qt::Key_0, Qt::ControlModifier);
+    auto &view = graphics(editor);
+    auto *panel = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
+    auto *toggle = editor.findChild<QToolButton *>(QStringLiteral("nodePropertiesToggle"));
+    auto *tags = editor.findChild<QLineEdit *>(QStringLiteral("nodeTags"));
+    CHECK(panel && toggle && tags && panel->isVisible() && toggle->isChecked());
+    CHECK(view.transform().m11() == 1);
+    auto panelRect = [&] {
+        return QRectF(QRect(view.viewport()->mapFromGlobal(panel->mapToGlobal(QPoint())), panel->size()));
+    };
+    const QRectF expandedPanel = panelRect();
+    auto mappedNode = [&](const QString &topic) { return view.viewportTransform().mapRect(topicRect(editor, topic)); };
+    auto envelope = [&](const QString &topic) {
+        auto *node = ownerItem(textItem(editor, topic));
+        QRectF bounds = mappedNode(topic);
+        for (auto *child : node->childItems()) {
+            if (child->isVisible() && child->flags().testFlag(QGraphicsItem::ItemIgnoresTransformations))
+                bounds = bounds.united(child->deviceTransform(view.viewportTransform()).mapRect(child->boundingRect()));
+        }
+        return bounds;
+    };
+    auto center = [&] { return view.mapToScene(view.viewport()->rect().center()); };
+    auto bars = [&] { return QPoint(view.horizontalScrollBar()->value(), view.verticalScrollBar()->value()); };
+    auto place = [&](const QString &topic, const QPointF &desired) {
+        view.setSceneRect(view.sceneRect().adjusted(-2000, -2000, 2000, 2000));
+        const QRectF mapped = mappedNode(topic);
+        view.horizontalScrollBar()->setValue(view.horizontalScrollBar()->value() + qRound(mapped.left() - desired.x()));
+        view.verticalScrollBar()->setValue(view.verticalScrollBar()->value() + qRound(mapped.top() - desired.y()));
+        pump();
+    };
+    auto cover = [&](const QString &topic) {
+        place(topic, expandedPanel.topLeft() + QPointF(40, 100));
+        CHECK(QRectF(view.viewport()->rect()).contains(mappedNode(topic)));
+        CHECK(mappedNode(topic).intersects(expandedPanel));
+    };
+    auto revealed = [&](const QString &topic) {
+        CHECK(panel->isVisible() && toggle->isChecked());
+        CHECK(QRectF(view.viewport()->rect()).contains(mappedNode(topic)));
+        CHECK(!mappedNode(topic).intersects(panelRect().adjusted(-8, -8, 8, 8)));
+    };
+    QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+    auto action = [&](auto invoke, const QString &node, const QString &link, int selectionDelta, QWidget *focus) {
+        const Json before = exported(editor);
+        const QTransform zoom = view.transform();
+        const QString oldNode = editor.selectedNodeId(), oldLink = editor.selectedLinkId();
+        const auto changes = changed.size(), selections = selected.size();
+        QWidget *oldFocus = QApplication::focusWidget();
+        invoke(); pump();
+        CHECK(exported(editor) == before && changed.size() == changes && view.transform() == zoom);
+        CHECK(editor.selectedNodeId() == node && editor.selectedLinkId() == link);
+        CHECK(selected.size() == selections + selectionDelta);
+        if (!selectionDelta) CHECK(editor.selectedNodeId() == oldNode && editor.selectedLinkId() == oldLink);
+        else CHECK(selected.back().at(0).toString() == node && selected.back().at(1).toString() == link);
+        CHECK(QApplication::focusWidget() == (focus ? focus : oldFocus));
+    };
+    auto collapse = [&] {
+        const QPointF beforeCenter = center();
+        const QPoint beforeBars = bars();
+        action([&] { shortcut(editor, Qt::Key_P); }, editor.selectedNodeId(), {}, 0, &view);
+        CHECK(!toggle->isChecked() && panel->isVisible());
+        CHECK(center() == beforeCenter && bars() == beforeBars);
+    };
+    action([&] { CHECK(editor.selectLink(QStringLiteral("l1"))); }, {}, QStringLiteral("l1"), 1, nullptr);
+    CHECK(!panel->isVisible());
+    cover(QStringLiteral("Alpha"));
+    action([&] { CHECK(editor.selectNode(QStringLiteral("a"))); }, QStringLiteral("a"), {}, 1, nullptr);
+    revealed(QStringLiteral("Alpha"));
+
+    collapse();
+    cover(QStringLiteral("Alpha"));
+    action([&] { shortcut(editor, Qt::Key_P); }, QStringLiteral("a"), {}, 0, &view);
+    revealed(QStringLiteral("Alpha"));
+    collapse();
+    cover(QStringLiteral("Alpha"));
+    action([&] { shortcut(editor, Qt::Key_T); }, QStringLiteral("a"), {}, 0, tags);
+    revealed(QStringLiteral("Alpha"));
+
+    view.setFocus(); pump();
+    cover(QStringLiteral("Beta"));
+    action([&] { CHECK(editor.selectNode(QStringLiteral("b"))); }, QStringLiteral("b"), {}, 1, nullptr);
+    revealed(QStringLiteral("Beta"));
+    collapse();
+    place(QStringLiteral("Beta"), QPointF(100, 150));
+    CHECK(QRectF(view.viewport()->rect()).contains(envelope(QStringLiteral("Beta"))));
+    CHECK(!envelope(QStringLiteral("Beta")).intersects(expandedPanel.adjusted(-8, -8, 8, 8)));
+    const QPointF clearCenter = center();
+    const QPoint clearBars = bars();
+    action([&] { shortcut(editor, Qt::Key_P); }, QStringLiteral("b"), {}, 0, &view);
+    revealed(QStringLiteral("Beta"));
+    CHECK(center() == clearCenter && bars() == clearBars);
+
+    // A shown panel is not a permanent constraint on intentional user pan.
+    cover(QStringLiteral("Beta"));
+    const QPointF pannedCenter = center();
+    const QPoint pannedBars = bars();
+    action([&] {
+        QEvent layout(QEvent::LayoutRequest);
+        QCoreApplication::sendEvent(&view, &layout);
+    }, QStringLiteral("b"), {}, 0, nullptr);
+    CHECK(center() == pannedCenter && bars() == pannedBars);
+    CHECK(mappedNode(QStringLiteral("Beta")).intersects(panelRect()));
+    collapse();
+
+    // Topic wrapping alone is not enough: this node must fit no clear rectangle.
+    const QString oversized = QStringLiteral("Oversized topic\n").repeated(100);
+    CHECK(editor.renameNode(QStringLiteral("b"), oversized));
+    pump();
+    place(oversized, expandedPanel.topLeft() + QPointF(40, 100));
+    CHECK(mappedNode(oversized).intersects(expandedPanel));
+    const QRectF viewportRect(view.viewport()->rect());
+    const QRectF obstruction = expandedPanel.intersected(viewportRect).adjusted(-8, -8, 8, 8).intersected(viewportRect);
+    const QRectF candidates[] = {
+        {viewportRect.left(), viewportRect.top(), obstruction.left() - viewportRect.left(), viewportRect.height()},
+        {viewportRect.left(), obstruction.bottom(), viewportRect.width(), viewportRect.bottom() - obstruction.bottom()},
+        {obstruction.right(), viewportRect.top(), viewportRect.right() - obstruction.right(), viewportRect.height()},
+        {viewportRect.left(), viewportRect.top(), viewportRect.width(), obstruction.top() - viewportRect.top()}
+    };
+    qreal maximumArea = 0;
+    for (const QRectF &clear : candidates) {
+        if (clear.isEmpty()) continue;
+        const QRectF node = mappedNode(oversized);
+        CHECK(node.width() > clear.width() || node.height() > clear.height());
+        maximumArea = std::max(maximumArea, std::min(node.width(), clear.width()) * std::min(node.height(), clear.height()));
+    }
+    CHECK(maximumArea > 0);
+    action([&] { shortcut(editor, Qt::Key_P); }, QStringLiteral("b"), {}, 0, &view);
+    CHECK(panel->isVisible() && toggle->isChecked() && panelRect() == expandedPanel);
+    qreal exposedArea = 0;
+    for (const QRectF &clear : candidates) {
+        const QRectF visible = mappedNode(oversized).intersected(clear);
+        if (!visible.isEmpty()) exposedArea = std::max(exposedArea, visible.width() * visible.height());
+    }
+    CHECK(std::abs(exposedArea - maximumArea) < 1);
+    const QPointF settledCenter = center();
+    const QPoint settledBars = bars();
+    pump(); pump();
+    CHECK(center() == settledCenter && bars() == settledBars);
+    action([&] { editor.clearSelection(); }, {}, {}, 1, nullptr);
+    CHECK(!panel->isVisible() && center() == settledCenter && bars() == settledBars);
+    action([&] { CHECK(editor.selectNode(QStringLiteral("b"))); }, QStringLiteral("b"), {}, 1, nullptr);
+    const QPointF beforeLinkCenter = center();
+    const QPoint beforeLinkBars = bars();
+    action([&] { CHECK(editor.selectLink(QStringLiteral("l1"))); }, {}, QStringLiteral("l1"), 1, nullptr);
+    CHECK(!panel->isVisible() && center() == beforeLinkCenter && bars() == beforeLinkBars);
+}
+
 static void properties_case() {
+    properties_visibility_case();
     emoji_category_popup_case();
     {
         Editor imageEditor;
@@ -4983,15 +5135,27 @@ static void node_shortcuts_case() {
         view.setFocus();
         Json expected = exported(editor);
         const auto zoom = view.transform();
-        const auto center = view.mapToScene(view.viewport()->rect().center());
         QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        auto *panel = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
+        CHECK(panel != nullptr);
+        const QRectF expandedPanel = QRectF(QRect(view.viewport()->mapFromGlobal(panel->mapToGlobal(QPoint())), panel->size()))
+            .adjusted(-8, -8, 8, 8);
         // No shortcut() helper: the first P must leave focus ready for the second P.
         for (bool expanded : {false, true}) {
+            const QPointF beforeCenter = view.mapToScene(view.viewport()->rect().center());
+            auto *node = ownerItem(textItem(editor, QStringLiteral("Alpha")));
+            QRectF envelope = view.viewportTransform().mapRect(node->sceneBoundingRect());
+            for (auto *child : node->childItems()) {
+                if (child->isVisible() && child->flags().testFlag(QGraphicsItem::ItemIgnoresTransformations))
+                    envelope = envelope.united(child->deviceTransform(view.viewportTransform()).mapRect(child->boundingRect()));
+            }
+            const bool occluded = envelope.intersects(expandedPanel);
             QTest::keyClick(view.viewport(), Qt::Key_P); pump();
             CHECK(toggle->isChecked() == expanded && scroll->isVisible() == expanded && view.hasFocus());
             CHECK(editor.selectedNodeId() == QStringLiteral("a") && selected.isEmpty());
             CHECK(exported(editor) == expected && changed.isEmpty() && view.transform() == zoom);
-            CHECK(view.mapToScene(view.viewport()->rect().center()) == center);
+            if (!expanded || !occluded) CHECK(view.mapToScene(view.viewport()->rect().center()) == beforeCenter);
+            else CHECK(!view.viewportTransform().mapRect(topicRect(editor, QStringLiteral("Alpha"))).intersects(expandedPanel));
         }
         QKeyEvent repeat(QEvent::KeyPress, Qt::Key_P, Qt::NoModifier, QStringLiteral("p"), true);
         QCoreApplication::sendEvent(view.viewport(), &repeat);

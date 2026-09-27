@@ -521,6 +521,9 @@ private:
     QPlainTextEdit *note;
     QList<QToolButton *> swatches;
     QString boundId;
+    QString presentedNodeId;
+    bool presentedExpanded = false;
+    bool repositioning = false;
     NodeStyle currentStyle;
     std::optional<NodeImage> currentImage;
     int presetCount = 0;
@@ -622,11 +625,25 @@ private:
         reposition();
     }
     void reposition() {
-        if (!view || boundId.isEmpty()) { hide(); return; }
+        if (repositioning) return;
+        const QScopedValueRollback<bool> guard(repositioning, true);
+        const bool wasVisible = isVisible();
+        if (!view || boundId.isEmpty()) {
+            presentedNodeId.clear();
+            presentedExpanded = false;
+            hide();
+            return;
+        }
         const QRect viewport(view->viewport()->mapTo(parentWidget(), QPoint()), view->viewport()->size());
         const QRect available = viewport.intersected(parentWidget()->rect()).adjusted(12, 12, -12, -12);
-        if (available.isEmpty()) { hide(); return; }
+        if (available.isEmpty()) {
+            presentedNodeId.clear();
+            presentedExpanded = false;
+            hide();
+            return;
+        }
         const bool expanded = toggle->isChecked();
+        const bool reveal = expanded && (!wasVisible || boundId != presentedNodeId || !presentedExpanded);
         title->setVisible(expanded);
         subtitle->setVisible(expanded);
         scroll->setVisible(expanded);
@@ -643,6 +660,15 @@ private:
         setGeometry(available.right() - width + 1, available.top(), width, height);
         show();
         raise();
+        if (!isVisible() || !view->isVisible()) return;
+        presentedNodeId = boundId;
+        presentedExpanded = expanded;
+        if (reveal) {
+            const QString id = boundId;
+            if (!id.isEmpty() && id == controller->selectedNodeId()) {
+                view->ensureNodeVisible(id, QRect(view->viewport()->mapFromGlobal(mapToGlobal(QPoint())), size()));
+            }
+        }
     }
 };
 }

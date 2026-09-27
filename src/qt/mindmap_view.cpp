@@ -1264,7 +1264,7 @@ void MindMapView::setSelection(const QString &node, const QString &link) {
         }
     }
 }
-void MindMapView::ensureNodeVisible(const QString &id) {
+void MindMapView::ensureNodeVisible(const QString &id, const QRect &occlusion) {
     if (id.isEmpty() || !isVisible()) return;
     for (auto *item : scene()->items()) {
         if (auto *node = dynamic_cast<NodeItem *>(item); node && node->id == id) {
@@ -1285,6 +1285,59 @@ void MindMapView::ensureNodeVisible(const QString &id) {
                 }
             }
             ensureVisible(bounds, 0, 0);
+            const QRectF viewportRect(viewport()->rect());
+            QRectF obstruction = QRectF(occlusion).intersected(viewportRect);
+            if (obstruction.isEmpty()) return;
+            obstruction = obstruction.adjusted(-8, -8, 8, 8).intersected(viewportRect);
+            if (obstruction.isEmpty()) return;
+
+            // Re-map after the ordinary reveal, including the fixed-size creation arrow.
+            const QRectF mappedNode = viewportTransform().mapRect(nodeBounds);
+            QRectF envelope = mappedNode;
+            if (linkCreationHandle && linkCreationHandle->parentItem() == node) {
+                envelope = envelope.united(linkCreationHandle->deviceTransform(viewportTransform())
+                    .mapRect(linkCreationHandle->boundingRect()));
+            }
+            if (viewportRect.contains(envelope) && !envelope.intersects(obstruction)) return;
+            const QRectF candidates[] = {
+                {viewportRect.left(), viewportRect.top(), obstruction.left() - viewportRect.left(), viewportRect.height()},
+                {viewportRect.left(), obstruction.bottom(), viewportRect.width(), viewportRect.bottom() - obstruction.bottom()},
+                {obstruction.right(), viewportRect.top(), viewportRect.right() - obstruction.right(), viewportRect.height()},
+                {viewportRect.left(), viewportRect.top(), viewportRect.width(), obstruction.top() - viewportRect.top()}
+            };
+            auto translation = [](const QRectF &target, const QRectF &clear) {
+                auto axis = [](qreal start, qreal end) { return std::clamp(qreal(0), std::min(start, end), std::max(start, end)); };
+                return QPointF(axis(clear.left() - target.left(), clear.right() - target.right()),
+                               axis(clear.top() - target.top(), clear.bottom() - target.bottom()));
+            };
+            QPointF movement;
+            auto choose = [&](const QRectF &target, bool requireFit) {
+                bool found = false;
+                qreal bestArea = -1, bestDistance = 0;
+                for (const QRectF &clear : candidates) {
+                    if (clear.isEmpty()) continue;
+                    if (requireFit && (target.width() > clear.width() || target.height() > clear.height())) continue;
+                    const QPointF delta = translation(target, clear);
+                    const qreal area = std::min(target.width(), clear.width()) * std::min(target.height(), clear.height());
+                    const qreal distance = QPointF::dotProduct(delta, delta);
+                    if (!found || area > bestArea || (area == bestArea && distance < bestDistance)) {
+                        found = true;
+                        bestArea = area;
+                        bestDistance = distance;
+                        movement = delta;
+                    }
+                }
+                return found;
+            };
+            if (!choose(envelope, true) && !choose(mappedNode, true) && !choose(mappedNode, false)) return;
+            if (movement.isNull()) return;
+            // Integer scrollbars must not round a fitting node back into the padded panel.
+            auto outward = [](qreal delta) { return delta < 0 ? std::floor(delta) : std::ceil(delta); };
+            movement = QPointF(outward(movement.x()), outward(movement.y()));
+            const QTransform inverse = viewportTransform().inverted();
+            const QPointF sceneDelta = inverse.map(movement) - inverse.map(QPointF());
+            preserveCenter(sceneCenter(*this, viewport()->size()) - sceneDelta);
+            updateTopicEditorGeometry();
             return;
         }
     }
