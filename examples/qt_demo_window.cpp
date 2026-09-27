@@ -59,7 +59,9 @@ DemoWindow::DemoWindow(const m3::qt::EditorConfig &config, QWidget *parent)
     connect(saveAsAction, &QAction::triggered, this, [this] { saveAs(); });
     connect(editor, &m3::qt::MindMapEditor::documentChanged, this, [this] { setWindowModified(true); });
     connect(editor, &m3::qt::MindMapEditor::selectionChanged, this, [this](const QString &node, const QString &link) {
-        statusBar()->showMessage(node.isEmpty() ? (link.isEmpty() ? tr("No selection") : tr("Link: %1").arg(link)) : tr("Node: %1").arg(node));
+        const auto count = editor->selectedNodeIds().size();
+        statusBar()->showMessage(count > 1 ? tr("%1 nodes selected").arg(count)
+            : node.isEmpty() ? (link.isEmpty() ? tr("No selection") : tr("Link: %1").arg(link)) : tr("Node: %1").arg(node));
     });
     connect(editor, &m3::qt::MindMapEditor::errorOccurred, this, [this](const QString &message) { report(message); });
     editor->loadJson(QByteArray(R"({"schemaVersion":1,"rootId":"r","nodes":[

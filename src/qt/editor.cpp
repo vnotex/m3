@@ -770,16 +770,19 @@ public:
         const auto nodes = controller->choices();
         const auto *node = choice(nodes, controller->selectedNodeId());
         const bool hasLink = controller->selectedLinkId().isEmpty() == false;
+        const auto selectedNodes = controller->selectedNodeIds();
+        const bool hasNodes = !selectedNodes.isEmpty();
+        const bool deletableNodes = hasNodes && !nodes.empty() && !selectedNodes.contains(nodes.front().id);
         const bool movable = node && !node->parent.isEmpty();
         addChild->setEnabled(node); addLink->setEnabled(node);
         addSibling->setEnabled(node); addSiblingBefore->setEnabled(node);
         for (auto *action : nodeNavigation) action->setEnabled(node);
         for (auto *action : nodeEditingActions) action->setEnabled(node != nullptr);
         rootSelection->setEnabled(!nodes.empty());
-        clearSelectionAction->setEnabled(node || hasLink);
+        clearSelectionAction->setEnabled(hasNodes || hasLink);
         editSelection->setEnabled(node || hasLink);
         editLink->setEnabled(hasLink);
-        deleteSelection->setEnabled(movable || hasLink);
+        deleteSelection->setEnabled(deletableNodes || hasLink);
         move->setEnabled(movable);
         toggleExpanded->setEnabled(node && !node->children.isEmpty());
         toggleExpanded->setText(node && !node->expanded ? tr("Expand") : tr("Collapse"));
@@ -923,11 +926,17 @@ public:
             else view->beginLinkTopicEdit(controller->selectedLinkId(), config.shortcuts.acceptTopic);
         });
         deleteSelection = action("deleteSelection", tr("Delete"), config.shortcuts.deleteSelection, [this] {
-            const auto link = controller->selectedLinkId(), node = controller->selectedNodeId();
-            if (!link.isEmpty()) controller->removeLink(link);
-            else if (!node.isEmpty() && (!config.confirmSubtreeDeletion || QMessageBox::question(host, tr("Delete subtree"),
-                tr("Delete this node and all its descendants?"), QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes))
-                controller->removeNode(node);
+            const auto link = controller->selectedLinkId();
+            if (!link.isEmpty()) { controller->removeLink(link); return; }
+            const auto nodes = controller->selectedNodeIds();
+            if (nodes.isEmpty()) return;
+            const QPointer<MindMapEditor> guard(host);
+            if (config.confirmSubtreeDeletion && QMessageBox::question(host,
+                nodes.size() == 1 ? tr("Delete subtree") : tr("Delete subtrees"),
+                nodes.size() == 1 ? tr("Delete this node and all its descendants?")
+                    : tr("Delete the %1 selected nodes and all their descendants?").arg(nodes.size()),
+                QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes) return;
+            if (guard && controller->selectedNodeIds() == nodes) controller->removeSelectedNodes();
         });
         toggleExpanded = action("toggleExpanded", tr("Expand/Collapse"), config.shortcuts.toggleExpanded, [this] {
             const auto nodes = controller->choices();
@@ -997,7 +1006,9 @@ public:
             const bool hasNode = nodeId.isEmpty() == false;
             const QString linkId = controller->selectedLinkId();
             QMenu menu(host);
-            if (hasNode) {
+            if (controller->selectedNodeIds().size() > 1) {
+                menu.addAction(deleteSelection);
+            } else if (hasNode) {
                 const auto node = controller->nodeProperties(nodeId);
                 if (!guard || node.id.isEmpty()) return;
                 menu.addActions({addChild, addSibling, addSiblingBefore});
@@ -1072,6 +1083,7 @@ public:
         QObject::connect(controller, &MindMapController::commandSucceeded, editor, [this] { error->clear(); error->hide(); updateActions(); });
         QObject::connect(controller, &MindMapController::imageRequested, editor, &MindMapEditor::imageRequested);
         QObject::connect(view, &MindMapView::nodePicked, controller, &MindMapController::selectNode);
+        QObject::connect(view, &MindMapView::nodeSelectionToggled, controller, &MindMapController::toggleNodeSelection);
         QObject::connect(view, &MindMapView::nodeLinkActivated, editor, [this, editor](const QString &id, const QString &url) {
             const QString resolved = controller->resolveResourceUrl(url);
             emit editor->nodeLinkActivated(id, resolved);
@@ -1145,6 +1157,7 @@ bool MindMapEditor::selectNode(const QString &id) { return d->controller->select
 bool MindMapEditor::selectLink(const QString &id) { return d->controller->selectLink(id); }
 void MindMapEditor::clearSelection() { d->controller->clearSelection(); }
 QString MindMapEditor::selectedNodeId() const { return d->controller->selectedNodeId(); }
+QStringList MindMapEditor::selectedNodeIds() const { return d->controller->selectedNodeIds(); }
 QString MindMapEditor::selectedLinkId() const { return d->controller->selectedLinkId(); }
 bool MindMapEditor::setLayoutDirection(LayoutDirection direction) { return d->controller->setLayoutDirection(direction); }
 MindMapEditor::LayoutDirection MindMapEditor::layoutDirection() const { return d->controller->layoutDirection(); }

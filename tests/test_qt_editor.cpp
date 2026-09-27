@@ -7505,6 +7505,191 @@ static void graph_edits_scene() {
     CHECK(texts(editor, QStringLiteral("Other")).isEmpty());
 }
 
+static void multi_selection_case() {
+    const QString a = QStringLiteral("a"), b = QStringLiteral("b"), d = QStringLiteral("d"), r = QStringLiteral("r");
+    const QString alpha = QStringLiteral("Alpha"), beta = QStringLiteral("Beta"), delta = QStringLiteral("Delta");
+    auto toggle = [](Editor &editor, const QString &topic, Qt::KeyboardModifiers modifiers) {
+        QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, modifiers, labelPoint(editor, topic));
+        pump();
+    };
+    {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        CHECK(editor.selectNode(a));
+        const Json original = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        toggle(editor, beta, Qt::ControlModifier);
+        CHECK(editor.selectedNodeIds() == QStringList({a, b}));
+        CHECK(editor.selectedNodeId().isEmpty() && editor.selectedLinkId().isEmpty());
+        CHECK(ownerItem(textItem(editor, alpha))->isSelected() && ownerItem(textItem(editor, beta))->isSelected());
+        CHECK(!editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"))->isVisible());
+        toggle(editor, delta, Qt::ShiftModifier);
+        CHECK(editor.selectedNodeIds() == QStringList({a, b, d}));
+        CHECK(selected.size() == 2 && selected.back().at(0).toString().isEmpty());
+        for (const char *name : {"addChild", "addSibling", "addSiblingBefore", "editSelection", "editTopic", "moveNode",
+                                "moveUp", "moveDown", "toggleExpanded", "addLink", "editLink", "toggleBold", "toggleItalic",
+                                "resetStyle", "textColor", "fillColor", "editTags", "editIcons", "editNote", "toggleProperties"})
+            CHECK(!editAction(editor, name).isEnabled());
+        CHECK(editAction(editor, "deleteSelection").isEnabled());
+        shortcut(editor, Qt::Key_F2);
+        shortcut(editor, Qt::Key_B);
+        shortcut(editor, Qt::Key_Space);
+        CHECK(!activeTopicInput(editor) && exported(editor) == original && changed.isEmpty());
+
+        // Right-click a member must not silently turn bulk Delete into singleton Delete.
+        auto &view = graphics(editor);
+        const QPoint point = labelPoint(editor, beta);
+        QTest::mouseClick(view.viewport(), Qt::RightButton, Qt::NoModifier, point);
+        CHECK(editor.selectedNodeIds() == QStringList({a, b, d}));
+        bool visited = false, onlyDelete = false;
+        QTimer dismiss;
+        dismiss.setInterval(0);
+        QObject::connect(&dismiss, &QTimer::timeout, [&] {
+            if (auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget())) {
+                visited = true;
+                onlyDelete = menu->actions() == QList<QAction *>{&editAction(editor, "deleteSelection")};
+                menu->close();
+            }
+        });
+        dismiss.start();
+        QContextMenuEvent context(QContextMenuEvent::Mouse, point, view.viewport()->mapToGlobal(point));
+        QCoreApplication::sendEvent(view.viewport(), &context);
+        dismiss.stop();
+        CHECK(visited && onlyDelete);
+        CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Outline));
+        CHECK(editor.selectedNodeIds() == QStringList({a, b, d}));
+        QPalette palette = editor.palette();
+        palette.setColor(QPalette::Highlight, QColor(75, 90, 150));
+        editor.setPalette(palette);
+        pump();
+        CHECK(editor.selectedNodeIds() == QStringList({a, b, d}));
+        CHECK(ownerItem(textItem(editor, alpha))->isSelected() && ownerItem(textItem(editor, delta))->isSelected());
+        CHECK(exported(editor) == original && changed.isEmpty());
+        toggle(editor, beta, Qt::ShiftModifier);
+        CHECK(editor.selectedNodeIds() == QStringList({a, d}));
+        toggle(editor, delta, Qt::ControlModifier);
+        CHECK(editor.selectedNodeId() == a);
+        toggle(editor, alpha, Qt::ControlModifier);
+        CHECK(editor.selectedNodeIds().isEmpty());
+        CHECK(editor.selectLink(QStringLiteral("l1")));
+        toggle(editor, beta, Qt::ShiftModifier);
+        CHECK(editor.selectedNodeIds() == QStringList({b}) && editor.selectedLinkId().isEmpty());
+        toggle(editor, alpha, Qt::ControlModifier);
+        clickLabel(editor, delta);
+        CHECK(editor.selectedNodeIds() == QStringList({d}));
+        toggle(editor, beta, Qt::ControlModifier);
+        CHECK(editor.selectLink(QStringLiteral("l1")) && editor.selectedNodeIds().isEmpty());
+        toggle(editor, alpha, Qt::ControlModifier);
+        toggle(editor, beta, Qt::ShiftModifier);
+        shortcut(editor, Qt::Key_Escape);
+        CHECK(editor.selectedNodeIds().isEmpty());
+
+        CHECK(editor.selectNode(d));
+        toggle(editor, beta, Qt::ControlModifier);
+        CHECK(editor.setExpanded(a, false));
+        CHECK(editor.selectedNodeIds() == QStringList({b}));
+        CHECK(editor.setExpanded(a, true));
+        toggle(editor, delta, Qt::ShiftModifier);
+        CHECK(!editor.loadJson(QByteArray("invalid")));
+        CHECK(editor.selectedNodeIds() == QStringList({b, d}));
+        CHECK(editor.removeNode(a));
+        CHECK(editor.selectedNodeIds() == QStringList({b}));
+    }
+    {
+        m3::qt::EditorConfig config;
+        config.confirmSubtreeDeletion = false;
+        Editor editor(config);
+        Json input = editorFixture();
+        for (auto &node : input["nodes"]) if (node["id"] == "a") {
+            node["hyperLink"] = "https://example.org";
+            node["tags"] = {"tag"};
+            node["image"] = {{"url", "memory:picture"}, {"width", 120}, {"height", 60}};
+        }
+        QObject::connect(&editor, &Editor::imageRequested, &editor, [&editor](const QString &url, quint64 request) {
+            editor.provideImage(url, request, imagePixels());
+        });
+        CHECK(editor.loadJson(encoded(input)));
+        showEditor(editor);
+        CHECK(editor.selectNode(a));
+        CHECK(imageHandle(editor, alpha));
+        toggle(editor, beta, Qt::ControlModifier);
+        CHECK(!imageHandle(editor, alpha));
+        QSignalSpy activated(&editor, &Editor::nodeLinkActivated), changed(&editor, &Editor::documentChanged);
+        const Json original = exported(editor);
+        auto &view = graphics(editor);
+        auto urlPoint = [&] {
+            for (auto *child : ownerItem(textItem(editor, alpha))->childItems())
+                if (child->isVisible() && child->cursor().shape() == Qt::PointingHandCursor)
+                    return view.mapFromScene(child->sceneBoundingRect().center());
+            throw std::runtime_error("Missing URL indicator");
+        };
+        // Nested URL and expansion hits are selection toggles, not actions.
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ControlModifier, urlPoint());
+        CHECK(editor.selectedNodeIds() == QStringList({b}));
+        const QRectF rect = topicRect(editor, alpha);
+        const QPoint expand = view.mapFromScene(QPointF(rect.right() - 15, rect.center().y()));
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ShiftModifier, expand);
+        CHECK(editor.selectedNodeIds() == QStringList({b, a}));
+        CHECK(exported(editor) == original && activated.isEmpty());
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, urlPoint());
+        CHECK(activated.isEmpty() && exported(editor) == original);
+        CHECK(editor.selectNode(b));
+        toggle(editor, alpha, Qt::ShiftModifier);
+        const QPoint from = labelPoint(editor, alpha), to = labelPoint(editor, beta);
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, from);
+        movePointer(view, to, Qt::LeftButton);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, to);
+        CHECK(exported(editor) == original && changed.isEmpty());
+        CHECK(editor.selectNode(b));
+        toggle(editor, alpha, Qt::ControlModifier);
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, labelPoint(editor, alpha));
+        QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, labelPoint(editor, alpha));
+        CHECK(!activeTopicInput(editor));
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, labelPoint(editor, alpha));
+        CHECK(!activeTopicInput(editor) && exported(editor) == original);
+    }
+    {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        CHECK(editor.selectNode(d));
+        toggle(editor, alpha, Qt::ControlModifier);
+        toggle(editor, beta, Qt::ShiftModifier);
+        const Json original = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), errors(&editor, &Editor::errorOccurred);
+        dialogs({deleteResponse(false)}, [&] { shortcut(editor, Qt::Key_Delete); });
+        CHECK(exported(editor) == original && changed.isEmpty());
+        CHECK(editor.selectedNodeIds() == QStringList({d, a, b}));
+        dialogs({deleteResponse(true)}, [&] { shortcut(editor, Qt::Key_Delete); });
+        auto expected = load(original);
+        ok(m3_mindmap_remove_subtree(expected.get(), "a"));
+        ok(m3_mindmap_remove_subtree(expected.get(), "b"));
+        CHECK(exported(editor) == document(expected));
+        CHECK(changed.size() == 1 && errors.isEmpty() && editor.selectedNodeId() == r);
+    }
+    {
+        m3::qt::EditorConfig config;
+        config.confirmSubtreeDeletion = false;
+        Editor editor(config);
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        CHECK(editor.selectNode(d));
+        toggle(editor, beta, Qt::ControlModifier);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        shortcut(editor, Qt::Key_Delete);
+        CHECK(editor.selectedNodeId() == a && changed.size() == 1);
+        CHECK(!hasRecord(exported(editor), "nodes", d) && !hasRecord(exported(editor), "nodes", b));
+        toggle(editor, qs(record(exported(editor), "nodes", r).at("topic")), Qt::ShiftModifier);
+        const Json before = exported(editor);
+        CHECK(!editAction(editor, "deleteSelection").isEnabled());
+        shortcut(editor, Qt::Key_Delete);
+        CHECK(exported(editor) == before && changed.size() == 1);
+        CHECK(editor.selectedNodeIds() == QStringList({a, r}));
+        CHECK(editor.newDocument() && editor.selectedNodeIds() == QStringList({QStringLiteral("root")}));
+    }
+}
+
 int main(int argc, char **argv) {
     try {
         if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) qputenv("QT_QPA_PLATFORM", QByteArray("offscreen"));
@@ -7523,6 +7708,7 @@ int main(int argc, char **argv) {
         else if (name == "images") images_case();
         else if (name == "render") { render_case(); routing_case(); }
         else if (name == "navigation") navigation_case();
+        else if (name == "multi_selection") multi_selection_case();
         else if (name == "node_drag") node_drag_case();
         else if (name == "properties") properties_case();
         else if (name == "branch_color") { branch_color_case(); auto_branch_color_case(); }

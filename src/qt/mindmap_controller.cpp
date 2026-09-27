@@ -334,31 +334,38 @@ void MindMapController::install(Presentation presentation, bool fit) {
     ++imageGeneration; // Also stop request delivery across a reentrant visual/semantic rebuild.
     scheduleImageRequests();
 }
-void MindMapController::selection(const QString &node, const QString &link) {
-    if (node == selectedNode && link == selectedLink) {
-        view.ensureNodeVisible(node);
-        return;
-    }
-    selectedNode = node;
+void MindMapController::selection(QStringList nodes, QString link, bool ensureVisible) {
+    const bool modified = nodes != selectedNodes || link != selectedLink;
+    selectedNodes = nodes;
     selectedLink = link;
     const QPointer<MindMapController> guard(this);
-    view.setSelection(node, link);
+    // Reapply even unchanged membership after a scene rebuild.
+    view.setSelection(nodes, link);
     if (!guard) return;
-    view.ensureNodeVisible(node);
+    if (ensureVisible && nodes.size() == 1) view.ensureNodeVisible(nodes.front());
     if (!guard) return;
-    emit selectionChanged(node, link);
+    if (modified) emit selectionChanged(nodes.size() == 1 ? nodes.front() : QString(), link);
+}
+void MindMapController::restoreSelection() {
+    auto nodes = selectedNodes;
+    for (qsizetype i = nodes.size(); i > 0; --i)
+        if (!visibleNodes.contains(nodes.at(i - 1))) nodes.removeAt(i - 1);
+    selection(std::move(nodes), visibleLinks.contains(selectedLink) ? selectedLink : QString(), false);
 }
 bool MindMapController::replace(Map candidate) {
+    const QPointer<MindMapController> guard(this);
     try {
         auto presentation = prepare(candidate.get(), direction, false);
         const QString root = presentation.nodes.front().id;
         install(std::move(presentation), true);
+        if (!guard) return true;
         model.swap(candidate);
         imageResources.clear();
         ++imageGeneration;
         success();
-        selection(root, {});
-        view.setSelection(selectedNode, selectedLink);
+        if (!guard) return true;
+        selection({root}, {});
+        if (!guard) return true;
         emit documentChanged();
         return true;
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
@@ -379,13 +386,34 @@ bool MindMapController::loadJson(const QByteArray &json) {
 }
 bool MindMapController::selectNode(const QString &id) {
     if (!visibleNodes.contains(id)) return fail(tr("Node is not visible"));
-    success(); selection(id, {}); return true;
+    const QStringList nodes{id};
+    const QPointer<MindMapController> guard(this);
+    success();
+    if (guard) selection(nodes, {});
+    return true;
+}
+bool MindMapController::toggleNodeSelection(const QString &id) {
+    if (!visibleNodes.contains(id)) return fail(tr("Node is not visible"));
+    auto nodes = selectedNodes;
+    if (!nodes.removeOne(id)) nodes.append(id);
+    const QPointer<MindMapController> guard(this);
+    success();
+    if (guard) selection(std::move(nodes), {});
+    return true;
 }
 bool MindMapController::selectLink(const QString &id) {
     if (!visibleLinks.contains(id)) return fail(tr("Link is not visible"));
-    success(); selection({}, id); return true;
+    const QString link = id;
+    const QPointer<MindMapController> guard(this);
+    success();
+    if (guard) selection({}, link);
+    return true;
 }
-void MindMapController::clearSelection() { success(); selection({}, {}); }
+void MindMapController::clearSelection() {
+    const QPointer<MindMapController> guard(this);
+    success();
+    if (guard) selection({}, {});
+}
 bool MindMapController::changed(M3Status result, const QString &preferredNode, const QString &preferredLink) {
     if (!status(result)) return false;
     const QPointer<MindMapController> guard(this);
@@ -394,11 +422,9 @@ bool MindMapController::changed(M3Status result, const QString &preferredNode, c
     try {
         install(prepare(model.get(), direction), false);
         if (!guard) return true;
-        if (visibleNodes.contains(preferredNode)) selection(preferredNode, {});
+        if (visibleNodes.contains(preferredNode)) selection({preferredNode}, {});
         else if (visibleLinks.contains(preferredLink)) selection({}, preferredLink);
-        else if (visibleNodes.contains(selectedNode)) view.setSelection(selectedNode, {});
-        else if (visibleLinks.contains(selectedLink)) view.setSelection({}, selectedLink);
-        else selection({}, {});
+        else restoreSelection();
     } catch (const std::exception &e) {
         visibleNodes.clear(); visibleLinks.clear();
         view.showError(QString::fromUtf8(e.what()));
@@ -522,13 +548,54 @@ bool MindMapController::updateNodeProperties(const QString &id, const QByteArray
 }
 bool MindMapController::removeNode(const QString &id) {
     if (!strings({id})) return false;
-    QHash<QString, QString> parents;
-    for (const auto &n : choices()) parents.insert(n.id, n.parent);
     QString fallback;
-    for (QString current = selectedNode; !current.isEmpty(); current = parents.value(current))
-        if (current == id) { fallback = parents.value(id); break; }
-    while (!fallback.isEmpty() && !visibleNodes.contains(fallback)) fallback = parents.value(fallback);
+    if (selectedNodes.size() == 1) {
+        const QPointer<MindMapController> guard(this);
+        const auto nodes = choices();
+        if (!guard) return false;
+        QHash<QString, QString> parents;
+        for (const auto &n : nodes) parents.insert(n.id, n.parent);
+        for (QString current = selectedNodeId(); !current.isEmpty(); current = parents.value(current))
+            if (current == id) { fallback = parents.value(id); break; }
+        while (!fallback.isEmpty() && !visibleNodes.contains(fallback)) fallback = parents.value(fallback);
+    }
     return changed(m3_mindmap_remove_subtree(model.get(), id.toUtf8().constData()), fallback);
+}
+bool MindMapController::removeSelectedNodes() {
+    if (selectedNodes.isEmpty()) return fail(tr("No nodes are selected"));
+    if (selectedNodes.size() == 1) return removeNode(selectedNodeId());
+    try {
+        const auto bytes = snapshot(model.get());
+        const auto data = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
+        const QString root = string(data.at("rootId"));
+        QHash<QString, QString> parents;
+        parents.insert(root, {});
+        for (const auto &node : data.at("nodes"))
+            for (const auto &child : node.at("children")) parents.insert(string(child), string(node.at("id")));
+        QSet<QString> selected;
+        for (const auto &id : selectedNodes) {
+            if (id == root) return fail(tr("Cannot remove root"));
+            if (!parents.contains(id)) return fail(tr("Node not found"));
+            selected.insert(id);
+        }
+        QStringList roots;
+        for (const auto &id : selectedNodes) {
+            QString ancestor = parents.value(id);
+            while (!ancestor.isEmpty() && !selected.contains(ancestor)) ancestor = parents.value(ancestor);
+            if (ancestor.isEmpty()) roots.append(id);
+        }
+        // Keep disjoint roots in selection order; the first root supplies the visible parent fallback.
+        QString fallback = parents.value(roots.front());
+        while (!fallback.isEmpty() && !visibleNodes.contains(fallback)) fallback = parents.value(fallback);
+        M3Mindmap *raw = nullptr;
+        const auto result = m3_mindmap_from_json(bytes.constData(), &raw);
+        Map candidate(raw, m3_mindmap_destroy);
+        requireStatus(result);
+        for (const auto &id : roots)
+            requireStatus(m3_mindmap_remove_subtree(candidate.get(), id.toUtf8().constData()));
+        model.swap(candidate);
+        return changed(M3_OK, fallback);
+    } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 bool MindMapController::moveNode(const QString &id, const QString &parent, int index) {
     if (!strings({id, parent})) return false;
@@ -539,15 +606,18 @@ bool MindMapController::moveNode(const QString &id, const QString &parent, int i
 bool MindMapController::setExpanded(const QString &id, bool expanded) {
     if (!strings({id})) return false;
     QString fallback;
-    if (!expanded) {
+    const QPointer<MindMapController> guard(this);
+    if (!expanded && selectedNodes.size() == 1) {
+        const auto nodes = choices();
+        if (!guard) return false;
         QHash<QString, QString> parents;
-        for (const auto &n : choices()) parents.insert(n.id, n.parent);
-        for (QString current = selectedNode; !current.isEmpty(); current = parents.value(current))
+        for (const auto &n : nodes) parents.insert(n.id, n.parent);
+        for (QString current = selectedNodeId(); !current.isEmpty(); current = parents.value(current))
             if (current == id) { fallback = id; break; }
     }
     const auto patch = Json{{"expanded", expanded}}.dump();
     if (!changed(m3_mindmap_update_node(model.get(), id.toUtf8().constData(), patch.c_str()), fallback)) return false;
-    if (expanded) view.centerNode(id);
+    if (guard && expanded) view.centerNode(id);
     return true;
 }
 QString MindMapController::addLink(const QString &source, const QString &target, bool directed, const QString &topic) {
@@ -609,11 +679,14 @@ bool MindMapController::removeLink(const QString &id) {
     return strings({id}) && changed(m3_mindmap_remove_link(model.get(), id.toUtf8().constData()));
 }
 bool MindMapController::setLayoutDirection(MindMapEditor::LayoutDirection requested) {
+    const QPointer<MindMapController> guard(this);
     try {
         auto presentation = prepare(model.get(), requested);
         install(std::move(presentation), false);
+        if (!guard) return true;
         direction = requested;
-        view.setSelection(selectedNode, selectedLink);
+        restoreSelection();
+        if (!guard) return true;
         success();
         return true;
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
@@ -670,13 +743,17 @@ LinkPresentation MindMapController::linkChoice(const QString &id) {
 }
 void MindMapController::refreshAppearance() {
     if (!model) return;
+    const QPointer<MindMapController> guard(this);
     try {
         install(prepare(model.get(), direction), false);
-        view.setSelection(selectedNode, selectedLink);
+        if (!guard) return;
+        restoreSelection();
     } catch (const std::exception &e) {
         visibleNodes.clear(); visibleLinks.clear();
         view.showError(QString::fromUtf8(e.what()));
+        if (!guard) return;
         selection({}, {});
+        if (!guard) return;
         fail(QString::fromUtf8(e.what()));
     }
 }

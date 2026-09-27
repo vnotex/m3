@@ -6,6 +6,8 @@
 #include <QImage>
 #include <QKeySequence>
 #include <QPointer>
+#include <QSet>
+#include <QStringList>
 
 class QGraphicsTextItem;
 class QPlainTextEdit;
@@ -23,7 +25,7 @@ public:
     void install(Presentation presentation, bool fit);
     QImage renderImage(Presentation presentation) const;
     void showError(const QString &message);
-    void setSelection(const QString &node, const QString &link);
+    void setSelection(const QStringList &nodes, const QString &link);
     void ensureNodeVisible(const QString &id, const QRect &occlusion = {});
     void centerNode(const QString &id);
     void fitContents();
@@ -36,6 +38,7 @@ signals:
     void linkEndpointChangeRequested(const QString &id, bool source, const QString &original, const QString &node);
     void topicEditingChanged(bool editing);
     void nodePicked(const QString &id);
+    void nodeSelectionToggled(const QString &id);
     void nodeLinkActivated(const QString &nodeId, const QString &url);
     void imageResizeRequested(const QString &nodeId, const QString &url, const QSizeF &originalSize, const QSizeF &size);
     void fileDropped(const QString &nodeId, const QString &filePath);
@@ -65,6 +68,8 @@ protected:
     void changeEvent(QEvent *event) override;
 private:
     Qt::MouseButton panning = Qt::NoButton;
+    QSet<QString> selectedNodes;
+    bool suppressNodeDoubleClick = false;
     bool pendingFit = false;
     QPointF panPosition;
     QHash<QString, QString> nodeParents;

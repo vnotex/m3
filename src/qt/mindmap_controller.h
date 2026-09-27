@@ -5,6 +5,7 @@
 #include "presentation.h"
 #include <QSet>
 #include <QHash>
+#include <QStringList>
 #include <memory>
 
 namespace m3::qt {
@@ -28,6 +29,7 @@ public:
     bool commitTopicEdit(const QString &id, const QString &draft);
     bool updateNodeProperties(const QString &id, const QByteArray &patch);
     bool removeNode(const QString &id);
+    bool removeSelectedNodes();
     bool moveNode(const QString &id, const QString &parent, int index);
     bool setExpanded(const QString &id, bool expanded);
     QString addLink(const QString &source, const QString &target, bool directed, const QString &topic);
@@ -37,9 +39,11 @@ public:
     bool commitLinkTopicEdit(const QString &id, const QString &topic);
     bool removeLink(const QString &id);
     bool selectNode(const QString &id);
+    bool toggleNodeSelection(const QString &id);
     bool selectLink(const QString &id);
     void clearSelection();
-    QString selectedNodeId() const { return selectedNode; }
+    QString selectedNodeId() const { return selectedNodes.size() == 1 ? selectedNodes.front() : QString(); }
+    QStringList selectedNodeIds() const { return selectedNodes; }
     QString selectedLinkId() const { return selectedLink; }
     bool setLayoutDirection(MindMapEditor::LayoutDirection direction);
     MindMapEditor::LayoutDirection layoutDirection() const { return direction; }
@@ -57,7 +61,8 @@ private:
     using Map = std::unique_ptr<M3Mindmap, decltype(&m3_mindmap_destroy)>;
     Map model{nullptr, m3_mindmap_destroy};
     MindMapView &view;
-    QString error, selectedNode, selectedLink;
+    QString error, selectedLink;
+    QStringList selectedNodes;
     QString resourceBase;
     const bool autoRandomBranchColor;
     struct ImageResource {
@@ -81,7 +86,8 @@ private:
     void install(Presentation presentation, bool fit);
     bool replace(Map candidate);
     bool changed(M3Status result, const QString &preferredNode = {}, const QString &preferredLink = {});
-    void selection(const QString &node, const QString &link);
+    void selection(QStringList nodes, QString link, bool ensureVisible = true);
+    void restoreSelection();
 };
 }
 #endif

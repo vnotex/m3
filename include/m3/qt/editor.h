@@ -3,6 +3,7 @@
 #include <QByteArray>
 #include <QImage>
 #include <QString>
+#include <QStringList>
 #include <QKeySequence>
 #include <QList>
 #include <QWidget>
@@ -31,7 +32,14 @@
 // retried on the next refresh. documentChanged fires once per semantic success;
 // unchanged node-property edits do not emit it.
 // IDs are case-sensitive. Index -1 appends; move indexes apply after removal.
-// Only visible nodes/links can be selected, exclusively; hidden data is preserved.
+// Only visible nodes/links can be selected; hidden data is preserved. Links are
+// exclusive. Shift/Ctrl-click toggles nodes in a group; plain click selects one.
+// Right-clicking a group member retains the group and offers only Delete.
+// Multiple nodes support only Delete: no properties, editing or mutation gestures.
+// Viewport/help and selection controls remain available. Delete removes selected
+// subtrees once, including overlaps, in one document change and confirmation.
+// A selection containing the root cannot be deleted. After group deletion, select
+// the visible parent of the first selected subtree not covered by another selection.
 // Selection, layout direction, zoom/pan and fit never change persisted JSON.
 // Shift+vertical wheel scrolls horizontally; with normal left-to-right controls,
 // down/negative deltas move the viewport right and up/positive deltas move it left.
@@ -41,8 +49,8 @@
 // Empty space shows an open hand cursor, closing during a pan. Empty clicks clear selection.
 // Node context menus separate creation from editing/reordering and omit viewport actions.
 // With no selection the menu contains only Focus Main Node, Fit, Zoom In, Zoom Out and 100%.
-// Collapse/Expand, Move and Add Link remain available through the toolbar and shortcuts.
-// Selected nodes show a small arrow outside their top-right corner. Drag it onto
+// For a single node, Collapse/Expand, Move and Add Link are toolbar/shortcut actions.
+// A single selected node shows a small arrow outside its top-right corner. Drag it onto
 // another visible node to create an undirected cross-link without moving either node.
 // Escape, an interrupted gesture, or an invalid drop cancels without changing the document.
 // A selected link shows two fixed-size endpoint squares. Drag either square onto
@@ -66,7 +74,7 @@
 // Expanding a node centers it at the current zoom; large branches may still
 // extend beyond the viewport.
 // Topics/labels are plain Unicode text. Embedded NULs are rejected.
-// A selected node has a floating properties card; links/empty selection hide it.
+// A single selected node has a floating properties card; other selections hide it.
 // Appearance, tags, icons, URL, Image URL and note edits persist immediately without changing
 // selection or zoom. Blank Image URL hides the image while retaining its dimensions.
 // Images appear beneath tags, preserving decoded aspect ratio within stored bounds;
@@ -92,7 +100,7 @@
 // resolveDroppedFileUrl, without changing selection.
 // Collapsing the card leaves only its top-right toggle, without changing selection.
 // The expanded/collapsed preference is local to this editor and survives selection
-// and document changes; links/empty selection hide either form without resetting it.
+// and document changes; links/groups/empty selection hide either form without resetting it.
 // The renderer recognizes style.color/background, fontSize (1-256 pixels, numeric
 // or "Npx"), fontWeight (normal/bold or CSS weight 100-900), and fontStyle
 // (normal/italic, inheriting the editor font when unset), and branchColor (a QColor
@@ -231,7 +239,10 @@ public:
     bool selectNode(const QString &id);
     bool selectLink(const QString &id);
     void clearSelection();
+    // The singular getter is empty for zero or multiple selected nodes.
     QString selectedNodeId() const;
+    // Full node selection in click order; empty when a link is selected.
+    QStringList selectedNodeIds() const;
     QString selectedLinkId() const;
     bool setLayoutDirection(LayoutDirection direction);
     LayoutDirection layoutDirection() const;
@@ -242,6 +253,8 @@ public:
     bool focusRoot();
 signals:
     void documentChanged();
+    // Fires for every membership change. For multiple nodes both arguments are
+    // empty; query selectedNodeIds() to distinguish a group from no selection.
     void selectionChanged(const QString &nodeId, const QString &linkId);
     void nodeLinkActivated(const QString &nodeId, const QString &url);
     void imageRequested(const QString &url, quint64 requestId);
