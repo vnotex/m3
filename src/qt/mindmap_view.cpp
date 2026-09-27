@@ -54,17 +54,17 @@ public:
         setToolTip(QCoreApplication::translate("MindMapView", "Drag to create a link"));
     }
     // The parent supplies only the corner anchor; size and gap are device pixels.
-    QRectF boundingRect() const override { return QRectF(4, -24, 20, 20); }
+    QRectF boundingRect() const override { return QRectF(0, -20, 20, 20); }
     void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
-        p->setPen(Qt::NoPen);
+        p->setPen(QPen(colors.color(QPalette::ButtonText), 1));
         p->setBrush(colors.color(QPalette::Base));
-        p->drawRoundedRect(boundingRect(), 4, 4);
-        QPen pen(colors.color(QPalette::Highlight), 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p->drawEllipse(boundingRect().adjusted(0.5, 0.5, -0.5, -0.5));
+        QPen pen(colors.color(QPalette::Highlight), 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
         pen.setCosmetic(true);
         p->setPen(pen);
-        p->drawLine(QPointF(9, -9), QPointF(19, -19));
-        p->drawLine(QPointF(12, -19), QPointF(19, -19));
-        p->drawLine(QPointF(19, -19), QPointF(19, -12));
+        p->drawLine(QPointF(6, -6), QPointF(14, -14));
+        p->drawLine(QPointF(9, -14), QPointF(14, -14));
+        p->drawLine(QPointF(14, -14), QPointF(14, -9));
     }
 private:
     QPalette colors;
@@ -1207,7 +1207,7 @@ void MindMapView::fitContents() {
     pendingFit = false;
     QRectF bounds = scene()->sceneRect();
     if (!bounds.isEmpty()) {
-        // The external arrow stays 24 device pixels beyond the node at every zoom.
+        // Reserve device-pixel space for the external arrow at every zoom.
         const qreal scale = std::min(qMax(1, viewport()->width() - 48) / bounds.width(),
                                      qMax(1, viewport()->height() - 48) / bounds.height());
         const qreal padding = 24 / scale;
