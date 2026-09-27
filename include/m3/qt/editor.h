@@ -41,7 +41,17 @@
 // Selected nodes show a small arrow outside their top-right corner. Drag it onto
 // another visible node to create an undirected cross-link without moving either node.
 // Escape, an interrupted gesture, or an invalid drop cancels without changing the document.
-// Link properties in the toolbar/link menu edits endpoints and direction.
+// A selected link shows two fixed-size endpoint squares. Drag either square onto
+// a visible node to reconnect only that endpoint, including self-links. Motion is
+// a preview; release commits once. Escape, interrupted gestures and invalid or
+// unchanged drops leave the document intact. Handles are not persisted or exported.
+// Link menus contain Rename/Edit, a separator, exclusive ---, <---, --->, <--->
+// direction choices, a separator, and Delete. Arrows are relative to stored
+// source/target order, not screen position. Link properties stays in the toolbar.
+// directed=false draws no arrows; otherwise style.arrowDirection "backward" or
+// "both" selects source-only or both arrows. Missing/other values draw target-only.
+// These Qt style keys survive native JSON; unrelated style data stays opaque.
+// updateLink and the toolbar's Directed checkbox retain this style preference.
 // Selecting a node or accepting an inline topic scrolls its full bounds into view
 // without changing zoom; oversized nodes can only be partially shown by scrolling.
 // Expanding a node centers it at the current zoom; large branches may still

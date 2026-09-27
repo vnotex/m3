@@ -32,6 +32,8 @@ public:
     bool setExpanded(const QString &id, bool expanded);
     QString addLink(const QString &source, const QString &target, bool directed, const QString &topic);
     bool updateLink(const QString &id, const QString &source, const QString &target, bool directed, const QString &topic);
+    bool setLinkDirection(const QString &id, LinkDirection direction);
+    bool reconnectLink(const QString &id, bool source, const QString &original, const QString &node);
     bool commitLinkTopicEdit(const QString &id, const QString &topic);
     bool removeLink(const QString &id);
     bool selectNode(const QString &id);

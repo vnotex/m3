@@ -144,7 +144,11 @@ QString encodeHtml(const QByteArray &document, const QImage &mapImage) {
         for (const auto &link : links) {
             out += QStringLiteral("<li>");
             endpoint(out, *index.at(link.at("source").get<std::string>()));
-            out += link.at("directed").get<bool>() ? QString::fromUtf8(" → ") : QString::fromUtf8(" ↔ ");
+            const auto &style = link.at("style");
+            const auto arrow = style.find("arrowDirection");
+            out += !link.at("directed").get<bool>() ? QString::fromUtf8(" ↔ ")
+                : arrow != style.end() && *arrow == "backward" ? QString::fromUtf8(" ← ")
+                : arrow != style.end() && *arrow == "both" ? QString::fromUtf8(" ⇄ ") : QString::fromUtf8(" → ");
             endpoint(out, *index.at(link.at("target").get<std::string>()));
             out += u'\n';
             metadata(out, "ID", string(link.at("id")));

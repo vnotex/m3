@@ -120,8 +120,14 @@ NodeStyle nodeStyle(const Json &style) {
     return result;
 }
 LinkPresentation linkPresentation(const Json &j) {
-    return {string(j.at("id")), string(j.at("source")), string(j.at("target")),
-            string(j.at("topic")), j.at("directed").get<bool>()};
+    auto direction = LinkDirection::None;
+    if (j.at("directed").get<bool>()) {
+        const auto &style = j.at("style");
+        const auto arrow = style.find("arrowDirection");
+        direction = arrow != style.end() && *arrow == "backward" ? LinkDirection::Backward
+            : arrow != style.end() && *arrow == "both" ? LinkDirection::Both : LinkDirection::Forward;
+    }
+    return {string(j.at("id")), string(j.at("source")), string(j.at("target")), string(j.at("topic")), direction};
 }
 }
 MindMapController::MindMapController(MindMapView &v, const QString &base, QObject *parent)
@@ -507,6 +513,43 @@ bool MindMapController::updateLink(const QString &id, const QString &source, con
     const auto patch = Json{{"source", utf8(source)}, {"target", utf8(target)},
                             {"directed", directed}, {"topic", utf8(topic)}}.dump();
     return changed(m3_mindmap_update_link(model.get(), id.toUtf8().constData(), patch.c_str()));
+}
+bool MindMapController::setLinkDirection(const QString &id, LinkDirection direction) {
+    if (!strings({id})) return false;
+    try {
+        char *raw = nullptr;
+        const auto read = m3_mindmap_get_link_json(model.get(), id.toUtf8().constData(), &raw);
+        Text text(raw, m3_string_free);
+        requireStatus(read);
+        auto current = Json::parse(text.get());
+        if (linkPresentation(current).direction == direction) { success(); return true; }
+        auto style = std::move(current.at("style"));
+        switch (direction) {
+        case LinkDirection::None:
+        case LinkDirection::Forward: style.erase("arrowDirection"); break;
+        case LinkDirection::Backward: style["arrowDirection"] = "backward"; break;
+        case LinkDirection::Both: style["arrowDirection"] = "both"; break;
+        default: return fail(tr("Invalid link direction"));
+        }
+        const auto patch = Json{{"directed", direction != LinkDirection::None}, {"style", std::move(style)}}.dump();
+        return changed(m3_mindmap_update_link(model.get(), id.toUtf8().constData(), patch.c_str()));
+    } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
+}
+bool MindMapController::reconnectLink(const QString &id, bool source, const QString &original, const QString &node) {
+    if (!strings({id, original, node})) return false;
+    if (selectedLink != id) return false;
+    try {
+        char *raw = nullptr;
+        const auto read = m3_mindmap_get_link_json(model.get(), id.toUtf8().constData(), &raw);
+        Text text(raw, m3_string_free);
+        requireStatus(read);
+        const auto current = Json::parse(text.get());
+        const char *endpoint = source ? "source" : "target";
+        if (current.at(endpoint) != utf8(original)) return false;
+        if (original == node) { success(); return true; }
+        const auto patch = Json{{endpoint, utf8(node)}}.dump();
+        return changed(m3_mindmap_update_link(model.get(), id.toUtf8().constData(), patch.c_str()));
+    } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 bool MindMapController::commitLinkTopicEdit(const QString &id, const QString &topic) {
     if (!strings({id, topic})) return false;

@@ -46,9 +46,10 @@ struct NodePresentation {
     NodeStyle style;
     std::unique_ptr<QTextDocument> text, iconText;
 };
+enum class LinkDirection { None, Backward, Forward, Both };
 struct LinkPresentation {
     QString id, source, target, topic;
-    bool directed = false;
+    LinkDirection direction = LinkDirection::None;
 };
 struct TreeEdge { QString source, target; };
 struct Presentation {

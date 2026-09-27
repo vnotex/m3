@@ -3,6 +3,7 @@
 #include "mindmap_view.h"
 #include "emoji_line_edit.h"
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -831,7 +832,7 @@ public:
         auto *topic = new QLineEdit(link.topic, dialog);
         topic->setObjectName(QStringLiteral("linkTopic"));
         auto *directed = new QCheckBox(tr("Directed"), dialog);
-        directed->setObjectName(QStringLiteral("directed")); directed->setChecked(!insert && link.directed);
+        directed->setObjectName(QStringLiteral("directed")); directed->setChecked(!insert && link.direction != LinkDirection::None);
         form->addRow(tr("Source"), source); form->addRow(tr("Target"), target);
         form->addRow(tr("Topic"), topic); form->addRow(directed);
         auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
@@ -983,20 +984,39 @@ public:
             if (!guard) return;
             const QString nodeId = controller->selectedNodeId();
             const bool hasNode = nodeId.isEmpty() == false;
-            const bool hasLink = controller->selectedLinkId().isEmpty() == false;
+            const QString linkId = controller->selectedLinkId();
             QMenu menu(host);
-            if (hasNode || hasLink) {
+            if (hasNode) {
                 menu.addActions({addChild, addSibling, addSiblingBefore});
                 menu.addSeparator();
                 menu.addAction(editSelection);
-                if (hasLink) menu.addAction(editLink);
                 menu.addAction(tr("Add URL"), host, [this, nodeId] { host->onAddUrl(nodeId); })->setEnabled(hasNode);
                 menu.addAction(tr("Add Image"), host, [this, nodeId] { host->onAddImage(nodeId); })->setEnabled(hasNode);
                 menu.addSeparator();
                 menu.addActions({deleteSelection, up, down});
-            }
-            if (!hasNode) {
-                if (hasLink) menu.addSeparator();
+            } else if (!linkId.isEmpty()) {
+                const auto link = controller->linkChoice(linkId);
+                if (!guard || link.id.isEmpty()) return;
+                menu.addAction(editSelection);
+                menu.addSeparator();
+                auto *group = new QActionGroup(&menu);
+                group->setExclusive(true);
+                const struct { const char *text; LinkDirection direction; } choices[] = {
+                    {"---", LinkDirection::None}, {"<---", LinkDirection::Backward},
+                    {"--->", LinkDirection::Forward}, {"<--->", LinkDirection::Both}
+                };
+                for (const auto &choice : choices) {
+                    auto *action = menu.addAction(QString::fromLatin1(choice.text));
+                    action->setCheckable(true);
+                    group->addAction(action);
+                    action->setChecked(link.direction == choice.direction);
+                    QObject::connect(action, &QAction::triggered, host, [this, linkId, direction = choice.direction] {
+                        controller->setLinkDirection(linkId, direction);
+                    });
+                }
+                menu.addSeparator();
+                menu.addAction(deleteSelection);
+            } else {
                 menu.addActions({rootSelection, fit, zoomIn, zoomOut, resetZoom});
             }
             menu.exec(view->mapToGlobal(point));
@@ -1040,6 +1060,7 @@ public:
         QObject::connect(view, &MindMapView::editRequested, editSelection, &QAction::trigger);
         QObject::connect(view, &MindMapView::topicEditRequested, controller, &MindMapController::commitTopicEdit);
         QObject::connect(view, &MindMapView::linkTopicEditRequested, controller, &MindMapController::commitLinkTopicEdit);
+        QObject::connect(view, &MindMapView::linkEndpointChangeRequested, controller, &MindMapController::reconnectLink);
         QObject::connect(view, &MindMapView::linkCreationRequested, editor, [this](const QString &source, const QString &target) {
             const QPointer<MindMapEditor> guard(host);
             const QString created = controller->addLink(source, target, false, {});

@@ -33,6 +33,7 @@ signals:
     void topicEditRequested(const QString &id, const QString &topic);
     void linkTopicEditRequested(const QString &id, const QString &topic);
     void linkCreationRequested(const QString &source, const QString &target);
+    void linkEndpointChangeRequested(const QString &id, bool source, const QString &original, const QString &node);
     void topicEditingChanged(bool editing);
     void nodePicked(const QString &id);
     void nodeLinkActivated(const QString &nodeId, const QString &url);
@@ -68,6 +69,11 @@ private:
     QPointF panPosition;
     QHash<QString, QString> nodeParents;
     QGraphicsItem *linkCreationHandle = nullptr;
+    QGraphicsItem *linkEndpointHandles[2] = {};
+    QString reconnectedLinkId, originalEndpointId;
+    QPoint reconnectPressPosition;
+    QPointF reconnectOriginalPosition, reconnectFixedPosition;
+    bool reconnectSource = false, reconnectDragging = false, suppressReconnectMenu = false;
     QString linkSourceId;
     QPoint linkCreationPressPosition;
     QPointF linkPreviewStart, linkPreviewEnd;
@@ -97,7 +103,11 @@ private:
     void clearLinkCreation();
     bool handleLinkCreationEvent(QEvent *event);
     void updateLinkCreation(const QPoint &position);
-    QString linkTargetAt(const QPoint &position) const;
+    QString linkTargetAt(const QPoint &position, const QString &excluded) const;
+    void clearLinkReconnect();
+    void clearLinkEndpointHandles();
+    bool handleLinkReconnectEvent(QEvent *event);
+    void updateLinkReconnect(const QPoint &position);
     QGraphicsItem *targetAt(const QPoint &position) const;
     void updatePanCursor(const QPoint &position);
     QString dropTargetAt(const QPoint &position) const;

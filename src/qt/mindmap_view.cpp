@@ -416,32 +416,40 @@ private:
 };
 class LinkItem final : public QGraphicsItem {
 public:
-    QString id;
+    QString id, source, target;
     QPainterPath curve, hit, leader;
-    QPolygonF arrow;
+    QPolygonF sourceArrow, targetArrow;
     QPalette colors;
     QGraphicsTextItem *label;
     LinkItem(const LinkPresentation &link, QPainterPath path, const QFont &font, const QPalette &palette,
              std::vector<QRectF> &occupied, const LinkRouter &router, const QRectF &source, const QRectF &target)
-        : id(link.id), curve(std::move(path)), colors(palette) {
+        : id(link.id), source(link.source), target(link.target), curve(std::move(path)), colors(palette) {
         setZValue(1);
         setFlag(ItemIsSelectable);
-        if (link.directed) {
-            const QPointF end = curve.pointAtPercent(1);
-            QPointF tangent = end - curve.pointAtPercent(0.999);
+        auto arrow = [this](qreal endPercent, qreal innerPercent) {
+            QPolygonF result;
+            const QPointF end = curve.pointAtPercent(endPercent);
+            QPointF tangent = end - curve.pointAtPercent(innerPercent);
             const qreal length = std::hypot(tangent.x(), tangent.y());
             if (length > 0) {
                 tangent /= length;
                 const QPointF normal(-tangent.y(), tangent.x());
-                arrow << end << end - tangent * 9 + normal * 3 << end - tangent * 9 - normal * 3;
+                result << end << end - tangent * 9 + normal * 3 << end - tangent * 9 - normal * 3;
             }
-        }
+            return result;
+        };
+        if (link.direction == LinkDirection::Backward || link.direction == LinkDirection::Both)
+            sourceArrow = arrow(0, 0.001);
+        if (link.direction == LinkDirection::Forward || link.direction == LinkDirection::Both)
+            targetArrow = arrow(1, 0.999);
         QPainterPathStroker stroker;
         stroker.setCapStyle(Qt::RoundCap);
         stroker.setJoinStyle(Qt::RoundJoin);
         stroker.setWidth(8);
         hit = stroker.createStroke(curve);
-        if (!arrow.isEmpty()) { QPainterPath outline; outline.addPolygon(arrow); hit = hit.united(outline); }
+        for (const auto *arrow : {&sourceArrow, &targetArrow}) {
+            if (!arrow->isEmpty()) { QPainterPath outline; outline.addPolygon(*arrow); hit = hit.united(outline); }
+        }
         label = new QGraphicsTextItem(this);
         label->setFont(font);
         label->document()->setDocumentMargin(0);
@@ -483,10 +491,33 @@ public:
             p->setPen(QPen(color, 1, Qt::DotLine));
             p->drawPath(leader);
         }
-        if (!arrow.isEmpty()) {
-            p->setPen(Qt::NoPen); p->setBrush(color); p->drawPolygon(arrow);
-        }
+        p->setPen(Qt::NoPen);
+        p->setBrush(color);
+        if (!sourceArrow.isEmpty()) p->drawPolygon(sourceArrow);
+        if (!targetArrow.isEmpty()) p->drawPolygon(targetArrow);
     }
+};
+class LinkEndpointHandle final : public QGraphicsItem {
+public:
+    LinkItem *link;
+    bool source;
+    LinkEndpointHandle(LinkItem *link, bool source, const QPalette &palette)
+        : link(link), source(source), colors(palette) {
+        setFlag(ItemIgnoresTransformations);
+        setAcceptedMouseButtons(Qt::NoButton);
+        setZValue(3);
+        setCursor(Qt::OpenHandCursor);
+        setToolTip(QCoreApplication::translate("MindMapView", source ? "Drag to change source" : "Drag to change destination"));
+        setPos(link->mapToScene(link->curve.pointAtPercent(source ? 0 : 1)));
+    }
+    QRectF boundingRect() const override { return QRectF(-5, -5, 10, 10); }
+    void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
+        p->setPen(QPen(colors.color(QPalette::Highlight), 1));
+        p->setBrush(colors.color(QPalette::HighlightedText));
+        p->drawRect(boundingRect().adjusted(0.5, 0.5, -0.5, -0.5));
+    }
+private:
+    QPalette colors;
 };
 QPointF boundary(const QRectF &rect, const QPointF &towards) {
     const QPointF delta = towards - rect.center();
@@ -623,6 +654,7 @@ void MindMapView::beginTopicEdit(TopicKind kind, const QString &id, const QList<
     auto *label = findTopicLabel(scene(), targetId, kind);
     if (!label) return;
     clearLinkCreation();
+    clearLinkReconnect();
     if (kind == TopicKind::Node) ensureVisible(label->parentItem());
     else ensureVisible(label->sceneBoundingRect().adjusted(-60, -20, 60, 20));
     editedId = targetId;
@@ -714,11 +746,13 @@ void MindMapView::updateTopicEditorGeometry() {
     topicEditor->setGeometry(x, y, width, height);
 }
 bool MindMapView::event(QEvent *event) {
-    if (handleLinkCreationEvent(event) || handleImageResizeEvent(event) || handleNodeLinkEvent(event) || handleNodeDragEvent(event)) return true;
+    if (handleLinkReconnectEvent(event) || handleLinkCreationEvent(event) || handleImageResizeEvent(event) ||
+        handleNodeLinkEvent(event) || handleNodeDragEvent(event)) return true;
     return QGraphicsView::event(event);
 }
 bool MindMapView::viewportEvent(QEvent *event) {
-    if (handleLinkCreationEvent(event) || handleImageResizeEvent(event) || handleNodeLinkEvent(event) || handleNodeDragEvent(event)) return true;
+    if (handleLinkReconnectEvent(event) || handleLinkCreationEvent(event) || handleImageResizeEvent(event) ||
+        handleNodeLinkEvent(event) || handleNodeDragEvent(event)) return true;
     return QGraphicsView::viewportEvent(event);
 }
 void MindMapView::dragEnterEvent(QDragEnterEvent *event) {
@@ -803,30 +837,82 @@ void MindMapView::updateLinkCreation(const QPoint &position) {
         linkCreating = true;
     if (linkCreating) {
         linkPreviewEnd = mapToScene(position);
-        setDropTarget(linkTargetAt(position));
+        setDropTarget(linkTargetAt(position, linkSourceId));
         viewport()->update();
     }
     updatePanCursor(position);
 }
-QString MindMapView::linkTargetAt(const QPoint &position) const {
+QString MindMapView::linkTargetAt(const QPoint &position, const QString &excluded) const {
     if (!viewport()->rect().contains(position)) return {};
     const QPointF point = mapToScene(position);
     for (auto *item : items(position)) {
         if (auto *node = dynamic_cast<NodeItem *>(item);
             node && node->isVisible() && node->shape().contains(node->mapFromScene(point)))
-            return node->id == linkSourceId ? QString() : node->id;
+            return node->id == excluded ? QString() : node->id;
     }
     return {};
 }
 void MindMapView::drawForeground(QPainter *painter, const QRectF &rect) {
     QGraphicsView::drawForeground(painter, rect);
-    if (!linkCreating) return;
+    if (!linkCreating && !reconnectDragging) return;
     painter->save();
     QPen pen(palette().color(QPalette::Highlight), 1.5, Qt::DashLine);
     pen.setCosmetic(true);
     painter->setPen(pen);
-    painter->drawLine(linkPreviewStart, linkPreviewEnd);
+    if (reconnectDragging)
+        painter->drawLine(reconnectFixedPosition, linkEndpointHandles[reconnectSource ? 0 : 1]->pos());
+    else painter->drawLine(linkPreviewStart, linkPreviewEnd);
     painter->restore();
+}
+void MindMapView::clearLinkReconnect() {
+    if (reconnectedLinkId.isEmpty()) return;
+    if (auto *handle = linkEndpointHandles[reconnectSource ? 0 : 1]) handle->setPos(reconnectOriginalPosition);
+    reconnectedLinkId.clear();
+    originalEndpointId.clear();
+    reconnectDragging = false;
+    setDropTarget({});
+    viewport()->update();
+    updatePanCursor(viewport()->mapFromGlobal(QCursor::pos()));
+}
+void MindMapView::clearLinkEndpointHandles() {
+    clearLinkReconnect();
+    for (auto *&handle : linkEndpointHandles) { delete handle; handle = nullptr; }
+}
+bool MindMapView::handleLinkReconnectEvent(QEvent *event) {
+    if (event->type() == QEvent::ContextMenu && (!reconnectedLinkId.isEmpty() || suppressReconnectMenu)) {
+        clearLinkReconnect();
+        suppressReconnectMenu = false;
+        event->accept();
+        return true;
+    }
+    if (reconnectedLinkId.isEmpty()) return false;
+    switch (event->type()) {
+    case QEvent::ShortcutOverride:
+    case QEvent::KeyPress:
+        if (static_cast<QKeyEvent *>(event)->key() != Qt::Key_Escape) return false;
+        if (event->type() == QEvent::KeyPress) clearLinkReconnect();
+        event->accept();
+        return true;
+    case QEvent::FocusOut:
+    case QEvent::Hide:
+    case QEvent::UngrabMouse:
+    case QEvent::WindowDeactivate:
+    case QEvent::Resize:
+        clearLinkReconnect();
+        break;
+    default: break;
+    }
+    return false;
+}
+void MindMapView::updateLinkReconnect(const QPoint &position) {
+    if (!reconnectDragging && (position - reconnectPressPosition).manhattanLength() >= QApplication::startDragDistance())
+        reconnectDragging = true;
+    if (reconnectDragging) {
+        linkEndpointHandles[reconnectSource ? 0 : 1]->setPos(mapToScene(position));
+        setDropTarget(linkTargetAt(position, originalEndpointId));
+        viewport()->update();
+    }
+    updatePanCursor(position);
 }
 void MindMapView::clearImageResize() {
     if (resizedNodeId.isEmpty()) return;
@@ -993,6 +1079,7 @@ bool MindMapView::eventFilter(QObject *watched, QEvent *event) {
     return false;
 }
 void MindMapView::scrollContentsBy(int dx, int dy) {
+    clearLinkReconnect();
     clearLinkCreation();
     clearImageResize();
     QGraphicsView::scrollContentsBy(dx, dy);
@@ -1061,6 +1148,7 @@ void MindMapView::prepare(NodePresentation &node) const {
                             qMax(qreal(36), contentBottom + 8));
 }
 void MindMapView::install(Presentation presentation, bool fit) {
+    clearLinkEndpointHandles();
     clearLinkCreation();
     delete linkCreationHandle;
     linkCreationHandle = nullptr;
@@ -1120,6 +1208,7 @@ QImage MindMapView::renderImage(Presentation presentation) const {
     return image;
 }
 void MindMapView::showError(const QString &message) {
+    clearLinkEndpointHandles();
     clearLinkCreation();
     delete linkCreationHandle;
     linkCreationHandle = nullptr;
@@ -1140,6 +1229,7 @@ void MindMapView::showError(const QString &message) {
 }
 void MindMapView::setSelection(const QString &node, const QString &link) {
     const QString selectedNode = node, selectedLink = link;
+    clearLinkEndpointHandles();
     if (selectedNode != linkSourceId || !selectedLink.isEmpty()) clearLinkCreation();
     if (selectedNode != resizedNodeId || !selectedLink.isEmpty()) clearImageResize();
     if (topicEditor && (editedKind == TopicKind::Node ? selectedNode != editedId || !selectedLink.isEmpty()
@@ -1153,6 +1243,7 @@ void MindMapView::setSelection(const QString &node, const QString &link) {
         delete linkCreationHandle;
         linkCreationHandle = nullptr;
     }
+    LinkItem *selectedLinkItem = nullptr;
     for (auto *item : scene()->items()) {
         if (auto *n = dynamic_cast<NodeItem *>(item)) {
             const bool selected = n->id == selectedNode && selectedLink.isEmpty();
@@ -1161,7 +1252,16 @@ void MindMapView::setSelection(const QString &node, const QString &link) {
                 linkCreationHandle = new LinkCreationHandle(palette(), n);
                 linkCreationHandle->setPos(n->rect.topRight());
             }
-        } else if (auto *l = dynamic_cast<LinkItem *>(item)) l->setSelected(l->id == selectedLink);
+        } else if (auto *l = dynamic_cast<LinkItem *>(item)) {
+            l->setSelected(l->id == selectedLink);
+            if (l->isSelected() && l->isVisible()) selectedLinkItem = l;
+        }
+    }
+    if (selectedLinkItem) {
+        for (int i = 0; i < 2; ++i) {
+            linkEndpointHandles[i] = new LinkEndpointHandle(selectedLinkItem, i == 0, palette());
+            scene()->addItem(linkEndpointHandles[i]);
+        }
     }
 }
 void MindMapView::ensureNodeVisible(const QString &id) {
@@ -1201,6 +1301,7 @@ void MindMapView::centerNode(const QString &id) {
     }
 }
 void MindMapView::fitContents() {
+    clearLinkReconnect();
     clearLinkCreation();
     clearImageResize();
     if (!isVisible() || viewport()->width() <= 0 || viewport()->height() <= 0) { pendingFit = true; return; }
@@ -1218,6 +1319,7 @@ void MindMapView::fitContents() {
     updateTopicEditorGeometry();
 }
 void MindMapView::zoom(qreal factor) {
+    clearLinkReconnect();
     clearLinkCreation();
     clearImageResize();
     pendingFit = false;
@@ -1229,6 +1331,7 @@ void MindMapView::zoom(qreal factor) {
     updateTopicEditorGeometry();
 }
 void MindMapView::resetZoom() {
+    clearLinkReconnect();
     clearLinkCreation();
     clearImageResize();
     pendingFit = false;
@@ -1237,8 +1340,10 @@ void MindMapView::resetZoom() {
     updateTopicEditorGeometry();
 }
 QGraphicsItem *MindMapView::targetAt(const QPoint &position) const {
-    for (auto *item = itemAt(position); item; item = item->parentItem())
+    for (auto *item = itemAt(position); item; item = item->parentItem()) {
+        if (auto *handle = dynamic_cast<LinkEndpointHandle *>(item)) return handle->link;
         if (dynamic_cast<NodeItem *>(item) || dynamic_cast<LinkItem *>(item)) return item;
+    }
     return nullptr;
 }
 QString MindMapView::dropTargetAt(const QPoint &position) const {
@@ -1270,7 +1375,9 @@ void MindMapView::clearNodeDrag() {
     updatePanCursor(viewport()->mapFromGlobal(QCursor::pos()));
 }
 void MindMapView::updatePanCursor(const QPoint &position) {
-    if (!linkSourceId.isEmpty()) viewport()->setCursor(linkCreating && dropTargetId.isEmpty() ? Qt::ForbiddenCursor : Qt::CrossCursor);
+    if (!reconnectedLinkId.isEmpty()) viewport()->setCursor(reconnectDragging && dropTargetId.isEmpty() ? Qt::ForbiddenCursor : Qt::ClosedHandCursor);
+    else if (dynamic_cast<LinkEndpointHandle *>(itemAt(position))) viewport()->setCursor(Qt::OpenHandCursor);
+    else if (!linkSourceId.isEmpty()) viewport()->setCursor(linkCreating && dropTargetId.isEmpty() ? Qt::ForbiddenCursor : Qt::CrossCursor);
     else if (panning != Qt::NoButton) viewport()->setCursor(Qt::ClosedHandCursor);
     else if (dynamic_cast<LinkCreationHandle *>(itemAt(position))) viewport()->setCursor(Qt::CrossCursor);
     else if (!resizedNodeId.isEmpty() || dynamic_cast<ImageResizeHandle *>(itemAt(position))) viewport()->setCursor(Qt::SizeFDiagCursor);
@@ -1323,6 +1430,50 @@ bool MindMapView::pick(QMouseEvent *event, bool activate) {
     return target == Target::Empty;
 }
 void MindMapView::mousePressEvent(QMouseEvent *event) {
+    if (!reconnectedLinkId.isEmpty()) {
+        if (event->button() == Qt::RightButton) {
+            clearLinkReconnect();
+            suppressReconnectMenu = true;
+        }
+        event->accept();
+        return;
+    }
+    suppressReconnectMenu = false;
+    if (event->button() == Qt::LeftButton && panning == Qt::NoButton && linkSourceId.isEmpty() &&
+        resizedNodeId.isEmpty() && draggedNodeId.isEmpty() && pressedLinkNodeId.isEmpty()) {
+        QString id, original;
+        bool source = false;
+        {
+            if (auto *handle = dynamic_cast<LinkEndpointHandle *>(itemAt(event->position().toPoint()))) {
+                id = handle->link->id;
+                source = handle->source;
+                original = source ? handle->link->source : handle->link->target;
+            }
+        }
+        if (!id.isEmpty()) {
+            const QPoint position = event->position().toPoint();
+            event->accept();
+            QPointer<MindMapView> guard(this);
+            finishTopicEdit(true);
+            if (!guard) return;
+            setFocus(Qt::MouseFocusReason);
+            if (!guard) return;
+            // The inline commit may replace the scene; retain only semantic identity.
+            auto *handle = static_cast<LinkEndpointHandle *>(linkEndpointHandles[source ? 0 : 1]);
+            if (handle && handle->isVisible() && handle->link->isSelected() && handle->link->id == id &&
+                (source ? handle->link->source : handle->link->target) == original) {
+                reconnectedLinkId = id;
+                originalEndpointId = original;
+                reconnectSource = source;
+                reconnectDragging = false;
+                reconnectPressPosition = position;
+                reconnectOriginalPosition = handle->pos();
+                reconnectFixedPosition = linkEndpointHandles[source ? 1 : 0]->pos();
+            }
+            updatePanCursor(position);
+            return;
+        }
+    }
     if (!linkSourceId.isEmpty()) {
         if (event->button() == Qt::RightButton) {
             clearLinkCreation();
@@ -1466,6 +1617,12 @@ void MindMapView::mousePressEvent(QMouseEvent *event) {
     updatePanCursor(event->position().toPoint());
 }
 void MindMapView::mouseMoveEvent(QMouseEvent *event) {
+    if (!reconnectedLinkId.isEmpty()) {
+        if (!event->buttons().testFlag(Qt::LeftButton)) clearLinkReconnect();
+        else updateLinkReconnect(event->position().toPoint());
+        event->accept();
+        return;
+    }
     if (!linkSourceId.isEmpty()) {
         if (!event->buttons().testFlag(Qt::LeftButton)) clearLinkCreation();
         else updateLinkCreation(event->position().toPoint());
@@ -1514,6 +1671,21 @@ void MindMapView::mouseMoveEvent(QMouseEvent *event) {
     updatePanCursor(event->position().toPoint());
 }
 void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
+    if (!reconnectedLinkId.isEmpty()) {
+        event->accept();
+        if (event->button() != Qt::LeftButton) {
+            if (!event->buttons().testFlag(Qt::LeftButton)) clearLinkReconnect();
+            return;
+        }
+        updateLinkReconnect(event->position().toPoint());
+        const QString id = reconnectedLinkId, original = originalEndpointId;
+        const bool source = reconnectSource;
+        const QString target = reconnectDragging ? linkTargetAt(event->position().toPoint(), original) : QString();
+        clearLinkReconnect();
+        // No preview state or scene pointers survive the synchronous mutation.
+        if (!target.isEmpty()) emit linkEndpointChangeRequested(id, source, original, target);
+        return;
+    }
     if (!linkSourceId.isEmpty()) {
         event->accept();
         if (event->button() != Qt::LeftButton) {
@@ -1527,7 +1699,7 @@ void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
             for (auto *item : scene()->items()) {
                 if (auto *node = dynamic_cast<NodeItem *>(item);
                     node && node->id == source && node->isSelected() && node->isVisible()) {
-                    target = linkTargetAt(event->position().toPoint());
+                    target = linkTargetAt(event->position().toPoint(), linkSourceId);
                     break;
                 }
             }
@@ -1597,6 +1769,11 @@ void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
     updatePanCursor(event->position().toPoint());
 }
 void MindMapView::mouseDoubleClickEvent(QMouseEvent *event) {
+    if (!reconnectedLinkId.isEmpty() || dynamic_cast<LinkEndpointHandle *>(itemAt(event->position().toPoint()))) {
+        clearLinkReconnect();
+        event->accept();
+        return;
+    }
     if (!linkSourceId.isEmpty() || dynamic_cast<LinkCreationHandle *>(itemAt(event->position().toPoint()))) {
         clearLinkCreation();
         event->accept();
@@ -1620,6 +1797,7 @@ void MindMapView::mouseDoubleClickEvent(QMouseEvent *event) {
     else QGraphicsView::mouseDoubleClickEvent(event);
 }
 void MindMapView::wheelEvent(QWheelEvent *event) {
+    clearLinkReconnect();
     clearLinkCreation();
     clearImageResize();
     if (event->modifiers().testFlag(Qt::ControlModifier)) {
@@ -1640,6 +1818,7 @@ void MindMapView::preserveCenter(const QPointF &center) {
     centerOn(center);
 }
 void MindMapView::resizeEvent(QResizeEvent *event) {
+    clearLinkReconnect();
     clearLinkCreation();
     clearImageResize();
     const QPointF center = sceneCenter(*this, event->oldSize());
@@ -1656,6 +1835,7 @@ void MindMapView::showEvent(QShowEvent *event) {
 void MindMapView::changeEvent(QEvent *event) {
     QGraphicsView::changeEvent(event);
     if (event->type() == QEvent::ActivationChange && !isActiveWindow()) {
+        clearLinkReconnect();
         clearLinkCreation();
         clearImageResize();
         clearNodeLinkPress();
