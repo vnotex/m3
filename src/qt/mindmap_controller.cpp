@@ -7,11 +7,14 @@
 #include <QPointer>
 #include <QTimer>
 #include <QRegularExpression>
+#include <QRandomGenerator>
 #include <QStringList>
 #include <QStringView>
 #include <QUuid>
 #include <nlohmann/json.hpp>
+#include <array>
 #include <cmath>
+#include <iterator>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -132,8 +135,9 @@ LinkPresentation linkPresentation(const Json &j) {
     return {string(j.at("id")), string(j.at("source")), string(j.at("target")), string(j.at("topic")), direction};
 }
 }
-MindMapController::MindMapController(MindMapView &v, const QString &base, QObject *parent)
-    : QObject(parent), view(v), resourceBase(QDir::cleanPath(QDir::current().absoluteFilePath(base))) {}
+MindMapController::MindMapController(MindMapView &v, const EditorConfig &config, QObject *parent)
+    : QObject(parent), view(v), resourceBase(QDir::cleanPath(QDir::current().absoluteFilePath(config.resourceBasePath))),
+      autoRandomBranchColor(config.autoRandomBranchColor) {}
 QString MindMapController::resolveResourceUrl(const QString &value) const {
     if (value.isEmpty()) return {};
     const QString path = QDir::fromNativeSeparators(value);
@@ -410,10 +414,50 @@ bool MindMapController::changed(M3Status result, const QString &preferredNode, c
 QString MindMapController::addNode(const QString &parent, const QString &topic, int index) {
     if (!strings({parent, topic})) return {};
     if (index < -1) { fail(tr("Invalid insertion index")); return {}; }
-    const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    const auto record = Json{{"id", utf8(id)}, {"topic", utf8(topic)}}.dump();
-    return changed(m3_mindmap_insert_node(model.get(), parent.toUtf8().constData(),
-                   index == -1 ? M3_APPEND : size_t(index), record.c_str()), id) ? id : QString();
+    try {
+        const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        Json record{{"id", utf8(id)}, {"topic", utf8(topic)}};
+        if (autoRandomBranchColor) {
+            const auto bytes = snapshot(model.get());
+            const auto data = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
+            if (data.at("rootId") == utf8(parent)) {
+                static const auto palette = [] {
+                    std::array<QColor, std::size(nodeColors)> colors;
+                    for (size_t i = 0; i < colors.size(); ++i)
+                        colors[i] = QColor(QString::fromLatin1(nodeColors[i].hex));
+                    return colors;
+                }();
+                std::array<bool, std::size(nodeColors)> used{};
+                const auto &nodes = data.at("nodes");
+                const auto &root = nodes.front();
+                const QColor rootColor = nodeStyle(root.at("style")).branchColor;
+                const auto &children = root.at("children");
+                auto child = children.begin();
+                // Native snapshots are root-first child preorder; skip each subtree
+                // until the next direct child, without building another node index.
+                for (const auto &node : nodes) {
+                    if (child == children.end()) break;
+                    if (node.at("id") != *child) continue;
+                    QColor color = nodeStyle(node.at("style")).branchColor;
+                    if (!color.isValid()) color = rootColor;
+                    for (size_t i = 0; i < palette.size(); ++i)
+                        if (color == palette[i]) used[i] = true;
+                    ++child;
+                }
+                std::array<size_t, std::size(nodeColors)> candidates;
+                int count = 0;
+                for (size_t i = 0; i < used.size(); ++i)
+                    if (!used[i]) candidates[count++] = i;
+                if (count == 0)
+                    for (size_t i = 0; i < used.size(); ++i) candidates[count++] = i;
+                const auto picked = candidates[QRandomGenerator::global()->bounded(count)];
+                record["style"] = {{"branchColor", nodeColors[picked].hex}};
+            }
+        }
+        const auto serialized = record.dump();
+        return changed(m3_mindmap_insert_node(model.get(), parent.toUtf8().constData(),
+                       index == -1 ? M3_APPEND : size_t(index), serialized.c_str()), id) ? id : QString();
+    } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
 bool MindMapController::renameNode(const QString &id, const QString &topic) {
     if (!strings({id, topic})) return false;

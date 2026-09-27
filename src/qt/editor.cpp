@@ -47,21 +47,6 @@
 #include <QUrl>
 namespace m3::qt {
 namespace {
-struct ColorSwatch { const char *hex; const char *name; };
-constexpr ColorSwatch nodeColors[] = {
-    {"#ffffff", QT_TR_NOOP("White")}, {"#ecf0f1", QT_TR_NOOP("Cloud")},
-    {"#95a5a6", QT_TR_NOOP("Gray")}, {"#34495e", QT_TR_NOOP("Slate")},
-    {"#2c3e50", QT_TR_NOOP("Midnight")}, {"#000000", QT_TR_NOOP("Black")},
-    {"#e74c3c", QT_TR_NOOP("Red")}, {"#e67e22", QT_TR_NOOP("Orange")},
-    {"#f39c12", QT_TR_NOOP("Amber")}, {"#f1c40f", QT_TR_NOOP("Yellow")},
-    {"#2ecc71", QT_TR_NOOP("Green")}, {"#27ae60", QT_TR_NOOP("Forest")},
-    {"#1abc9c", QT_TR_NOOP("Teal")}, {"#16a085", QT_TR_NOOP("Jade")},
-    {"#3498db", QT_TR_NOOP("Blue")}, {"#2980b9", QT_TR_NOOP("Ocean")},
-    {"#9b59b6", QT_TR_NOOP("Purple")}, {"#8e44ad", QT_TR_NOOP("Violet")},
-    {"#ffb6c1", QT_TR_NOOP("Pink")}, {"#f4a6a6", QT_TR_NOOP("Rose")},
-    {"#ffd3a5", QT_TR_NOOP("Peach")}, {"#a8e6cf", QT_TR_NOOP("Mint")},
-    {"#a9d6f5", QT_TR_NOOP("Sky")}
-};
 QString loadStyleSheet(const QString &path) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly))
@@ -926,7 +911,7 @@ public:
         view = new MindMapView(editor);
         error = new QLabel(editor);
         error->setTextFormat(Qt::PlainText); error->setWordWrap(true); error->hide();
-        controller = new MindMapController(*view, config.resourceBasePath, editor);
+        controller = new MindMapController(*view, config, editor);
         toolbar = new QToolBar(editor);
         layout->addWidget(toolbar);
         addChild = action("addChild", tr("Add Child"), config.shortcuts.addChild, [this] { createNode(TopicOperation::Child); });
@@ -1020,7 +1005,7 @@ public:
                 menu.addAction(editSelection);
                 menu.addAction(tr("Add URL"), host, [this, nodeId] { host->onAddUrl(nodeId); })->setEnabled(hasNode);
                 menu.addAction(tr("Add Image"), host, [this, nodeId] { host->onAddImage(nodeId); })->setEnabled(hasNode);
-                auto *branchMenu = menu.addMenu(tr("Set Branch Color"));
+                auto *branchMenu = menu.addMenu(tr("Branch Color"));
                 auto *branchGroup = new QActionGroup(branchMenu);
                 branchGroup->setExclusive(true);
                 auto addBranchColor = [&](const QString &label, const QColor &color, const QJsonValue &value) {

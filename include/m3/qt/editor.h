@@ -95,7 +95,7 @@
 // string). Branch color controls a node border and its incoming tree edge, inherited
 // by descendants until their own valid override; cross-links are unchanged. Invalid
 // or absent colors inherit the nearest colored ancestor, or the normal appearance.
-// The node-only "Set Branch Color" context submenu offers Auto and the properties
+// The node-only "Branch Color" context submenu offers Auto and the properties
 // palette. Auto removes only that node's override, not descendant overrides; its
 // checkmark reflects local intent, not inherited color. Selection/drop feedback
 // retains thicker/dashed borders without replacing an explicit branch color.
@@ -176,6 +176,13 @@ struct EditorConfig {
     // Relative bases become absolute at construction, without canonicalizing or
     // requiring existence. Fixed for this editor lifetime; never persisted.
     QString resourceBasePath;
+    // New direct children of the root (UI or addNode) get a random palette color.
+    // Prefer colors unused by current main branches, comparing their effective
+    // QColor values (local override or inherited root color); nested overrides
+    // do not reserve colors. Once all 23 are used, allow any palette color.
+    // Disabled by default. Creation only: loading/moving nodes never recolors them.
+    // The setting is copied, not persisted; each assigned branchColor is persisted.
+    bool autoRandomBranchColor = false;
 };
 class M3_QT_API MindMapEditor : public QWidget {
     Q_OBJECT

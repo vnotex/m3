@@ -3246,9 +3246,9 @@ static void branch_color_case() {
                 CHECK(parentMenu);
                 pump();
                 if (!hasNode) {
-                    for (auto *action : parentMenu->actions()) CHECK(action->text() != QStringLiteral("Set Branch Color"));
+                    for (auto *action : parentMenu->actions()) CHECK(action->text() != QStringLiteral("Branch Color"));
                 } else {
-                    auto &action = textAction(*parentMenu, {QStringLiteral("Set Branch Color")});
+                    auto &action = textAction(*parentMenu, {QStringLiteral("Branch Color")});
                     submenu = action.menu();
                     CHECK(submenu);
                     parentMenu->setActiveAction(&action);
@@ -3476,6 +3476,117 @@ static void branch_color_case() {
         CHECK(view.transform() == zoom && view.mapToScene(view.viewport()->rect().center()) == camera);
     }
     CHECK(errors.isEmpty());
+}
+
+static void auto_branch_color_case() {
+    m3::qt::EditorConfig config;
+    config.autoRandomBranchColor = true;
+    Editor editor(config);
+    config.autoRandomBranchColor = false;
+    Editor disabled(config);
+    const QString plain = disabled.addNode("root", "Uncolored");
+    CHECK(!plain.isEmpty() && !record(exported(disabled), "nodes", plain).at("style").contains("branchColor"));
+    QStringList palette;
+    for (auto *button : editor.findChildren<QToolButton *>())
+        if (button->property("color").isValid()) palette.append(button->property("color").toString());
+    CHECK(palette.size() == 23);
+    const Json empty = Json::parse(R"({"schemaVersion":1,"rootId":"home","nodes":[
+        {"id":"home","topic":"Home","expanded":false}],"crossLinks":[]})");
+    CHECK(editor.loadJson(encoded(empty)));
+    auto color = [&](const QString &id) {
+        return qs(record(exported(editor), "nodes", id).at("style").at("branchColor"));
+    };
+    QSignalSpy changed(&editor, &Editor::documentChanged);
+    QList<Json> observed;
+    const auto connection = QObject::connect(&editor, &Editor::documentChanged, &editor,
+        [&] { observed.append(exported(editor)); });
+    std::set<QString> used;
+    QStringList ids;
+    for (qsizetype i = 0; i < palette.size(); ++i) {
+        const auto count = changed.size();
+        const QString id = editor.addNode("home", QStringLiteral("Main %1").arg(i));
+        CHECK(!id.isEmpty() && changed.size() == count + 1);
+        const QString picked = color(id);
+        CHECK(palette.contains(picked) && used.insert(picked).second);
+        CHECK(record(observed.back(), "nodes", id).at("style").at("branchColor") == utf8(picked));
+        ids.append(id);
+    }
+    QObject::disconnect(connection);
+    const QString overflow = editor.addNode("home", "Reused");
+    CHECK(!overflow.isEmpty() && used.count(color(overflow)) == 1);
+    CHECK(editor.removeNode(overflow));
+    const QString freed = color(ids.front());
+    CHECK(editor.removeNode(ids.front()));
+    const QString replacement = editor.addNode("home", "Replacement", 0);
+    CHECK(!replacement.isEmpty() && color(replacement) == freed);
+    const Json saved = exported(editor);
+    CHECK(editor.loadJson(encoded(saved)) && exported(editor) == saved);
+    rejectUnchanged(editor, [&] { return !editor.addNode("home", "Bad index", 1000).isEmpty(); });
+    rejectUnchanged(editor, [&] { return !editor.addNode("absent", "Missing parent").isEmpty(); });
+
+    // Only blue is unused by effective main-branch colors. Imported spellings,
+    // inherited root red and hidden children count; nested blue does not.
+    Json imported = empty;
+    imported["nodes"][0]["style"] = {{"branchColor", "#e74c3c"}};
+    imported["nodes"][0]["children"] = Json::array();
+    auto main = [&](const std::string &id, const Json &style) {
+        imported["nodes"][0]["children"].push_back(id);
+        imported["nodes"].push_back({{"id", id}, {"topic", id}, {"style", style}});
+    };
+    for (const auto &hex : palette) {
+        if (hex == "#3498db" || hex == "#e74c3c") continue;
+        main(utf8(hex), {{"branchColor", hex == "#ffffff" ? "white" : utf8(hex.toUpper())}});
+    }
+    main("inherited", Json::object());
+    main("invalid-number", {{"branchColor", 42}});
+    main("invalid-text", {{"branchColor", "not-a-color"}});
+    main("custom", {{"branchColor", "#123456"}});
+    imported["nodes"][1]["children"] = {"nested"};
+    imported["nodes"].push_back({{"id", "nested"}, {"topic", "Nested"}, {"style", {{"branchColor", "#3498db"}}}});
+    CHECK(editor.loadJson(encoded(imported)) && exported(editor) == nativeDocument(imported));
+    const QString blue = editor.addNode("home", "Forced blue");
+    CHECK(!blue.isEmpty() && color(blue) == "#3498db");
+    CHECK(editor.setExpanded("home", true));
+    htmlAppearance(editor);
+    editor.clearSelection();
+    const QRectF rectangle = topicRect(editor, "Forced blue").adjusted(2, 2, -2, -2);
+    const QRectF region(rectangle.center().x() - 3, rectangle.top() - 2, 6, 4);
+    QImage image(QSize(24, 16), QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::white);
+    QPainter painter(&image);
+    painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
+    graphics(editor).scene()->render(&painter, QRectF(0, 0, 24, 16), region, Qt::IgnoreAspectRatio);
+    CHECK(painter.end());
+    const QColor pixel = image.pixelColor(12, 8), expected("#3498db");
+    CHECK(std::abs(pixel.red() - expected.red()) <= 2 && std::abs(pixel.green() - expected.green()) <= 2 &&
+          std::abs(pixel.blue() - expected.blue()) <= 2);
+    const Json beforeMove = record(exported(editor), "nodes", blue);
+    CHECK(editor.moveNode(blue, "inherited"));
+    CHECK(record(exported(editor), "nodes", blue) == beforeMove);
+    const QString nested = editor.addNode("inherited", "Uncolored nested");
+    CHECK(!nested.isEmpty() && !record(exported(editor), "nodes", nested).at("style").contains("branchColor"));
+    CHECK(editor.moveNode(nested, "home"));
+    CHECK(!record(exported(editor), "nodes", nested).at("style").contains("branchColor"));
+
+    // Both UI entry points share the atomic insertion policy. Canceling the draft
+    // retains the new node and its color; a child of that node stays inherited.
+    CHECK(editor.newDocument("Home"));
+    showEditor(editor);
+    changed.clear();
+    shortcut(editor, Qt::Key_Tab);
+    const QString first = editor.selectedNodeId();
+    CHECK(first != "root" && palette.contains(color(first)) && changed.size() == 1);
+    topicKey(editor, Qt::Key_Escape);
+    shortcut(editor, Qt::Key_Return);
+    const QString sibling = editor.selectedNodeId();
+    CHECK(sibling != first && palette.contains(color(sibling)) && color(sibling) != color(first));
+    CHECK(changed.size() == 2);
+    topicKey(editor, Qt::Key_Escape);
+    shortcut(editor, Qt::Key_Tab);
+    const QString child = editor.selectedNodeId();
+    CHECK(child != sibling && !record(exported(editor), "nodes", child).at("style").contains("branchColor"));
+    CHECK(changed.size() == 3);
+    topicKey(editor, Qt::Key_Escape);
 }
 
 static void properties_case() {
@@ -7219,7 +7330,7 @@ int main(int argc, char **argv) {
         else if (name == "navigation") navigation_case();
         else if (name == "node_drag") node_drag_case();
         else if (name == "properties") properties_case();
-        else if (name == "branch_color") branch_color_case();
+        else if (name == "branch_color") { branch_color_case(); auto_branch_color_case(); }
         else if (name == "hyperlinks") hyperlinks_case();
         else if (name == "controls") controls_case();
         else if (name == "inline_edit") inline_edit_case();

@@ -12,7 +12,7 @@ class MindMapView;
 class MindMapController : public QObject {
     Q_OBJECT
 public:
-    explicit MindMapController(MindMapView &view, const QString &resourceBasePath, QObject *parent);
+    explicit MindMapController(MindMapView &view, const EditorConfig &config, QObject *parent);
     QString resourceBasePath() const { return resourceBase; }
     QString resolveResourceUrl(const QString &value) const;
     void provideImage(const QString &url, quint64 requestId, const QImage &image);
@@ -59,6 +59,7 @@ private:
     MindMapView &view;
     QString error, selectedNode, selectedLink;
     QString resourceBase;
+    const bool autoRandomBranchColor;
     struct ImageResource {
         quint64 requestId = 0;
         QImage pixels;
