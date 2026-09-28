@@ -1005,6 +1005,16 @@ static void markdown_case() {
 }
 
 static void document_case() {
+    {
+        Editor edgeToEdge;
+        // Host themes may style all scroll areas, independently of QFrame::NoFrame.
+        edgeToEdge.setStyleSheet(QStringLiteral(
+            "QAbstractScrollArea { border: 5px solid palette(mid); padding: 7px; }"));
+        showEditor(edgeToEdge);
+        auto &view = graphics(edgeToEdge);
+        CHECK(view.geometry() == edgeToEdge.rect());
+        CHECK(view.viewport()->geometry().topLeft() == QPoint(0, 0));
+    }
     Editor editor;
     CHECK(editor.findChildren<QToolBar *>().isEmpty());
     CHECK(!editor.findChild<QComboBox *>(QStringLiteral("layoutDirection")));

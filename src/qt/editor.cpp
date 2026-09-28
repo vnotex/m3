@@ -961,6 +961,8 @@ public:
     }
     Private(MindMapEditor *editor, const EditorConfig &settings) : host(editor), config(settings) {
         auto *layout = new QVBoxLayout(editor);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(0);
         view = new MindMapView(editor);
         error = new QLabel(editor);
         error->setTextFormat(Qt::PlainText); error->setWordWrap(true); error->hide();

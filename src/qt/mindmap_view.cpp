@@ -609,6 +609,9 @@ QPointF sceneCenter(const QGraphicsView &view, const QSize &viewportSize) {
 }
 }
 MindMapView::MindMapView(QWidget *parent) : QGraphicsView(parent) {
+    setFrameShape(QFrame::NoFrame);
+    // Host scroll-area styles can otherwise override NoFrame and add an inset.
+    setStyleSheet(QStringLiteral("QGraphicsView { border: none; padding: 0px; }"));
     setScene(new QGraphicsScene(this));
     setAcceptDrops(true);
     setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
@@ -620,6 +623,11 @@ MindMapView::MindMapView(QWidget *parent) : QGraphicsView(parent) {
     setFocusPolicy(Qt::StrongFocus);
     viewport()->setMouseTracking(true);
     setBackgroundBrush(palette().brush(QPalette::Base));
+    if (parent) {
+        parent->installEventFilter(this);
+        setFont(parent->font());
+        setPalette(parent->palette());
+    }
 }
 MindMapView::~MindMapView() {
     clearImageResize();
@@ -1083,6 +1091,14 @@ bool MindMapView::handleNodeDragEvent(QEvent *event) {
     return false;
 }
 bool MindMapView::eventFilter(QObject *watched, QEvent *event) {
+    // A local stylesheet stops Qt from automatically propagating parent appearance.
+    if (watched == parentWidget() &&
+        (event->type() == QEvent::FontChange || event->type() == QEvent::PaletteChange)) {
+        const QPointer<MindMapView> guard(this);
+        if (event->type() == QEvent::FontChange) setFont(parentWidget()->font());
+        else setPalette(parentWidget()->palette());
+        return !guard;
+    }
     if (!topicEditor || finishingTopicEdit) return false;
     bool owned = false, inWindow = false;
     for (auto *object = watched; object; object = object->parent()) {
