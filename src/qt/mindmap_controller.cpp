@@ -1041,7 +1041,12 @@ bool MindMapController::setLayoutDirection(MindMapEditor::LayoutDirection reques
         auto presentation = prepare(model.get(), currentSnapshot, requested, temporaryExpanded);
         install(std::move(presentation), false);
         if (!guard) return true;
+        const bool changed = direction != requested;
         direction = requested;
+        if (changed) {
+            emit layoutDirectionChanged(direction);
+            if (!guard) return true;
+        }
         restoreSelection();
         if (!guard) return true;
         success();

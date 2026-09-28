@@ -273,7 +273,7 @@ static void rejectUnchanged(Editor &editor, const std::function<bool()> &operati
     CHECK(changed.isEmpty() && selected.isEmpty());
 }
 static QAction &editAction(Editor &editor, const char *name) {
-    auto *action = editor.findChild<QAction *>(QString::fromLatin1(name));
+    auto *action = editor.commandAction(QString::fromLatin1(name));
     CHECK(action != nullptr);
     return *action;
 }
@@ -1006,6 +1006,10 @@ static void markdown_case() {
 
 static void document_case() {
     Editor editor;
+    CHECK(editor.findChildren<QToolBar *>().isEmpty());
+    CHECK(!editor.findChild<QComboBox *>(QStringLiteral("layoutDirection")));
+    CHECK(!editor.commandAction(QString()) && !editor.commandAction(QStringLiteral("missingCommand")));
+    CHECK(!editor.commandAction(QStringLiteral("ADDCHILD")));
     const Json initial = exported(editor);
     CHECK(initial.at("rootId") == "root");
     CHECK(record(initial, "nodes", QStringLiteral("root")).at("topic") == "Central topic");
@@ -4195,10 +4199,6 @@ static void focus_root_case() {
     const Json original = exported(editor);
     const QString rootTopic = qs(record(original, "nodes", QStringLiteral("r")).at("topic"));
     QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
-    QToolButton *focusButton = nullptr;
-    for (auto *button : editor.findChildren<QToolButton *>())
-        if (button->defaultAction() == &editAction(editor, "selectRoot")) focusButton = button;
-    CHECK(focusButton != nullptr && focusButton->isVisible());
     auto rootCentered = [&] {
         return QLineF(view.mapFromScene(topicRect(editor, rootTopic).center()),
                       view.viewport()->rect().center()).length() <= 2.0;
@@ -4209,13 +4209,13 @@ static void focus_root_case() {
     };
 
     editor.clearSelection();
-    editor.findChild<QComboBox *>()->setFocus();
+    view.clearFocus();
     CHECK(!view.hasFocus());
-    QTest::mouseClick(focusButton, Qt::LeftButton);
+    trigger(editor, "selectRoot");
     pump();
     checkFocused();
     CHECK(editor.selectLink(QStringLiteral("l1")));
-    QTest::mouseClick(focusButton, Qt::LeftButton);
+    trigger(editor, "selectRoot");
     pump();
     checkFocused();
 
@@ -5718,11 +5718,6 @@ static void read_only_case() {
             CHECK(!action.isEnabled());
             action.trigger();
         }
-        QToolButton *addChild = nullptr;
-        for (auto *button : editor.findChildren<QToolButton *>())
-            if (button->defaultAction() == &editAction(editor, "addChild")) addChild = button;
-        CHECK(addChild && !addChild->isEnabled());
-        QTest::mouseClick(addChild, Qt::LeftButton);
         for (Qt::Key key : {Qt::Key_Tab, Qt::Key_Insert, Qt::Key_Return, Qt::Key_Delete, Qt::Key_Space,
                            Qt::Key_F2, Qt::Key_E, Qt::Key_B, Qt::Key_I, Qt::Key_R}) shortcut(editor, key);
         for (Qt::Key key : {Qt::Key_M, Qt::Key_L, Qt::Key_Up, Qt::Key_Down}) shortcut(editor, key, Qt::ControlModifier);
@@ -5984,30 +5979,16 @@ static void inline_edit_case() {
         QTest::keyClick(&input, Qt::Key_Down);
         CHECK(input.toPlainText() == QStringLiteral("a \n\tz"));
         CHECK(exported(editor) == original && editor.selectedNodeId() == QStringLiteral("a") && changed.isEmpty());
-        QToolButton *zoomButton = nullptr;
-        for (auto *button : editor.findChildren<QToolButton *>())
-            if (button->defaultAction() == &editAction(editor, "zoomIn")) zoomButton = button;
-        CHECK(zoomButton != nullptr);
-        zoomButton->setFocusPolicy(Qt::NoFocus);
         const qreal scale = graphics(editor).transform().m11();
-        QTest::mouseClick(zoomButton, Qt::LeftButton);
+        trigger(editor, "zoomIn");
         pump();
         CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "a \n\tz");
         CHECK(changed.size() == 1 && graphics(editor).transform().m11() > scale);
         shortcut(editor, Qt::Key_F2);
-        topicInput(editor).setPlainText(QStringLiteral("Before layout"));
-        auto *layout = editor.findChild<QComboBox *>();
-        CHECK(layout != nullptr);
-        layout->setCurrentIndex(layout->findData(int(Editor::LayoutDirection::Left)));
-        pump();
-        CHECK(editor.layoutDirection() == Editor::LayoutDirection::Left);
-        CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "Before layout");
-        CHECK(changed.size() == 2);
-        shortcut(editor, Qt::Key_F2);
         topicInput(editor).setPlainText(QStringLiteral("Before programmatic action"));
         trigger(editor, "toggleExpanded");
         CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "Before programmatic action");
-        CHECK(!record(exported(editor), "nodes", QStringLiteral("a")).at("expanded").get<bool>() && changed.size() == 4);
+        CHECK(!record(exported(editor), "nodes", QStringLiteral("a")).at("expanded").get<bool>() && changed.size() == 3);
         shortcut(editor, Qt::Key_Home);
         CHECK(editor.selectedNodeId() == QStringLiteral("r"));
     }
@@ -6386,13 +6367,6 @@ static void shortcut_help_case() {
         open(editor);
         outside(editor, editor);
         CHECK(exported(editor) == saved && changed.isEmpty() && selected.isEmpty());
-        open(editor);
-        QWidget *addButton = nullptr;
-        for (auto *toolbar : editor.findChildren<QToolBar *>())
-            if (auto *button = toolbar->widgetForAction(&editAction(editor, "addChild"))) addButton = button;
-        CHECK(addButton != nullptr);
-        outside(editor, editor, addButton->mapTo(&editor, addButton->rect().center()));
-        CHECK(exported(editor) == saved && changed.isEmpty() && selected.isEmpty() && !activeTopicInput(editor));
         open(editor);
         escape(editor);
         shortcut(editor, Qt::Key_E);
@@ -7120,11 +7094,6 @@ static void node_shortcuts_case() {
         QTest::keyClicks(note, "bircftone"); pump();
         jsonNode(expected, "a")["note"] = "bircftone";
         CHECK(note->hasFocus() && exported(editor) == expected && changed.size() == count + 9);
-        auto *direction = editor.findChild<QComboBox *>(QStringLiteral("layoutDirection"));
-        CHECK(direction != nullptr);
-        direction->setFocus(); QTest::keyClick(direction, Qt::Key_O); pump();
-        CHECK(direction->hasFocus() && editor.layoutDirection() == Editor::LayoutDirection::Outline);
-        CHECK(exported(editor) == expected && !activeTopicInput(editor));
         dialogs({[&](QDialog *dialog) {
             auto *parent = dialog->findChild<QComboBox *>(QStringLiteral("newParent"));
             CHECK(parent != nullptr);
@@ -7333,15 +7302,7 @@ static void shortcuts_case() {
     dialogs({}, [&] { shortcut(editor, Qt::Key_Return); shortcut(editor, Qt::Key_Tab); });
     CHECK(exported(editor) == inserted && changed.size() == 10);
     CHECK(editor.selectNode(QStringLiteral("a")));
-    QComboBox *layout = nullptr;
-    for (auto *combo : editor.findChildren<QComboBox *>())
-        if (combo->findText(QStringLiteral("Balanced")) >= 0) layout = combo;
-    CHECK(layout != nullptr);
-    dialogs({}, [&] {
-        layout->setFocus(); pump();
-        QTest::keyClick(layout, Qt::Key_Down);
-        QTest::keyClick(layout, Qt::Key_Tab);
-    });
+    CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
     CHECK(editor.layoutDirection() == Editor::LayoutDirection::Right);
     CHECK(editor.selectedNodeId() == QStringLiteral("a") && changed.size() == 10);
     auto &view = graphics(editor);
@@ -7359,11 +7320,6 @@ static void controls_case() {
     CHECK(editor.loadJson(encoded(editorFixture())));
     showEditor(editor);
     QSignalSpy changed(&editor, &Editor::documentChanged);
-    QComboBox *layout = nullptr;
-    for (auto *picker : editor.findChildren<QComboBox *>())
-        if (picker->findText(QStringLiteral("Balanced")) >= 0 &&
-            picker->findText(QStringLiteral("Right")) >= 0 && picker->findText(QStringLiteral("Left")) >= 0) layout = picker;
-    CHECK(layout != nullptr && layout->findText(QStringLiteral("Outline")) >= 0);
     const Json beforeLayout = exported(editor);
     const QString rootTopic = qs(record(beforeLayout, "nodes", QStringLiteral("r")).at("topic"));
     CHECK(editor.selectNode(QStringLiteral("a")));
@@ -7388,7 +7344,7 @@ static void controls_case() {
         assertTreeConnectors(editor, rectangles);
         return rectangles;
     };
-    layout->setCurrentIndex(layout->findText(QStringLiteral("Outline")));
+    CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Outline));
     const auto outlineNodes = checkOutline(initialRows);
     const auto widths = std::minmax_element(outlineNodes.begin(), outlineNodes.end(),
         [](const QRectF &a, const QRectF &b) { return a.width() < b.width(); });
@@ -7397,7 +7353,7 @@ static void controls_case() {
     CHECK(exported(editor) == beforeLayout && changed.isEmpty() && layoutSelection.isEmpty());
     for (auto direction : {Editor::LayoutDirection::Left, Editor::LayoutDirection::Right,
                            Editor::LayoutDirection::Balanced}) {
-        layout->setCurrentIndex(layout->findData(int(direction)));
+        CHECK(editor.setLayoutDirection(direction));
         CHECK(editor.layoutDirection() == direction);
         if (direction == Editor::LayoutDirection::Left)
             CHECK(topicRect(editor, QStringLiteral("Alpha")).center().x() < topicRect(editor, rootTopic).center().x());
@@ -7407,7 +7363,7 @@ static void controls_case() {
                                      topicRect(editor, QStringLiteral("Delta")), topicRect(editor, QStringLiteral("Beta")),
                                      emptyNodeRect(editor)});
     }
-    layout->setCurrentIndex(layout->findText(QStringLiteral("Outline")));
+    CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Outline));
     CHECK(checkOutline(initialRows) == outlineNodes);
     CHECK(editor.selectedNodeId() == QStringLiteral("a") && editor.selectedLinkId().isEmpty());
     CHECK(exported(editor) == beforeLayout && changed.isEmpty() && layoutSelection.isEmpty());
@@ -7658,6 +7614,124 @@ static void controls_case() {
 }
 
 #ifdef M3_QT_TEST_DEMO
+static void demo_controls_case() {
+    m3::qt::EditorConfig config;
+    config.confirmSubtreeDeletion = false;
+    DemoWindow window(config);
+    auto &editor = embedded(window);
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    window.setWindowModified(false);
+    showDemo(window);
+    QApplication::setActiveWindow(&window);
+    auto &view = graphics(editor);
+    view.setFocus(); pump();
+    auto *editing = window.findChild<QToolBar *>(QStringLiteral("mindMapEditToolBar"));
+    auto *viewBar = window.findChild<QToolBar *>(QStringLiteral("mindMapViewToolBar"));
+    auto *picker = window.findChild<QComboBox *>(QStringLiteral("layoutDirection"));
+    CHECK(editing && viewBar && picker && editor.findChildren<QToolBar *>().isEmpty());
+    CHECK(!editor.isAncestorOf(editing) && !editor.isAncestorOf(viewBar));
+    const auto button = [&](const char *name) {
+        auto *command = editor.commandAction(QString::fromLatin1(name));
+        CHECK(command);
+        QWidget *widget = editing->widgetForAction(command);
+        if (!widget) widget = viewBar->widgetForAction(command);
+        auto *result = qobject_cast<QToolButton *>(widget);
+        CHECK(result);
+        return result;
+    };
+    for (const char *name : {"undo", "redo", "addChild", "addSibling", "addSiblingBefore",
+            "editSelection", "deleteSelection", "toggleExpanded", "moveNode", "moveUp",
+            "moveDown", "addLink", "editLink", "zoomIn", "zoomOut", "resetZoom", "fit", "selectRoot"})
+        button(name);
+    QSignalSpy changed(&editor, &Editor::documentChanged);
+    QSignalSpy layouts(&editor, &Editor::layoutDirectionChanged);
+    CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+    CHECK(picker->currentData().toInt() == int(Editor::LayoutDirection::Right) && layouts.size() == 1);
+    CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right) && layouts.size() == 1);
+    CHECK(!editor.setLayoutDirection(static_cast<Editor::LayoutDirection>(91)));
+    CHECK(picker->currentData().toInt() == int(Editor::LayoutDirection::Right) && layouts.size() == 1);
+    CHECK(changed.isEmpty());
+
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    trigger(editor, "editSelection");
+    const QString rejected = QStringLiteral("Rejected") + QChar(0) + QStringLiteral("draft");
+    topicInput(editor).setPlainText(rejected);
+    const auto before = exported(editor);
+    QSignalSpy errors(&editor, &Editor::errorOccurred);
+    picker->setCurrentIndex(picker->findData(int(Editor::LayoutDirection::Left)));
+    CHECK(errors.size() == 1 && changed.isEmpty() && layouts.size() == 1);
+    CHECK(picker->currentData().toInt() == int(Editor::LayoutDirection::Right));
+    CHECK(exported(editor) == before && topicInput(editor).toPlainText() == rejected);
+    topicInput(editor).setPlainText(QStringLiteral("Accepted by demo picker"));
+    picker->setCurrentIndex(picker->findData(int(Editor::LayoutDirection::Left)));
+    CHECK(editor.layoutDirection() == Editor::LayoutDirection::Left && layouts.size() == 2);
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "Accepted by demo picker");
+    CHECK(changed.size() == 1 && !activeTopicInput(editor) && window.isWindowModified());
+    const auto accepted = exported(editor);
+    trigger(editor, "editSelection");
+    topicInput(editor).setPlainText(QStringLiteral("Uncommitted host draft"));
+    CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Outline));
+    CHECK(picker->currentData().toInt() == int(Editor::LayoutDirection::Outline));
+    CHECK(topicInput(editor).toPlainText() == QStringLiteral("Uncommitted host draft"));
+    CHECK(exported(editor) == accepted && changed.size() == 1);
+    topicKey(editor, Qt::Key_Escape);
+
+    trigger(editor, "editSelection");
+    topicInput(editor).setPlainText(QStringLiteral("Accepted by demo zoom"));
+    const auto scale = view.transform().m11();
+    QTest::mouseClick(button("zoomIn"), Qt::LeftButton); pump();
+    CHECK(view.transform().m11() > scale);
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "Accepted by demo zoom");
+    CHECK(!activeTopicInput(editor) && button("undo")->isEnabled());
+    QTest::mouseClick(button("undo"), Qt::LeftButton); pump();
+    CHECK(exported(editor) == accepted && button("redo")->isEnabled());
+    QTest::mouseClick(button("redo"), Qt::LeftButton); pump();
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "Accepted by demo zoom");
+
+    CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Balanced));
+    const auto beforePickerKeys = exported(editor);
+    picker->setFocus(); pump();
+    QTest::keyClick(picker, Qt::Key_Down); QTest::keyClick(picker, Qt::Key_Tab); pump();
+    CHECK(editor.layoutDirection() == Editor::LayoutDirection::Right);
+    picker->setFocus(); QTest::keyClick(picker, Qt::Key_O); pump();
+    CHECK(picker->hasFocus() && editor.layoutDirection() == Editor::LayoutDirection::Outline);
+    CHECK(exported(editor) == beforePickerKeys && !activeTopicInput(editor));
+
+    editor.setReadOnly(true);
+    CHECK(!button("addChild")->isEnabled() && !button("undo")->isEnabled() && !button("redo")->isEnabled());
+    QTest::mouseClick(button("addChild"), Qt::LeftButton); pump();
+    CHECK(exported(editor) == beforePickerKeys);
+    picker->setCurrentIndex(picker->findData(int(Editor::LayoutDirection::Left)));
+    CHECK(editor.layoutDirection() == Editor::LayoutDirection::Left && exported(editor) == beforePickerKeys);
+    editor.clearSelection(); picker->setFocus();
+    const auto zoom = view.transform();
+    QTest::mouseClick(button("selectRoot"), Qt::LeftButton); pump();
+    CHECK(editor.selectedNodeId() == QStringLiteral("r") && view.hasFocus() && view.transform() == zoom);
+    const auto rootTopic = qs(record(beforePickerKeys, "nodes", QStringLiteral("r")).at("topic"));
+    CHECK(QLineF(view.mapFromScene(topicRect(editor, rootTopic).center()), view.viewport()->rect().center()).length() <= 2);
+    editor.setReadOnly(false);
+
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    trigger(editor, "showHelp");
+    QPointer<QDialog> help = editor.findChild<QDialog *>(QStringLiteral("shortcutHelpPopup"));
+    CHECK(help && help->isVisible());
+    const QPoint point = button("addChild")->mapTo(&window, button("addChild")->rect().center());
+    const QPoint global = window.mapToGlobal(point);
+    if (help->frameGeometry().contains(global)) help->move(global + QPoint(24, 24));
+    QTest::mouseClick(window.windowHandle(), Qt::LeftButton, Qt::NoModifier, point); pump();
+    CHECK(!help || !help->isVisible());
+    CHECK(exported(editor) == beforePickerKeys && !activeTopicInput(editor));
+    QApplication::setActiveWindow(&window);
+    QTest::mouseClick(button("addChild"), Qt::LeftButton); pump();
+    const QString child = editor.selectedNodeId();
+    CHECK(child != QStringLiteral("a") && activeTopicInput(editor));
+    topicInput(editor).setPlainText(QStringLiteral("Demo toolbar child"));
+    topicKey(editor, Qt::Key_Return);
+    CHECK(record(exported(editor), "nodes", child).at("topic") == "Demo toolbar child");
+    QTest::mouseClick(button("deleteSelection"), Qt::LeftButton); pump();
+    CHECK(!hasRecord(exported(editor), "nodes", child));
+}
+
 class ImageHttpServer final : public QTcpServer {
 public:
     QByteArray png, alternate, oversizedPixels;
@@ -9249,6 +9323,7 @@ int main(int argc, char **argv) {
         else if (name == "node_shortcuts") node_shortcuts_case();
         else if (name == "lifetime") lifetime_case();
 #ifdef M3_QT_TEST_DEMO
+        else if (name == "demo_controls") demo_controls_case();
         else if (name == "demo_images") demo_images_case();
         else if (name == "demo_html") demo_html_case();
         else if (name == "demo_markdown") demo_markdown_case();

@@ -43,7 +43,6 @@
 #include <QStringList>
 #include <functional>
 #include <QTextBrowser>
-#include <QToolBar>
 #include <QToolButton>
 #include <QLabel>
 #include <QVBoxLayout>
@@ -698,8 +697,6 @@ public:
     MindMapView *view;
     MindMapController *controller;
     QLabel *error;
-    QToolBar *toolbar;
-    QComboBox *direction;
     QAction *addChild, *addSibling, *addSiblingBefore, *editSelection, *deleteSelection, *toggleExpanded, *move, *up, *down, *addLink;
     QAction *rootSelection, *clearSelectionAction, *editLink, *toggleProperties, *copySelection;
     QAction *undoAction, *redoAction;
@@ -773,7 +770,7 @@ public:
             .arg(tr("Keyboard shortcuts").toHtmlEscaped(),
                  tr("Canvas shortcuts require map focus. Letters type normally in text fields.").toHtmlEscaped(), left, right);
     }
-    QAction *action(const char *name, const QString &text, const QList<QKeySequence> &shortcuts, std::function<void()> command, bool showInToolbar = true) {
+    QAction *action(const char *name, const QString &text, const QList<QKeySequence> &shortcuts, std::function<void()> command) {
         auto *result = new QAction(text, host);
         result->setObjectName(QString::fromLatin1(name));
         result->setShortcuts(shortcuts);
@@ -783,7 +780,6 @@ public:
         result->setToolTip(keys.isEmpty() ? text : text + QStringLiteral(" (%1)").arg(keys.join(QStringLiteral(", "))));
         result->setShortcutContext(Qt::WidgetWithChildrenShortcut);
         view->addAction(result);
-        if (showInToolbar) toolbar->addAction(result);
         QObject::connect(view, &MindMapView::topicEditingChanged, result, [result, shortcuts](bool editing) {
             result->setShortcuts(editing ? QList<QKeySequence>{} : shortcuts);
         });
@@ -832,8 +828,6 @@ public:
         const auto index = parent ? parent->children.indexOf(node->id) : -1;
         up->setEnabled(writable && parent && index > 0);
         down->setEnabled(writable && parent && index >= 0 && index + 1 < parent->children.size());
-        QSignalBlocker blocker(direction);
-        direction->setCurrentIndex(direction->findData(int(controller->layoutDirection())));
     }
     void createNode(TopicOperation operation) {
         if (controller->isReadOnly()) return;
@@ -974,11 +968,8 @@ public:
         view->setTopicCommitHandler([model = QPointer<MindMapController>(controller)](const QString &id, const QString &draft, bool link) {
             return model && (link ? model->commitLinkTopicEdit(id, draft) : model->commitTopicEdit(id, draft));
         });
-        toolbar = new QToolBar(editor);
-        layout->addWidget(toolbar);
         undoAction = action("undo", tr("Undo"), config.shortcuts.undo, [this] { host->undo(); });
         redoAction = action("redo", tr("Redo"), config.shortcuts.redo, [this] { host->redo(); });
-        toolbar->addSeparator();
         addChild = action("addChild", tr("Add Child"), config.shortcuts.addChild, [this] { createNode(TopicOperation::Child); });
         addSibling = action("addSibling", tr("Add Sibling"), config.shortcuts.addSibling, [this] { createNode(TopicOperation::SiblingAfter); });
         addSiblingBefore = action("addSiblingBefore", tr("Add Sibling Before"), config.shortcuts.addSiblingBefore, [this] { createNode(TopicOperation::SiblingBefore); });
@@ -1010,56 +1001,40 @@ public:
         down = action("moveDown", tr("Move Down"), config.shortcuts.moveDown, [this] { reorder(1); });
         addLink = action("addLink", tr("Add link"), config.shortcuts.addLink, [this] { linkDialog(true); });
         editLink = action("editLink", tr("Link properties..."), {}, [this] { linkDialog(false); });
-        toolbar = new QToolBar(editor);
-        layout->addWidget(toolbar);
         auto *zoomIn = action("zoomIn", tr("Zoom In"), config.shortcuts.zoomIn, [this] { view->zoom(1.2); });
         auto *zoomOut = action("zoomOut", tr("Zoom Out"), config.shortcuts.zoomOut, [this] { view->zoom(1 / 1.2); });
         auto *resetZoom = action("resetZoom", tr("100%"), config.shortcuts.resetZoom, [this] { view->resetZoom(); });
         auto *fit = action("fit", tr("Fit"), config.shortcuts.fit, [this] { view->fitContents(); });
         rootSelection = action("selectRoot", tr("Focus Main Node"), config.shortcuts.selectRoot, [this] { host->focusRoot(); });
-        direction = new QComboBox(toolbar);
-        direction->setObjectName(QStringLiteral("layoutDirection"));
-        direction->addItem(tr("Balanced"), int(LayoutDirection::Balanced));
-        direction->addItem(tr("Right"), int(LayoutDirection::Right));
-        direction->addItem(tr("Left"), int(LayoutDirection::Left));
-        direction->addItem(tr("Outline"), int(LayoutDirection::Outline));
-        direction->setAccessibleName(tr("Layout direction"));
-        toolbar->addWidget(direction);
-        QObject::connect(direction, QOverload<int>::of(&QComboBox::currentIndexChanged), editor, [this] {
-            const auto requested = static_cast<LayoutDirection>(direction->currentData().toInt());
-            const QPointer<MindMapEditor> guard(host);
-            if (view->finishTopicEdit(true) && guard) controller->setLayoutDirection(requested);
-            if (guard) updateActions();
-        });
         nodeNavigation = {
-            action("selectParent", tr("Select parent"), config.shortcuts.selectParent, [this] { navigate(Navigation::Parent); }, false),
-            action("selectChild", tr("Select first child"), config.shortcuts.selectChild, [this] { navigate(Navigation::Child); }, false),
-            action("previousSibling", tr("Select previous sibling"), config.shortcuts.previousSibling, [this] { navigate(Navigation::PreviousSibling); }, false),
-            action("nextSibling", tr("Select next sibling"), config.shortcuts.nextSibling, [this] { navigate(Navigation::NextSibling); }, false)
+            action("selectParent", tr("Select parent"), config.shortcuts.selectParent, [this] { navigate(Navigation::Parent); }),
+            action("selectChild", tr("Select first child"), config.shortcuts.selectChild, [this] { navigate(Navigation::Child); }),
+            action("previousSibling", tr("Select previous sibling"), config.shortcuts.previousSibling, [this] { navigate(Navigation::PreviousSibling); }),
+            action("nextSibling", tr("Select next sibling"), config.shortcuts.nextSibling, [this] { navigate(Navigation::NextSibling); })
         };
         copySelection = action("copy", tr("Copy"), {QKeySequence(QKeySequence::Copy)}, [this] {
             QApplication::clipboard()->setText(host->selectedText());
-        }, false);
-        clearSelectionAction = action("clearSelection", tr("Clear selection"), config.shortcuts.clearSelection, [this] { controller->clearSelection(); }, false);
+        });
+        clearSelectionAction = action("clearSelection", tr("Clear selection"), config.shortcuts.clearSelection, [this] { controller->clearSelection(); });
         layout->addWidget(view, 1); layout->addWidget(error);
         properties = new NodePropertiesPanel(editor, view, controller);
         nodeEditingActions = {
-            action("toggleBold", tr("Toggle bold"), config.shortcuts.toggleBold, [this] { properties->activate(NodePropertiesPanel::Action::ToggleBold); }, false),
-            action("toggleItalic", tr("Toggle italic"), config.shortcuts.toggleItalic, [this] { properties->activate(NodePropertiesPanel::Action::ToggleItalic); }, false),
-            action("resetStyle", tr("Reset style"), config.shortcuts.resetStyle, [this] { properties->activate(NodePropertiesPanel::Action::ResetStyle); }, false),
-            action("textColor", tr("Text color"), config.shortcuts.textColor, [this] { properties->activate(NodePropertiesPanel::Action::TextColor); }, false),
-            action("fillColor", tr("Fill color"), config.shortcuts.fillColor, [this] { properties->activate(NodePropertiesPanel::Action::FillColor); }, false),
-            action("editTags", tr("Edit tags"), config.shortcuts.editTags, [this] { properties->activate(NodePropertiesPanel::Action::Tags); }, false),
-            action("editIcons", tr("Edit icons"), config.shortcuts.editIcons, [this] { properties->activate(NodePropertiesPanel::Action::Icons); }, false),
-            action("editNote", tr("Edit note"), config.shortcuts.editNote, [this] { properties->activate(NodePropertiesPanel::Action::Note); }, false),
-            toggleProperties = action("toggleProperties", tr("Toggle properties panel"), config.shortcuts.toggleProperties, [this] { properties->activate(NodePropertiesPanel::Action::ToggleProperties); }, false),
+            action("toggleBold", tr("Toggle bold"), config.shortcuts.toggleBold, [this] { properties->activate(NodePropertiesPanel::Action::ToggleBold); }),
+            action("toggleItalic", tr("Toggle italic"), config.shortcuts.toggleItalic, [this] { properties->activate(NodePropertiesPanel::Action::ToggleItalic); }),
+            action("resetStyle", tr("Reset style"), config.shortcuts.resetStyle, [this] { properties->activate(NodePropertiesPanel::Action::ResetStyle); }),
+            action("textColor", tr("Text color"), config.shortcuts.textColor, [this] { properties->activate(NodePropertiesPanel::Action::TextColor); }),
+            action("fillColor", tr("Fill color"), config.shortcuts.fillColor, [this] { properties->activate(NodePropertiesPanel::Action::FillColor); }),
+            action("editTags", tr("Edit tags"), config.shortcuts.editTags, [this] { properties->activate(NodePropertiesPanel::Action::Tags); }),
+            action("editIcons", tr("Edit icons"), config.shortcuts.editIcons, [this] { properties->activate(NodePropertiesPanel::Action::Icons); }),
+            action("editNote", tr("Edit note"), config.shortcuts.editNote, [this] { properties->activate(NodePropertiesPanel::Action::Note); }),
+            toggleProperties = action("toggleProperties", tr("Toggle properties panel"), config.shortcuts.toggleProperties, [this] { properties->activate(NodePropertiesPanel::Action::ToggleProperties); }),
             action("editTopic", tr("Edit topic"), config.shortcuts.editTopic, [this] {
                 const QString id = controller->selectedNodeId();
                 if (!id.isEmpty()) view->beginTopicEdit(id, config.shortcuts.acceptTopic);
-            }, false)
+            })
         };
         for (auto *action : nodeEditingActions) action->setAutoRepeat(false);
-        action("showHelp", tr("Keyboard shortcuts"), config.shortcuts.showHelp, [this] { showHelp(); }, false)->setAutoRepeat(false);
+        action("showHelp", tr("Keyboard shortcuts"), config.shortcuts.showHelp, [this] { showHelp(); })->setAutoRepeat(false);
         // Snapshot configured bindings before inline editing temporarily clears them.
         shortcutHelpText = shortcutHelp();
         view->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -1160,6 +1135,7 @@ public:
         });
         QObject::connect(controller, &MindMapController::commandSucceeded, editor, [this] { error->clear(); error->hide(); updateActions(); });
         QObject::connect(controller, &MindMapController::imageRequested, editor, &MindMapEditor::imageRequested);
+        QObject::connect(controller, &MindMapController::layoutDirectionChanged, editor, &MindMapEditor::layoutDirectionChanged);
         QObject::connect(view, &MindMapView::pendingEditChanged, editor, &MindMapEditor::pendingEditChanged);
         QObject::connect(view, &MindMapView::nodePicked, controller, &MindMapController::selectNode);
         QObject::connect(view, &MindMapView::nodeSelectionToggled, controller, &MindMapController::toggleNodeSelection);
@@ -1212,6 +1188,9 @@ MindMapEditor::MindMapEditor(const EditorConfig &config, QWidget *parent)
 MindMapEditor::~MindMapEditor() {
     // Disarm the input before QWidget teardown can send it a committing FocusOut.
     delete d->view;
+}
+QAction *MindMapEditor::commandAction(const QString &name) const {
+    return name.isEmpty() ? nullptr : findChild<QAction *>(name, Qt::FindDirectChildrenOnly);
 }
 QString MindMapEditor::resolveDroppedFileUrl(const QString &filePath) const {
     return QUrl::fromLocalFile(filePath).toString(QUrl::FullyEncoded);

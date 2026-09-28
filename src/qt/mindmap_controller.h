@@ -69,6 +69,7 @@ public:
     void refreshAppearance();
 signals:
     void documentChanged();
+    void layoutDirectionChanged(m3::qt::MindMapEditor::LayoutDirection direction);
     void undoAvailable(bool available);
     void redoAvailable(bool available);
     void selectionChanged(const QString &nodeId, const QString &linkId);

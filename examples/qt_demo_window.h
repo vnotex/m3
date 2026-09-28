@@ -3,6 +3,7 @@
 #include "m3/qt/editor.h"
 #include <QMainWindow>
 class QNetworkAccessManager;
+class QComboBox;
 class DemoWindow : public QMainWindow {
 public:
     explicit DemoWindow(const m3::qt::EditorConfig &config = {}, QWidget *parent = nullptr);
@@ -17,7 +18,10 @@ protected:
 private:
     m3::qt::MindMapEditor *editor;
     QNetworkAccessManager *imageNetwork;
+    QComboBox *layoutDirection = nullptr;
     QString filename;
+    void setupEditorToolBars();
+    void syncLayoutDirection();
     void loadImage(const QString &url, quint64 requestId);
     bool mayReplace();
     bool save();

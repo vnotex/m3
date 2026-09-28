@@ -10,6 +10,8 @@
 #include <QWidget>
 #include <memory>
 
+class QAction;
+
 #ifdef M3_QT_STATIC
 #define M3_QT_API
 #elif defined(M3_QT_BUILD_DLL)
@@ -23,6 +25,8 @@
 // Component-free/core-only consumers remain independent of Qt. M3_BUILD_QT_DEMO
 // additionally builds the file-handling example; this widget owns no file policy.
 // The widget owns its model; snapshots and commands never expose a core handle.
+// It contains the canvas, properties card and diagnostics, but no toolbar rows or
+// layout picker. Hosts (including the demo) own toolbar presentation.
 // New editors contain the selected root "root" / "Central topic". New/load
 // replace it atomically, select the new root, and fit once; failed imports retain
 // the document and selection. Import accepts native JSON, optional-field nested
@@ -52,7 +56,7 @@
 // Empty space shows an open hand cursor, closing during a pan. Empty clicks clear selection.
 // Node context menus separate creation from editing/reordering and omit viewport actions.
 // With no selection the menu contains only Focus Main Node, Fit, Zoom In, Zoom Out and 100%.
-// For a single node, Collapse/Expand, Move and Add Link are toolbar/shortcut actions.
+// For a single node, Collapse/Expand, Move and Add Link are command/shortcut actions.
 // A single selected node shows a small arrow outside its top-right corner. Drag it onto
 // another visible node to create an undirected cross-link without moving either node.
 // Escape, an interrupted gesture, or an invalid drop cancels without changing the document.
@@ -62,11 +66,11 @@
 // unchanged drops leave the document intact. Handles are not persisted or exported.
 // Link menus contain Rename/Edit, a separator, exclusive ---, <---, --->, <--->
 // direction choices, a separator, and Delete. Arrows are relative to stored
-// source/target order, not screen position. Link properties stays in the toolbar.
+// source/target order, not screen position. Link properties is the editLink command.
 // directed=false draws no arrows; otherwise style.arrowDirection "backward" or
 // "both" selects source-only or both arrows. Missing/other values draw target-only.
 // These Qt style keys survive native JSON; unrelated style data stays opaque.
-// updateLink and the toolbar's Directed checkbox retain this style preference.
+// updateLink and the link-properties Directed checkbox retain this style preference.
 // Selecting a node or accepting an inline topic scrolls its full bounds into view
 // without changing zoom; oversized nodes can only be partially shown by scrolling.
 // Presenting expanded node properties (including for a different selected node)
@@ -121,7 +125,7 @@ struct OutlineEntry { QString id; QString topic; int level = 1; };
 struct FindResult { int totalMatches = 0; int currentMatch = -1; };
 // Widget policy, copied at construction; no Qt-specific configuration enters the core.
 // Replace a shortcut list to rebind it, or clear it to disable its keyboard binding
-// without removing the toolbar/menu command. Avoid assigning the same sequence to
+// without removing the command action. Avoid assigning the same sequence to
 // multiple map commands. Bindings are local to this widget; link/move dialogs and
 // the layout picker and properties inputs keep their normal input keys.
 // With a selected node and canvas focus, B/I/R toggle bold/italic or reset appearance
@@ -218,6 +222,16 @@ public:
     explicit MindMapEditor(QWidget *parent = nullptr);
     explicit MindMapEditor(const EditorConfig &config, QWidget *parent = nullptr);
     ~MindMapEditor() override;
+    // Borrowed command action by stable, case-sensitive name; null for empty/missing.
+    // The editor owns lifetime, shortcuts and enablement. Hosts may present actions
+    // in toolbars/menus, but must not delete, reparent or override those policies.
+    // Names: undo, redo, addChild, addSibling, addSiblingBefore, editSelection,
+    // deleteSelection, toggleExpanded, moveNode, moveUp, moveDown, addLink, editLink,
+    // zoomIn, zoomOut, resetZoom, fit, selectRoot, selectParent, selectChild,
+    // previousSibling, nextSibling, copy, clearSelection, toggleBold, toggleItalic,
+    // resetStyle, textColor, fillColor, editTags, editIcons, editNote, toggleProperties,
+    // editTopic, showHelp. Triggering retains the same checked inline-commit behavior.
+    QAction *commandAction(const QString &name) const;
     QString resourceBasePath() const;
     // Normalize as at construction and invalidate/re-request image resources.
     // Document, selection, inline draft and camera remain unchanged.
@@ -324,6 +338,8 @@ public:
 signals:
     // Committed semantic changes only, never draft typing or camera/selection.
     void documentChanged();
+    // View-only: emitted after a successful actual layout change, including API calls.
+    void layoutDirectionChanged(m3::qt::MindMapEditor::LayoutDirection direction);
     // Availability includes read-only policy; emitted only on boolean transitions.
     void undoAvailable(bool available);
     void redoAvailable(bool available);

@@ -2,6 +2,7 @@
 #include <QAction>
 #include <QBuffer>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -12,8 +13,11 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QSaveFile>
+#include <QPointer>
+#include <QSignalBlocker>
 #include <QStatusBar>
 #include <QTimer>
+#include <QToolBar>
 #include <QUrl>
 #include <memory>
 
@@ -38,6 +42,7 @@ DemoWindow::DemoWindow(const m3::qt::EditorConfig &config, QWidget *parent)
     : QMainWindow(parent), editor(new m3::qt::MindMapEditor(config, this)),
       imageNetwork(new QNetworkAccessManager(this)) {
     setCentralWidget(editor);
+    setupEditorToolBars();
     connect(editor, &m3::qt::MindMapEditor::imageRequested, this, &DemoWindow::loadImage);
     resize(1100, 750);
     auto *file = menuBar()->addMenu(tr("&File"));
@@ -74,6 +79,55 @@ DemoWindow::DemoWindow(const m3::qt::EditorConfig &config, QWidget *parent)
         {"id":"l4","source":"a","target":"b","directed":true,"topic":"Feedback"}]})"));
     setWindowModified(false);
     updateTitle();
+}
+void DemoWindow::setupEditorToolBars() {
+    using Editor = m3::qt::MindMapEditor;
+    auto *editing = addToolBar(tr("Editing"));
+    editing->setObjectName(QStringLiteral("mindMapEditToolBar"));
+    editing->setMovable(false);
+    const auto add = [this](QToolBar *bar, const QString &name) {
+        auto *command = editor->commandAction(name);
+        Q_ASSERT(command);
+        bar->addAction(command);
+    };
+    add(editing, QStringLiteral("undo"));
+    add(editing, QStringLiteral("redo"));
+    editing->addSeparator();
+    for (const auto &name : {QStringLiteral("addChild"), QStringLiteral("addSibling"),
+            QStringLiteral("addSiblingBefore"), QStringLiteral("editSelection"),
+            QStringLiteral("deleteSelection"), QStringLiteral("toggleExpanded"),
+            QStringLiteral("moveNode"), QStringLiteral("moveUp"), QStringLiteral("moveDown"),
+            QStringLiteral("addLink"), QStringLiteral("editLink")}) add(editing, name);
+
+    addToolBarBreak();
+    auto *view = addToolBar(tr("View"));
+    view->setObjectName(QStringLiteral("mindMapViewToolBar"));
+    view->setMovable(false);
+    for (const auto &name : {QStringLiteral("zoomIn"), QStringLiteral("zoomOut"),
+            QStringLiteral("resetZoom"), QStringLiteral("fit"), QStringLiteral("selectRoot")}) add(view, name);
+    layoutDirection = new QComboBox(view);
+    layoutDirection->setObjectName(QStringLiteral("layoutDirection"));
+    layoutDirection->setAccessibleName(tr("Layout direction"));
+    layoutDirection->addItem(tr("Balanced"), int(Editor::LayoutDirection::Balanced));
+    layoutDirection->addItem(tr("Right"), int(Editor::LayoutDirection::Right));
+    layoutDirection->addItem(tr("Left"), int(Editor::LayoutDirection::Left));
+    layoutDirection->addItem(tr("Outline"), int(Editor::LayoutDirection::Outline));
+    view->addWidget(layoutDirection);
+    connect(layoutDirection, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this] {
+        const auto requested = static_cast<Editor::LayoutDirection>(layoutDirection->currentData().toInt());
+        const QPointer<DemoWindow> alive(this);
+        const QPointer<Editor> target(editor);
+        const bool accepted = target->commitActiveEdit();
+        if (!alive || !target) return;
+        if (accepted) target->setLayoutDirection(requested);
+        if (alive && target) syncLayoutDirection();
+    });
+    connect(editor, &Editor::layoutDirectionChanged, this, [this] { syncLayoutDirection(); });
+    syncLayoutDirection();
+}
+void DemoWindow::syncLayoutDirection() {
+    const QSignalBlocker blocker(layoutDirection);
+    layoutDirection->setCurrentIndex(layoutDirection->findData(int(editor->layoutDirection())));
 }
 void DemoWindow::loadImage(const QString &url, quint64 requestId) {
     const QUrl source(url, QUrl::StrictMode);
