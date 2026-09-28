@@ -37,6 +37,110 @@ Installation deploys Qt runtime dependencies on Windows. The demo accepts one op
 
 Use a separate build directory for a different generator/toolchain. `--config`/CTest `-C` select multi-config builds; `CMAKE_BUILD_TYPE` selects single-config builds. There is no configured lint/format command; existing compiler flags are `/W4 /utf-8` on MSVC and `-Wall -Wextra -Wpedantic` elsewhere.
 
+## Embedding the Qt Editor in an Application
+
+Use the installed public header `<m3/qt/editor.h>` and target `m3::qt_editor`; do not include `src/qt/` internals or try to share a core handle with the widget. Each editor owns its document. The host supplies `QApplication`, the GUI thread, widget ownership, and file/network policy.
+
+### Build and deploy the host
+Build/install m3 with `M3_BUILD_QT=ON`; the demo is optional (`M3_BUILD_QT_DEMO=OFF` for library-only builds). Add the m3 install prefix and a compatible Qt kit to the host's `CMAKE_PREFIX_PATH` (or set `m3_DIR` and `Qt6_DIR`). A standalone application's `CMakeLists.txt` can be:
+
+```cmake
+cmake_minimum_required(VERSION 3.18)
+project(mindmap_app LANGUAGES CXX)
+find_package(m3 CONFIG REQUIRED COMPONENTS qt_editor)
+add_executable(mindmap_app main.cpp)
+target_compile_features(mindmap_app PRIVATE cxx_std_17)
+target_link_libraries(mindmap_app PRIVATE m3::qt_editor)
+```
+
+The component discovers Qt Widgets transitively; Qt Test is not a host dependency. Enable `AUTOMOC` on the host target if its own classes use `Q_OBJECT`; this example needs none. Match compiler/ABI, architecture, Qt kit and Debug/Release libraries. Linking does not deploy runtime dependencies: ship m3qt, m3core when shared, and the matching Qt libraries/platform plugins. See `tests/qt_consumer/CMakeLists.txt` for Windows m3 DLL copying; the demo's Qt deployment recipe is in `src/qt/CMakeLists.txt`. A host adding network access must find/link Qt Network itself.
+
+### Minimal host with startup Open and Save As
+This complete `main.cpp` accepts one optional JSON path and provides Save As. It uses the same `QFile`/`QSaveFile` policy as the demo, checks failures, and clears the dirty flag only after a successful load or committed save. In an existing app, parent the editor to a page/dock and add it to that container's layout instead of creating another `QApplication`.
+
+```cpp
+#include <m3/qt/editor.h>
+#include <QAction>
+#include <QApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QMainWindow>
+#include <QMenuBar>
+#include <QMessageBox>
+#include <QSaveFile>
+#include <QStatusBar>
+
+using m3::qt::MindMapEditor;
+
+bool saveDocument(MindMapEditor &editor, QMainWindow &window, const QString &path) {
+    const auto fail = [&window](const QString &message) {
+        window.statusBar()->showMessage(message);
+        return false;
+    };
+    const QByteArray bytes = editor.toJson();
+    if (bytes.isEmpty()) return fail(editor.lastError());
+    QSaveFile output(path);
+    if (!output.open(QIODevice::WriteOnly)) return fail(output.errorString());
+    if (output.write(bytes) != bytes.size()) {
+        output.cancelWriting();
+        return fail(output.errorString());
+    }
+    if (!output.commit()) return fail(output.errorString());
+    window.setWindowModified(false);
+    return true;
+}
+
+int main(int argc, char **argv) {
+    QApplication app(argc, argv);
+    QMainWindow window;
+    window.setWindowTitle(QStringLiteral("Mind map[*]"));
+    const auto fail = [&window](const QString &message) {
+        QMessageBox::critical(&window, QStringLiteral("Open failed"), message);
+        return 1;
+    };
+    const QStringList args = app.arguments();
+    const QString path = args.size() > 1 ? args.at(1) : QString();
+    m3::qt::EditorConfig config;
+    config.resourceBasePath = path.isEmpty() ? QDir::currentPath() : QFileInfo(path).absolutePath();
+    config.shortcuts.addChild = {QKeySequence(QStringLiteral("Ctrl+J"))};
+    auto *editor = new MindMapEditor(config, &window);
+    window.setCentralWidget(editor);
+    QObject::connect(editor, &MindMapEditor::documentChanged, &window,
+                     [&window] { window.setWindowModified(true); });
+    QObject::connect(editor, &MindMapEditor::errorOccurred, &window,
+                     [&window](const QString &message) { window.statusBar()->showMessage(message); });
+    if (!path.isEmpty()) {
+        QFile input(path);
+        if (!input.open(QIODevice::ReadOnly)) return fail(input.errorString());
+        const QByteArray bytes = input.readAll();
+        if (input.error() != QFileDevice::NoError) return fail(input.errorString());
+        if (!editor->loadJson(bytes)) return fail(editor->lastError());
+    }
+    window.setWindowModified(false); // A successful load emits documentChanged first.
+    auto *saveAs = window.menuBar()->addAction(QStringLiteral("Save As..."));
+    saveAs->setShortcut(QKeySequence::SaveAs);
+    QObject::connect(saveAs, &QAction::triggered, &window, [editor, &window] {
+        const QString target = QFileDialog::getSaveFileName(
+            &window, QStringLiteral("Save mind map"), {}, QStringLiteral("JSON files (*.json)"));
+        if (!target.isEmpty()) saveDocument(*editor, window, target);
+    });
+    window.resize(1100, 750);
+    window.show();
+    return app.exec();
+}
+```
+
+### Document lifecycle and host policy
+- **New/Open/Close:** the constructor already creates a selected root. Use `newDocument(topic)` or `loadJson(bytes)` to replace it; failed imports preserve the current document and selection. In a full host, prompt Save/Discard/Cancel before replacing a dirty document or closing. Track the filename separately and update it only on successful load/save. Reuse `DemoWindow::mayReplace`, `openFile`, `saveFile`, and `closeEvent` in `examples/qt_demo_window.cpp` as the reference, not as library internals.
+- **Persistence and drafts:** save `toJson()` for native round trips; `toMarkdown()`/`toHtml()` are export projections, not editable backups. Snapshots contain committed data and do not accept an active inline draft. If Save must accept that draft, choose an explicit UI policy: `focusRoot()` commits it but also selects/centers the root. Exporting must not clear the document's dirty flag. Selection, layout direction, zoom and pan remain host/view state.
+- **Errors and changes:** check each command's `bool`/ID result and each snapshot for empty output; inspect `lastError()` on failure. Connect `errorOccurred` for interactive/presentation errors. `documentChanged` means a semantic edit committed, including New/Open, not merely a selection or camera change. A later drawing failure does not roll back that edit; never clear dirty state in the error handler.
+- **Commands and selection:** use `addNode`, `renameNode`, `moveNode`, `setExpanded`, `addLink`, etc. rather than editing controller/model internals. Keep returned IDs opaque and case-sensitive; do not assume an imported root is named `root`. Use `selectedNodeIds()` for groups: both arguments of `selectionChanged` and `selectedNodeId()` can be empty for a multi-selection. Disable single-node actions unless exactly one node is selected.
+- **Configuration and resource bases:** `EditorConfig` is copied at construction. Replace/clear shortcut lists to rebind/disable keys without removing commands. Set `resourceBasePath` before creating the widget; an empty value captures the working directory. The base is fixed for the editor's lifetime: Open, Save As and `reloadImages()` do not rebase relative image/link references. Choose a stable workspace base or recreate the editor for a different document base; saving elsewhere does not rewrite stored paths.
+- **URL activation and hooks:** connect `nodeLinkActivated(nodeId, url)` to the host's validated opening policy. Relative references arrive as absolute file URLs; do not blindly open arbitrary schemes or paths from imported documents. Override the synchronous `resolveDroppedFileUrl` to customize dropped-file storage (empty skips), or `onAddUrl`/`onAddImage` for app-owned pickers. These are subclass hooks, not signals or asynchronous callbacks.
+- **Images:** the example intentionally supplies no image I/O, so image nodes keep placeholders. Connect `imageRequested(url, requestId)` before loading (or call `reloadImages()` after connecting). The host fetches/decodes and calls `provideImage(url, requestId, pixels)` on the GUI thread with the original URL/ID; null `QImage` means unavailable. Stale/duplicate responses are ignored. Use QObject contexts/`QPointer` for asynchronous lifetime safety and enforce scheme, path, size and network limits in the host. `examples/qt_demo_window.cpp` illustrates one loader; Qt Network is demo/host policy, not an editor dependency.
+
 ## Code Conventions & Common Patterns
 - Match nearby compact C++ formatting: four spaces, same-line braces, header guards. C API functions use `m3_*`, core helpers use snake_case, Qt types use PascalCase and methods/signals camelCase; namespaces are `m3` and `m3::qt`.
 - Use RAII (`std::unique_ptr`, Qt parent ownership). C inputs are borrowed NUL-terminated UTF-8; release output snapshots with `m3_string_free`, layout results with `m3_layout_result_free`, and handles with `m3_mindmap_destroy`. Output slots are nulled on failure.
