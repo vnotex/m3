@@ -8,6 +8,7 @@
 #include <QPointer>
 #include <QSet>
 #include <QStringList>
+#include <functional>
 
 class QGraphicsTextItem;
 class QPlainTextEdit;
@@ -20,20 +21,25 @@ public:
     ~MindMapView() override;
     void beginTopicEdit(const QString &id, const QList<QKeySequence> &acceptShortcuts);
     void beginLinkTopicEdit(const QString &id, const QList<QKeySequence> &acceptShortcuts);
-    void finishTopicEdit(bool commit, bool restoreFocus = false);
+    using TopicCommitHandler = std::function<bool(const QString &, const QString &, bool)>;
+    void setTopicCommitHandler(TopicCommitHandler handler);
+    bool finishTopicEdit(bool commit, bool restoreFocus = false);
+    bool hasPendingEdit() const { return pendingEdit; }
+    void setReadOnly(bool value);
     void prepare(NodePresentation &node) const;
     void install(Presentation presentation, bool fit);
     QImage renderImage(Presentation presentation) const;
     void showError(const QString &message);
     void setSelection(const QStringList &nodes, const QString &link);
     void ensureNodeVisible(const QString &id, const QRect &occlusion = {});
+    void ensureLinkVisible(const QString &id);
     void centerNode(const QString &id);
     void fitContents();
     void zoom(qreal factor);
     void resetZoom();
+    void scrollSteps(int horizontal, int vertical);
 signals:
-    void topicEditRequested(const QString &id, const QString &topic);
-    void linkTopicEditRequested(const QString &id, const QString &topic);
+    void pendingEditChanged(bool pending);
     void linkCreationRequested(const QString &source, const QString &target);
     void linkEndpointChangeRequested(const QString &id, bool source, const QString &original, const QString &node);
     void topicEditingChanged(bool editing);
@@ -67,6 +73,7 @@ protected:
     void showEvent(QShowEvent *event) override;
     void changeEvent(QEvent *event) override;
 private:
+    bool readOnly = false;
     Qt::MouseButton panning = Qt::NoButton;
     QSet<QString> selectedNodes;
     bool suppressNodeDoubleClick = false;
@@ -98,7 +105,11 @@ private:
     enum class TopicKind { Node, Link };
     TopicKind editedKind = TopicKind::Node;
     bool topicLabelVisible = false;
+    bool pendingEdit = false, finishingTopicEdit = false;
+    TopicCommitHandler topicCommitHandler;
+    void updatePendingEdit();
     QPointer<QPlainTextEdit> topicEditor;
+    QList<QKeySequence> topicAcceptShortcuts;
     QPointer<QGraphicsTextItem> topicLabel;
     QString editedId, originalTopic, originalTopicDraft;
     Qt::FocusPolicy viewFocusPolicy = Qt::NoFocus, viewportFocusPolicy = Qt::NoFocus;

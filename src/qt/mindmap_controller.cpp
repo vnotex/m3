@@ -9,9 +9,9 @@
 #include <QRegularExpression>
 #include <QRandomGenerator>
 #include <QStringList>
-#include <QStringView>
 #include <QUuid>
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <iterator>
@@ -33,17 +33,16 @@ ParsedTopic parseTopicEdit(const QString &draft) {
     static const QRegularExpression tokens(QStringLiteral(R"(##|#([\p{L}\p{N}_-][\p{L}\p{M}\p{N}_-]*))"));
     ParsedTopic result;
     result.topic.reserve(draft.size());
-    const QStringView source(draft);
-    auto matches = tokens.globalMatchView(source);
+    auto matches = tokens.globalMatch(draft);
     qsizetype offset = 0;
     while (matches.hasNext()) {
         const auto match = matches.next();
-        result.topic.append(source.sliced(offset, match.capturedStart() - offset));
+        result.topic.append(draft.constData() + offset, match.capturedStart() - offset);
         if (match.capturedLength(1) > 0) result.tags.append(match.captured(1));
         else result.topic.append(u'#');
         offset = match.capturedEnd();
     }
-    result.topic.append(source.sliced(offset));
+    result.topic.append(draft.constData() + offset, draft.size() - offset);
     if (!result.tags.isEmpty()) {
         QChar *characters = result.topic.data();
         qsizetype written = 0;
@@ -136,10 +135,23 @@ LinkPresentation linkPresentation(const Json &j) {
 }
 }
 MindMapController::MindMapController(MindMapView &v, const EditorConfig &config, QObject *parent)
-    : QObject(parent), view(v), resourceBase(QDir::cleanPath(QDir::current().absoluteFilePath(config.resourceBasePath))),
-      autoRandomBranchColor(config.autoRandomBranchColor) {}
+    : QObject(parent), undoLimit(size_t(std::max(0, config.undoLimit))), view(v),
+      resourceBase(QDir::cleanPath(QDir::current().absoluteFilePath(config.resourceBasePath))),
+      resolveRelativeUrls(config.resolveRelativeUrls), autoRandomBranchColor(config.autoRandomBranchColor) {}
+void MindMapController::setResourceBasePath(const QString &path) {
+    resourceBase = QDir::cleanPath(QDir::current().absoluteFilePath(path));
+    reloadImages();
+}
+void MindMapController::setReadOnly(bool value) {
+    if (readOnly == value) return;
+    readOnly = value;
+    const QPointer<MindMapController> guard(this);
+    view.setReadOnly(value);
+    if (guard) view.setSelection(selectedNodes, selectedLink);
+    if (guard) notifyHistoryAvailability();
+}
 QString MindMapController::resolveResourceUrl(const QString &value) const {
-    if (value.isEmpty()) return {};
+    if (!resolveRelativeUrls || value.isEmpty()) return value;
     const QString path = QDir::fromNativeSeparators(value);
     if (QDir::isAbsolutePath(path)) return QUrl::fromLocalFile(path).toString(QUrl::FullyEncoded);
     // Spaces are valid filename input, but malformed URL escapes stay invalid.
@@ -184,7 +196,7 @@ void MindMapController::scheduleImageRequests() {
         const auto generation = imageGeneration;
         const QPointer<MindMapController> alive(this);
         try {
-            const auto bytes = snapshot(model.get());
+            const auto &bytes = currentSnapshot;
             const auto data = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
             QSet<QString> referenced, visible;
             QStringList requests;
@@ -219,6 +231,9 @@ bool MindMapController::fail(const QString &message) {
     emit errorOccurred(error);
     return false;
 }
+bool MindMapController::writable() {
+    return !readOnly || fail(tr("The document is read-only"));
+}
 bool MindMapController::status(M3Status result) {
     return result == M3_OK || fail(QString::fromUtf8(m3_last_error()));
 }
@@ -235,8 +250,167 @@ QByteArray MindMapController::snapshot(const M3Mindmap *map) {
     return QByteArray(text.get());
 }
 QByteArray MindMapController::toJson() {
-    try { return snapshot(model.get()); }
-    catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
+    if (currentSnapshot.isEmpty()) { fail(tr("No document is loaded")); return {}; }
+    return currentSnapshot;
+}
+QByteArray MindMapController::nodeJson(const QString &id) {
+    if (!strings({id})) return {};
+    try {
+        char *raw = nullptr;
+        const auto result = m3_mindmap_get_node_json(model.get(), id.toUtf8().constData(), &raw);
+        Text text(raw, m3_string_free);
+        requireStatus(result);
+        return QByteArray(text.get());
+    } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
+}
+QVector<OutlineEntry> MindMapController::outline() {
+    try {
+        char *raw = nullptr;
+        const auto exported = m3_mindmap_get_outline_json(model.get(), &raw);
+        Text text(raw, m3_string_free);
+        requireStatus(exported);
+        if (!text || !*text) throw std::runtime_error("The document outline is empty");
+        const auto data = Json::parse(text.get());
+        struct Frame { const Json *node; int level; };
+        std::vector<Frame> pending{{&data, 1}};
+        QVector<OutlineEntry> result;
+        while (!pending.empty()) {
+            const auto frame = pending.back();
+            pending.pop_back();
+            const auto &node = *frame.node;
+            result.push_back({string(node.at("id")), string(node.at("topic")), frame.level});
+            const auto &children = node.at("children");
+            for (auto it = children.rbegin(); it != children.rend(); ++it)
+                pending.push_back({&*it, frame.level + 1});
+        }
+        if (result.isEmpty()) throw std::runtime_error("The document outline is empty");
+        return result;
+    } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
+}
+bool MindMapController::revealNode(const QString &id) { return revealTarget({id, false}); }
+bool MindMapController::revealTarget(FindTarget target) {
+    if (!strings({target.id})) return false;
+    const QPointer<MindMapController> guard(this);
+    const auto revision = documentRevision;
+    try {
+        if (!(target.link ? visibleLinks : visibleNodes).contains(target.id)) {
+            const auto data = Json::parse(currentSnapshot.constData(), currentSnapshot.constData() + currentSnapshot.size());
+            QHash<QString, const Json *> nodes;
+            QHash<QString, QString> parents;
+            for (const auto &node : data.at("nodes")) {
+                const auto id = string(node.at("id"));
+                nodes.insert(id, &node);
+                for (const auto &child : node.at("children")) parents.insert(string(child), id);
+            }
+            QStringList endpoints;
+            if (target.link) {
+                for (const auto &link : data.at("crossLinks")) {
+                    if (string(link.at("id")) != target.id) continue;
+                    endpoints = QStringList{string(link.at("source")), string(link.at("target"))};
+                    break;
+                }
+                if (endpoints.isEmpty()) return fail(tr("Link not found"));
+            } else {
+                if (!nodes.contains(target.id)) return fail(tr("Node not found"));
+                endpoints.append(target.id);
+            }
+            auto expansions = temporaryExpanded;
+            for (const auto &endpoint : endpoints) {
+                for (QString ancestor = parents.value(endpoint); !ancestor.isEmpty(); ancestor = parents.value(ancestor)) {
+                    if (!nodes.value(ancestor)->at("expanded").get<bool>()) expansions.insert(ancestor);
+                }
+            }
+            auto presentation = prepare(model.get(), currentSnapshot, direction, expansions);
+            temporaryExpanded.swap(expansions);
+            install(std::move(presentation), false);
+            if (!guard || revision != documentRevision) return false;
+        }
+        if (!(target.link ? visibleLinks : visibleNodes).contains(target.id))
+            return fail(tr("The requested item could not be revealed"));
+        success();
+        if (!guard || revision != documentRevision) return false;
+        if (target.link) {
+            selection({}, target.id, false);
+            if (guard && revision == documentRevision && selectedLink == target.id) view.ensureLinkVisible(target.id);
+        } else {
+            selection({target.id}, {});
+        }
+        return true;
+    } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
+}
+FindResult MindMapController::findText(const QString &text, Qt::CaseSensitivity sensitivity, bool backward, bool incremental) {
+    if (text.isEmpty()) { clearFind(); return {}; }
+    const QPointer<MindMapController> guard(this);
+    const auto revision = documentRevision;
+    try {
+        const FindTarget previous = currentFindMatch >= 0 && currentFindMatch < findMatches.size()
+            ? findMatches.at(currentFindMatch) : FindTarget{};
+        const bool changed = !findCacheValid || findQuery != text || findSensitivity != sensitivity;
+        if (changed) {
+            const auto data = Json::parse(currentSnapshot.constData(), currentSnapshot.constData() + currentSnapshot.size());
+            QVector<FindTarget> matches;
+            // Canonical snapshots already export full node preorder followed by
+            // bytewise ID-sorted links, independent of presentation visibility.
+            for (const auto &node : data.at("nodes"))
+                if (string(node.at("topic")).contains(text, sensitivity)) matches.push_back({string(node.at("id")), false});
+            for (const auto &link : data.at("crossLinks"))
+                if (string(link.at("topic")).contains(text, sensitivity)) matches.push_back({string(link.at("id")), true});
+            findQuery = text;
+            findSensitivity = sensitivity;
+            findMatches.swap(matches);
+            findCacheValid = true;
+        }
+        const int total = int(findMatches.size());
+        if (!total) { currentFindMatch = -1; return {}; }
+        if (incremental) {
+            currentFindMatch = 0;
+            for (int i = 0; i < total; ++i) {
+                const auto &match = findMatches.at(i);
+                if (match.id == previous.id && match.link == previous.link) { currentFindMatch = i; break; }
+            }
+        } else if (changed || currentFindMatch < 0) {
+            currentFindMatch = backward ? total - 1 : 0;
+        } else {
+            currentFindMatch = (currentFindMatch + (backward ? total - 1 : 1)) % total;
+        }
+        const auto target = findMatches.at(currentFindMatch);
+        const bool revealed = revealTarget(target);
+        if (!guard || revision != documentRevision || !findCacheValid) return {};
+        if (!revealed) currentFindMatch = -1;
+        return {int(findMatches.size()), currentFindMatch};
+    } catch (const std::exception &e) {
+        findCacheValid = false;
+        currentFindMatch = -1;
+        fail(QString::fromUtf8(e.what()));
+        return {};
+    }
+}
+void MindMapController::clearFind() {
+    findQuery.clear();
+    findMatches.clear();
+    currentFindMatch = -1;
+    findCacheValid = false;
+}
+QString MindMapController::selectedText() {
+    try {
+        if (!selectedLink.isEmpty()) {
+            char *raw = nullptr;
+            const auto result = m3_mindmap_get_link_json(model.get(), selectedLink.toUtf8().constData(), &raw);
+            Text text(raw, m3_string_free);
+            requireStatus(result);
+            return string(Json::parse(text.get()).at("topic"));
+        }
+        QStringList topics;
+        topics.reserve(selectedNodes.size());
+        for (const auto &id : selectedNodes) {
+            char *raw = nullptr;
+            const auto result = m3_mindmap_get_node_json(model.get(), id.toUtf8().constData(), &raw);
+            Text text(raw, m3_string_free);
+            requireStatus(result);
+            topics.append(string(Json::parse(text.get()).at("topic")));
+        }
+        return topics.join(QLatin1Char('\n'));
+    } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
 QString MindMapController::toMarkdown() {
     try {
@@ -249,19 +423,37 @@ QString MindMapController::toMarkdown() {
 }
 QString MindMapController::toHtml() {
     try {
-        const auto document = snapshot(model.get());
-        auto presentation = prepare(model.get(), direction);
+        const auto document = currentSnapshot;
+        auto presentation = prepare(model.get(), document, direction, temporaryExpanded);
         const auto image = view.renderImage(std::move(presentation));
         return encodeHtml(document, image);
     } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
-Presentation MindMapController::prepare(const M3Mindmap *map, MindMapEditor::LayoutDirection requested, bool useImageCache) {
-    const auto bytes = snapshot(map);
-    const auto data = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
+Presentation MindMapController::prepare(const M3Mindmap *map, const QByteArray &json,
+                                       MindMapEditor::LayoutDirection requested, QSet<QString> &expansions,
+                                       bool useImageCache) {
+    const auto data = Json::parse(json.constData(), json.constData() + json.size());
     const auto &nodes = data.at("nodes");
     std::unordered_map<std::string, const Json *> index;
     index.reserve(nodes.size());
     for (const auto &n : nodes) index.emplace(n.at("id").get<std::string>(), &n);
+    // Only layout sees temporary expansion. The committed map/snapshot and every
+    // history entry keep the user's persisted collapsed state.
+    Map layoutMap(nullptr, m3_mindmap_destroy);
+    for (auto it = expansions.begin(); it != expansions.end();) {
+        const auto id = utf8(*it);
+        const auto record = index.find(id);
+        if (record == index.end()) { it = expansions.erase(it); continue; }
+        ++it;
+        if (record->second->at("expanded").get<bool>()) continue;
+        if (!layoutMap) {
+            M3Mindmap *raw = nullptr;
+            const auto parsed = m3_mindmap_from_json(json.constData(), &raw);
+            layoutMap.reset(raw);
+            requireStatus(parsed);
+        }
+        requireStatus(m3_mindmap_update_node(layoutMap.get(), id.c_str(), R"({"expanded":true})"));
+    }
     Presentation result;
     result.outline = requested == MindMapEditor::LayoutDirection::Outline;
     struct Frame { const Json *record; QColor inheritedBranchColor; };
@@ -289,7 +481,7 @@ Presentation MindMapController::prepare(const M3Mindmap *map, MindMapEditor::Lay
             if (!value.trimmed().isEmpty()) node.tags.push_back({std::move(value), {}, {}});
         }
         node.root = record.at("id") == data.at("rootId");
-        node.expanded = record.at("expanded").get<bool>();
+        node.expanded = record.at("expanded").get<bool>() || expansions.contains(node.id);
         const auto &children = record.at("children");
         node.hasChildren = children.empty() == false;
         node.style = nodeStyle(record.at("style"));
@@ -310,7 +502,7 @@ Presentation MindMapController::prepare(const M3Mindmap *map, MindMapEditor::Lay
     const M3LayoutOptions options{coreDirection(requested), result.outline ? 32.0 : 64.0,
                                   result.outline ? 8.0 : 20.0};
     char *raw = nullptr;
-    const auto status = m3_mindmap_layout_json(map, sizes.data(), sizes.size(), &options, &raw);
+    const auto status = m3_mindmap_layout_json(layoutMap ? layoutMap.get() : map, sizes.data(), sizes.size(), &options, &raw);
     Text layoutText(raw, m3_string_free);
     requireStatus(status);
     const auto layout = Json::parse(layoutText.get());
@@ -327,8 +519,15 @@ void MindMapController::install(Presentation presentation, bool fit) {
     for (const auto &n : presentation.nodes) nodes.insert(n.id);
     for (const auto &l : presentation.links) links.insert(l.id);
     const QPointer<MindMapController> guard(this);
+    const auto revision = documentRevision;
     view.install(std::move(presentation), fit);
     if (!guard) return;
+    if (revision != documentRevision) {
+        // A host may replace the document while installation cancels a draft.
+        // The nested document owns the model/history; rebuild its scene too.
+        refreshAppearance();
+        return;
+    }
     visibleNodes.swap(nodes);
     visibleLinks.swap(links);
     ++imageGeneration; // Also stop request delivery across a reentrant visual/semantic rebuild.
@@ -338,12 +537,16 @@ void MindMapController::selection(QStringList nodes, QString link, bool ensureVi
     const bool modified = nodes != selectedNodes || link != selectedLink;
     selectedNodes = nodes;
     selectedLink = link;
+    if (!history.empty()) {
+        history[historyCursor].nodes = nodes;
+        history[historyCursor].link = link;
+    }
     const QPointer<MindMapController> guard(this);
     // Reapply even unchanged membership after a scene rebuild.
     view.setSelection(nodes, link);
-    if (!guard) return;
+    if (!guard || nodes != selectedNodes || link != selectedLink) return;
     if (ensureVisible && nodes.size() == 1) view.ensureNodeVisible(nodes.front());
-    if (!guard) return;
+    if (!guard || nodes != selectedNodes || link != selectedLink) return;
     if (modified) emit selectionChanged(nodes.size() == 1 ? nodes.front() : QString(), link);
 }
 void MindMapController::restoreSelection() {
@@ -353,21 +556,25 @@ void MindMapController::restoreSelection() {
     selection(std::move(nodes), visibleLinks.contains(selectedLink) ? selectedLink : QString(), false);
 }
 bool MindMapController::replace(Map candidate) {
-    const QPointer<MindMapController> guard(this);
     try {
-        auto presentation = prepare(candidate.get(), direction, false);
+        auto bytes = snapshot(candidate.get());
+        QSet<QString> expansions;
+        auto presentation = prepare(candidate.get(), bytes, direction, expansions, false);
         const QString root = presentation.nodes.front().id;
-        install(std::move(presentation), true);
-        if (!guard) return true;
+        std::vector<HistoryState> baseline;
+        baseline.push_back({bytes, {root}, {}});
+        // All fallible semantic/presentation preparation and baseline allocation
+        // precede publication. A later scene failure cannot roll this load back.
         model.swap(candidate);
+        currentSnapshot.swap(bytes);
+        history.swap(baseline);
+        historyCursor = 0;
+        temporaryExpanded.clear();
+        clearFind();
+        ++documentRevision;
         imageResources.clear();
         ++imageGeneration;
-        success();
-        if (!guard) return true;
-        selection({root}, {});
-        if (!guard) return true;
-        emit documentChanged();
-        return true;
+        return finishChange(std::move(presentation), true);
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 bool MindMapController::newDocument(const QString &topic) {
@@ -414,37 +621,155 @@ void MindMapController::clearSelection() {
     success();
     if (guard) selection({}, {});
 }
-bool MindMapController::changed(M3Status result, const QString &preferredNode, const QString &preferredLink) {
-    if (!status(result)) return false;
+void MindMapController::notifyHistoryAvailability() {
     const QPointer<MindMapController> guard(this);
-    success();
-    if (!guard) return true;
+    const bool undo = canUndo();
+    if (undo != undoWasAvailable) {
+        undoWasAvailable = undo;
+        emit undoAvailable(undo);
+    }
+    if (!guard) return;
+    // Recompute after the first signal: a synchronous host may edit/load/toggle
+    // read-only or destroy the editor instead of merely observing availability.
+    const bool redo = canRedo();
+    if (redo != redoWasAvailable) {
+        redoWasAvailable = redo;
+        emit redoAvailable(redo);
+    }
+}
+template<typename Operation>
+bool MindMapController::transact(Operation &&operation,
+                                 const QString &preferredNode, const QString &preferredLink,
+                                 const QString &clearedExpansion) {
+    if (!writable()) return false;
     try {
-        install(prepare(model.get(), direction), false);
+        M3Mindmap *raw = nullptr;
+        const auto parsed = m3_mindmap_from_json(currentSnapshot.constData(), &raw);
+        Map candidate(raw, m3_mindmap_destroy);
+        requireStatus(parsed);
+        requireStatus(operation(candidate.get()));
+        auto bytes = snapshot(candidate.get());
+        auto expansions = temporaryExpanded;
+        const bool expansionChanged = expansions.remove(clearedExpansion);
+        if (bytes == currentSnapshot) {
+            if (!expansionChanged) { success(); return true; }
+            // Explicitly collapsing a temporarily revealed node can be a
+            // persistent no-op, but must still close its presentation branch.
+            auto presentation = prepare(model.get(), currentSnapshot, direction, expansions);
+            const QPointer<MindMapController> guard(this);
+            const auto revision = documentRevision;
+            temporaryExpanded.swap(expansions);
+            install(std::move(presentation), false);
+            if (!guard || revision != documentRevision) return true;
+            if (visibleNodes.contains(preferredNode)) selection({preferredNode}, {});
+            else restoreSelection();
+            if (guard && revision == documentRevision) success();
+            return true;
+        }
+        HistoryState next{bytes, selectedNodes, selectedLink};
+        const size_t required = historyCursor + 2;
+        if (required > history.capacity())
+            history.reserve(std::max(required, history.capacity() * 2));
+        // No fallible work remains before publication. Reserve before truncating
+        // redo; a failed command must retain every prior state and selection.
+        model.swap(candidate);
+        currentSnapshot.swap(bytes);
+        temporaryExpanded.swap(expansions);
+        history.resize(historyCursor + 1);
+        history.push_back(std::move(next));
+        ++historyCursor;
+        ++documentRevision;
+        if (undoLimit && historyCursor > undoLimit) {
+            const auto excess = historyCursor - undoLimit;
+            history.erase(history.begin(), history.begin() + excess);
+            historyCursor -= excess;
+        }
+        return finishChange({}, false, false, preferredNode, preferredLink);
+    } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
+}
+bool MindMapController::finishChange(std::optional<Presentation> prepared, bool fit, bool restoring,
+                                    const QString &preferredNode, const QString &preferredLink) {
+    const QPointer<MindMapController> guard(this);
+    const auto revision = documentRevision;
+    auto nodes = history[historyCursor].nodes;
+    auto link = history[historyCursor].link;
+    const bool wasRestoring = restoringHistory;
+    restoringHistory = restoringHistory || restoring;
+    findCacheValid = false;
+    try {
+        success();
         if (!guard) return true;
-        if (visibleNodes.contains(preferredNode)) selection({preferredNode}, {});
-        else if (visibleLinks.contains(preferredLink)) selection({}, preferredLink);
-        else restoreSelection();
+        if (revision == documentRevision) {
+            auto presentation = prepared ? std::move(*prepared) : prepare(model.get(), currentSnapshot, direction, temporaryExpanded);
+            const QString root = presentation.nodes.front().id;
+            install(std::move(presentation), fit);
+            if (!guard) return true;
+            if (revision == documentRevision) {
+                if (visibleNodes.contains(preferredNode)) { nodes = QStringList{preferredNode}; link.clear(); }
+                else if (visibleLinks.contains(preferredLink)) { nodes.clear(); link = preferredLink; }
+                for (qsizetype i = nodes.size(); i > 0; --i)
+                    if (!visibleNodes.contains(nodes.at(i - 1))) nodes.removeAt(i - 1);
+                if (!visibleLinks.contains(link)) link.clear();
+                if (restoring && nodes.isEmpty() && link.isEmpty()) nodes = QStringList{root};
+                selection(std::move(nodes), std::move(link), !restoring && !fit && !preferredNode.isEmpty());
+            }
+        }
     } catch (const std::exception &e) {
-        visibleNodes.clear(); visibleLinks.clear();
-        view.showError(QString::fromUtf8(e.what()));
         if (!guard) return true;
-        selection({}, {});
+        if (revision == documentRevision) {
+            visibleNodes.clear(); visibleLinks.clear();
+            view.showError(QString::fromUtf8(e.what()));
+            if (!guard) return true;
+            if (revision == documentRevision) selection({}, {}, false);
+        }
         if (!guard) return true;
         fail(QString::fromUtf8(e.what()));
     }
     if (!guard) return true;
+    notifyHistoryAvailability();
+    if (!guard) return true;
     emit documentChanged();
+    if (guard) restoringHistory = wasRestoring;
     return true;
 }
+bool MindMapController::restoreHistory(size_t cursor) {
+    try {
+        const auto target = history[cursor];
+        M3Mindmap *raw = nullptr;
+        const auto parsed = m3_mindmap_from_json(target.json.constData(), &raw);
+        Map candidate(raw, m3_mindmap_destroy);
+        requireStatus(parsed);
+        auto expansions = temporaryExpanded;
+        auto presentation = prepare(candidate.get(), target.json, direction, expansions);
+        model.swap(candidate);
+        currentSnapshot = target.json;
+        historyCursor = cursor;
+        temporaryExpanded.swap(expansions);
+        ++documentRevision;
+        return finishChange(std::move(presentation), false, true);
+    } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
+}
+bool MindMapController::undo() {
+    if (readOnly) return false;
+    const QPointer<MindMapController> guard(this);
+    if (!view.finishTopicEdit(true) || !guard || !canUndo()) return false;
+    return restoreHistory(historyCursor - 1);
+}
+bool MindMapController::redo() {
+    if (readOnly) return false;
+    const QPointer<MindMapController> guard(this);
+    if (!view.finishTopicEdit(true) || !guard || !canRedo()) return false;
+    return restoreHistory(historyCursor + 1);
+}
 QString MindMapController::addNode(const QString &parent, const QString &topic, int index) {
+    if (!writable()) return {};
     if (!strings({parent, topic})) return {};
     if (index < -1) { fail(tr("Invalid insertion index")); return {}; }
     try {
         const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         Json record{{"id", utf8(id)}, {"topic", utf8(topic)}};
         if (autoRandomBranchColor) {
-            const auto bytes = snapshot(model.get());
+            const auto &bytes = currentSnapshot;
             const auto data = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
             if (data.at("rootId") == utf8(parent)) {
                 static const auto palette = [] {
@@ -481,16 +806,24 @@ QString MindMapController::addNode(const QString &parent, const QString &topic, 
             }
         }
         const auto serialized = record.dump();
-        return changed(m3_mindmap_insert_node(model.get(), parent.toUtf8().constData(),
-                       index == -1 ? M3_APPEND : size_t(index), serialized.c_str()), id) ? id : QString();
+        return transact([&](M3Mindmap *candidate) {
+            return m3_mindmap_insert_node(candidate, parent.toUtf8().constData(),
+                index == -1 ? M3_APPEND : size_t(index), serialized.c_str());
+        }, id) ? id : QString();
     } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
 bool MindMapController::renameNode(const QString &id, const QString &topic) {
+    if (!writable()) return false;
     if (!strings({id, topic})) return false;
-    const auto patch = Json{{"topic", utf8(topic)}}.dump();
-    return changed(m3_mindmap_update_node(model.get(), id.toUtf8().constData(), patch.c_str()));
+    try {
+        const auto patch = Json{{"topic", utf8(topic)}}.dump();
+        return transact([&](M3Mindmap *candidate) {
+            return m3_mindmap_update_node(candidate, id.toUtf8().constData(), patch.c_str());
+        });
+    } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 bool MindMapController::commitTopicEdit(const QString &id, const QString &draft) {
+    if (!writable()) return false;
     if (!strings({id, draft})) return false;
     try {
         const auto parsed = parseTopicEdit(draft);
@@ -508,6 +841,7 @@ bool MindMapController::commitTopicEdit(const QString &id, const QString &draft)
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 bool MindMapController::updateNodeProperties(const QString &id, const QByteArray &patch) {
+    if (!writable()) return false;
     if (!strings({id})) return false;
     if (patch.contains('\0')) return fail(tr("JSON cannot contain NUL bytes"));
     try {
@@ -528,25 +862,14 @@ bool MindMapController::updateNodeProperties(const QString &id, const QByteArray
                 *style = std::move(merged);
             }
         }
-        bool modified = update.is_object() == false;
-        if (!modified) {
-            for (auto member = update.begin(); member != update.end(); ++member) {
-                const auto previous = original.find(member.key());
-                if (previous == original.end() || *previous != *member) {
-                    modified = true;
-                    break;
-                }
-            }
-        }
         const auto serialized = update.dump();
-        const auto result = m3_mindmap_update_node(model.get(), id.toUtf8().constData(), serialized.c_str());
-        if (modified) return changed(result);
-        if (!status(result)) return false;
-        success();
-        return true;
+        return transact([&](M3Mindmap *candidate) {
+            return m3_mindmap_update_node(candidate, id.toUtf8().constData(), serialized.c_str());
+        }, {}, {}, update.contains("expanded") ? id : QString());
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 bool MindMapController::removeNode(const QString &id) {
+    if (!writable()) return false;
     if (!strings({id})) return false;
     QString fallback;
     if (selectedNodes.size() == 1) {
@@ -559,13 +882,16 @@ bool MindMapController::removeNode(const QString &id) {
             if (current == id) { fallback = parents.value(id); break; }
         while (!fallback.isEmpty() && !visibleNodes.contains(fallback)) fallback = parents.value(fallback);
     }
-    return changed(m3_mindmap_remove_subtree(model.get(), id.toUtf8().constData()), fallback);
+    return transact([&](M3Mindmap *candidate) {
+        return m3_mindmap_remove_subtree(candidate, id.toUtf8().constData());
+    }, fallback);
 }
 bool MindMapController::removeSelectedNodes() {
+    if (!writable()) return false;
     if (selectedNodes.isEmpty()) return fail(tr("No nodes are selected"));
     if (selectedNodes.size() == 1) return removeNode(selectedNodeId());
     try {
-        const auto bytes = snapshot(model.get());
+        const auto &bytes = currentSnapshot;
         const auto data = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
         const QString root = string(data.at("rootId"));
         QHash<QString, QString> parents;
@@ -587,23 +913,24 @@ bool MindMapController::removeSelectedNodes() {
         // Keep disjoint roots in selection order; the first root supplies the visible parent fallback.
         QString fallback = parents.value(roots.front());
         while (!fallback.isEmpty() && !visibleNodes.contains(fallback)) fallback = parents.value(fallback);
-        M3Mindmap *raw = nullptr;
-        const auto result = m3_mindmap_from_json(bytes.constData(), &raw);
-        Map candidate(raw, m3_mindmap_destroy);
-        requireStatus(result);
-        for (const auto &id : roots)
-            requireStatus(m3_mindmap_remove_subtree(candidate.get(), id.toUtf8().constData()));
-        model.swap(candidate);
-        return changed(M3_OK, fallback);
+        return transact([&](M3Mindmap *candidate) {
+            for (const auto &id : roots)
+                requireStatus(m3_mindmap_remove_subtree(candidate, id.toUtf8().constData()));
+            return M3_OK;
+        }, fallback);
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 bool MindMapController::moveNode(const QString &id, const QString &parent, int index) {
+    if (!writable()) return false;
     if (!strings({id, parent})) return false;
     if (index < -1) return fail(tr("Invalid insertion index"));
-    return changed(m3_mindmap_move_node(model.get(), id.toUtf8().constData(), parent.toUtf8().constData(),
-                                      index == -1 ? M3_APPEND : size_t(index)));
+    return transact([&](M3Mindmap *candidate) {
+        return m3_mindmap_move_node(candidate, id.toUtf8().constData(), parent.toUtf8().constData(),
+                                  index == -1 ? M3_APPEND : size_t(index));
+    });
 }
 bool MindMapController::setExpanded(const QString &id, bool expanded) {
+    if (!writable()) return false;
     if (!strings({id})) return false;
     QString fallback;
     const QPointer<MindMapController> guard(this);
@@ -615,25 +942,41 @@ bool MindMapController::setExpanded(const QString &id, bool expanded) {
         for (QString current = selectedNodeId(); !current.isEmpty(); current = parents.value(current))
             if (current == id) { fallback = id; break; }
     }
-    const auto patch = Json{{"expanded", expanded}}.dump();
-    if (!changed(m3_mindmap_update_node(model.get(), id.toUtf8().constData(), patch.c_str()), fallback)) return false;
-    if (guard && expanded) view.centerNode(id);
-    return true;
+    try {
+        const auto patch = Json{{"expanded", expanded}}.dump();
+        const auto revision = documentRevision;
+        if (!transact([&](M3Mindmap *candidate) {
+            return m3_mindmap_update_node(candidate, id.toUtf8().constData(), patch.c_str());
+        }, fallback, {}, id)) return false;
+        if (guard && expanded && documentRevision == revision + 1) view.centerNode(id);
+        return true;
+    } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 QString MindMapController::addLink(const QString &source, const QString &target, bool directed, const QString &topic) {
+    if (!writable()) return {};
     if (!strings({source, target, topic})) return {};
-    const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    const auto record = Json{{"id", utf8(id)}, {"source", utf8(source)}, {"target", utf8(target)},
-                             {"directed", directed}, {"topic", utf8(topic)}}.dump();
-    return changed(m3_mindmap_add_link(model.get(), record.c_str()), {}, id) ? id : QString();
+    try {
+        const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const auto record = Json{{"id", utf8(id)}, {"source", utf8(source)}, {"target", utf8(target)},
+                                 {"directed", directed}, {"topic", utf8(topic)}}.dump();
+        return transact([&](M3Mindmap *candidate) {
+            return m3_mindmap_add_link(candidate, record.c_str());
+        }, {}, id) ? id : QString();
+    } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
 bool MindMapController::updateLink(const QString &id, const QString &source, const QString &target, bool directed, const QString &topic) {
+    if (!writable()) return false;
     if (!strings({id, source, target, topic})) return false;
-    const auto patch = Json{{"source", utf8(source)}, {"target", utf8(target)},
-                            {"directed", directed}, {"topic", utf8(topic)}}.dump();
-    return changed(m3_mindmap_update_link(model.get(), id.toUtf8().constData(), patch.c_str()));
+    try {
+        const auto patch = Json{{"source", utf8(source)}, {"target", utf8(target)},
+                                {"directed", directed}, {"topic", utf8(topic)}}.dump();
+        return transact([&](M3Mindmap *candidate) {
+            return m3_mindmap_update_link(candidate, id.toUtf8().constData(), patch.c_str());
+        });
+    } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 bool MindMapController::setLinkDirection(const QString &id, LinkDirection direction) {
+    if (!writable()) return false;
     if (!strings({id})) return false;
     try {
         char *raw = nullptr;
@@ -651,10 +994,13 @@ bool MindMapController::setLinkDirection(const QString &id, LinkDirection direct
         default: return fail(tr("Invalid link direction"));
         }
         const auto patch = Json{{"directed", direction != LinkDirection::None}, {"style", std::move(style)}}.dump();
-        return changed(m3_mindmap_update_link(model.get(), id.toUtf8().constData(), patch.c_str()));
+        return transact([&](M3Mindmap *candidate) {
+            return m3_mindmap_update_link(candidate, id.toUtf8().constData(), patch.c_str());
+        });
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 bool MindMapController::reconnectLink(const QString &id, bool source, const QString &original, const QString &node) {
+    if (!writable()) return false;
     if (!strings({id, original, node})) return false;
     if (selectedLink != id) return false;
     try {
@@ -667,21 +1013,32 @@ bool MindMapController::reconnectLink(const QString &id, bool source, const QStr
         if (current.at(endpoint) != utf8(original)) return false;
         if (original == node) { success(); return true; }
         const auto patch = Json{{endpoint, utf8(node)}}.dump();
-        return changed(m3_mindmap_update_link(model.get(), id.toUtf8().constData(), patch.c_str()));
+        return transact([&](M3Mindmap *candidate) {
+            return m3_mindmap_update_link(candidate, id.toUtf8().constData(), patch.c_str());
+        });
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 bool MindMapController::commitLinkTopicEdit(const QString &id, const QString &topic) {
+    if (!writable()) return false;
     if (!strings({id, topic})) return false;
-    const auto patch = Json{{"topic", utf8(topic)}}.dump();
-    return changed(m3_mindmap_update_link(model.get(), id.toUtf8().constData(), patch.c_str()));
+    try {
+        const auto patch = Json{{"topic", utf8(topic)}}.dump();
+        return transact([&](M3Mindmap *candidate) {
+            return m3_mindmap_update_link(candidate, id.toUtf8().constData(), patch.c_str());
+        });
+    } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 bool MindMapController::removeLink(const QString &id) {
-    return strings({id}) && changed(m3_mindmap_remove_link(model.get(), id.toUtf8().constData()));
+    if (!writable()) return false;
+    if (!strings({id})) return false;
+    return transact([&](M3Mindmap *candidate) {
+        return m3_mindmap_remove_link(candidate, id.toUtf8().constData());
+    });
 }
 bool MindMapController::setLayoutDirection(MindMapEditor::LayoutDirection requested) {
     const QPointer<MindMapController> guard(this);
     try {
-        auto presentation = prepare(model.get(), requested);
+        auto presentation = prepare(model.get(), currentSnapshot, requested, temporaryExpanded);
         install(std::move(presentation), false);
         if (!guard) return true;
         direction = requested;
@@ -695,7 +1052,7 @@ std::vector<NodeChoice> MindMapController::choices() {
     std::vector<NodeChoice> result;
     if (!model) return result;
     try {
-        const auto bytes = snapshot(model.get());
+        const auto &bytes = currentSnapshot;
         const auto data = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
         QHash<QString, QString> parents;
         for (const auto &n : data.at("nodes"))
@@ -703,7 +1060,8 @@ std::vector<NodeChoice> MindMapController::choices() {
         for (const auto &n : data.at("nodes")) {
             NodeChoice choice;
             choice.id = string(n.at("id")); choice.topic = string(n.at("topic"));
-            choice.parent = parents.value(choice.id); choice.expanded = n.at("expanded").get<bool>();
+            choice.parent = parents.value(choice.id);
+            choice.expanded = n.at("expanded").get<bool>() || temporaryExpanded.contains(choice.id);
             for (const auto &c : n.at("children")) choice.children.append(string(c));
             result.push_back(std::move(choice));
         }
@@ -713,7 +1071,7 @@ std::vector<NodeChoice> MindMapController::choices() {
 NodeProperties MindMapController::nodeProperties(const QString &id) {
     if (!model || id.isEmpty()) return {};
     try {
-        const auto bytes = snapshot(model.get());
+        const auto &bytes = currentSnapshot;
         const auto data = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
         const auto key = utf8(id);
         for (const auto &record : data.at("nodes")) {
@@ -735,7 +1093,7 @@ NodeProperties MindMapController::nodeProperties(const QString &id) {
 }
 LinkPresentation MindMapController::linkChoice(const QString &id) {
     try {
-        const auto bytes = snapshot(model.get());
+        const auto &bytes = currentSnapshot;
         const auto data = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
         for (const auto &l : data.at("crossLinks")) if (string(l.at("id")) == id) return linkPresentation(l);
     } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); }
@@ -745,15 +1103,12 @@ void MindMapController::refreshAppearance() {
     if (!model) return;
     const QPointer<MindMapController> guard(this);
     try {
-        install(prepare(model.get(), direction), false);
+        install(prepare(model.get(), currentSnapshot, direction, temporaryExpanded), false);
         if (!guard) return;
         restoreSelection();
     } catch (const std::exception &e) {
-        visibleNodes.clear(); visibleLinks.clear();
-        view.showError(QString::fromUtf8(e.what()));
-        if (!guard) return;
-        selection({}, {});
-        if (!guard) return;
+        // A visual-only refresh failed before installation; retain the previous
+        // scene and draft rather than discarding uncommitted user input.
         fail(QString::fromUtf8(e.what()));
     }
 }

@@ -7,6 +7,8 @@
 #include <QHash>
 #include <QStringList>
 #include <memory>
+#include <optional>
+#include <vector>
 
 namespace m3::qt {
 class MindMapView;
@@ -15,12 +17,22 @@ class MindMapController : public QObject {
 public:
     explicit MindMapController(MindMapView &view, const EditorConfig &config, QObject *parent);
     QString resourceBasePath() const { return resourceBase; }
+    void setResourceBasePath(const QString &path);
+    void setReadOnly(bool value);
+    bool isReadOnly() const { return readOnly; }
     QString resolveResourceUrl(const QString &value) const;
     void provideImage(const QString &url, quint64 requestId, const QImage &image);
     void reloadImages();
     bool newDocument(const QString &topic);
     bool loadJson(const QByteArray &json);
+    bool canUndo() const { return !readOnly && historyCursor > 0; }
+    bool canRedo() const { return !readOnly && historyCursor + 1 < history.size(); }
+    bool undo();
+    bool redo();
+    bool isRestoringHistory() const { return restoringHistory; }
     QByteArray toJson();
+    QByteArray nodeJson(const QString &id);
+    QString selectedText();
     QString toMarkdown();
     QString toHtml();
     QString lastError() const { return error; }
@@ -38,6 +50,10 @@ public:
     bool reconnectLink(const QString &id, bool source, const QString &original, const QString &node);
     bool commitLinkTopicEdit(const QString &id, const QString &topic);
     bool removeLink(const QString &id);
+    QVector<OutlineEntry> outline();
+    bool revealNode(const QString &id);
+    FindResult findText(const QString &text, Qt::CaseSensitivity sensitivity, bool backward, bool incremental);
+    void clearFind();
     bool selectNode(const QString &id);
     bool toggleNodeSelection(const QString &id);
     bool selectLink(const QString &id);
@@ -53,6 +69,8 @@ public:
     void refreshAppearance();
 signals:
     void documentChanged();
+    void undoAvailable(bool available);
+    void redoAvailable(bool available);
     void selectionChanged(const QString &nodeId, const QString &linkId);
     void errorOccurred(const QString &message);
     void commandSucceeded();
@@ -60,11 +78,25 @@ signals:
 private:
     using Map = std::unique_ptr<M3Mindmap, decltype(&m3_mindmap_destroy)>;
     Map model{nullptr, m3_mindmap_destroy};
+    struct HistoryState {
+        QByteArray json;
+        QStringList nodes;
+        QString link;
+    };
+    QByteArray currentSnapshot;
+    std::vector<HistoryState> history;
+    size_t historyCursor = 0;
+    const size_t undoLimit;
+    quint64 documentRevision = 0;
+    bool undoWasAvailable = false, redoWasAvailable = false, restoringHistory = false;
+    void notifyHistoryAvailability();
+    bool restoreHistory(size_t cursor);
     MindMapView &view;
     QString error, selectedLink;
     QStringList selectedNodes;
     QString resourceBase;
-    const bool autoRandomBranchColor;
+    const bool resolveRelativeUrls, autoRandomBranchColor;
+    bool readOnly = false;
     struct ImageResource {
         quint64 requestId = 0;
         QImage pixels;
@@ -76,16 +108,32 @@ private:
     void scheduleImageRequests();
     void scheduleImageRefresh();
     QSet<QString> visibleNodes, visibleLinks;
+    QSet<QString> temporaryExpanded;
+    struct FindTarget { QString id; bool link = false; };
+    QString findQuery;
+    Qt::CaseSensitivity findSensitivity = Qt::CaseSensitive;
+    QVector<FindTarget> findMatches;
+    int currentFindMatch = -1;
+    bool findCacheValid = false;
+    bool revealTarget(FindTarget target);
     MindMapEditor::LayoutDirection direction = MindMapEditor::LayoutDirection::Balanced;
     bool fail(const QString &message);
+    bool writable();
     bool status(M3Status result);
     bool strings(std::initializer_list<QString> values);
     void success();
     QByteArray snapshot(const M3Mindmap *map);
-    Presentation prepare(const M3Mindmap *map, MindMapEditor::LayoutDirection requested, bool useImageCache = true);
+    Presentation prepare(const M3Mindmap *map, const QByteArray &json,
+                         MindMapEditor::LayoutDirection requested, QSet<QString> &expansions,
+                         bool useImageCache = true);
     void install(Presentation presentation, bool fit);
     bool replace(Map candidate);
-    bool changed(M3Status result, const QString &preferredNode = {}, const QString &preferredLink = {});
+    template<typename Operation>
+    bool transact(Operation &&operation,
+                  const QString &preferredNode = {}, const QString &preferredLink = {},
+                  const QString &clearedExpansion = {});
+    bool finishChange(std::optional<Presentation> prepared = {}, bool fit = false, bool restoring = false,
+                      const QString &preferredNode = {}, const QString &preferredLink = {});
     void selection(QStringList nodes, QString link, bool ensureVisible = true);
     void restoreSelection();
 };

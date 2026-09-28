@@ -2,11 +2,13 @@
 #include "mindmap_controller.h"
 #include "mindmap_view.h"
 #include "emoji_line_edit.h"
+#include <QAbstractItemView>
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -31,6 +33,7 @@
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPointer>
+#include <QResource>
 #include <QScopedValueRollback>
 #include <QScrollArea>
 #include <QScreen>
@@ -45,6 +48,11 @@
 #include <QLabel>
 #include <QVBoxLayout>
 #include <QUrl>
+
+static void initializeM3Resources() {
+    Q_INIT_RESOURCE(m3_resources);
+}
+
 namespace m3::qt {
 namespace {
 QString loadStyleSheet(const QString &path) {
@@ -124,7 +132,7 @@ protected:
         QDialog::keyPressEvent(event);
     }
     void mousePressEvent(QMouseEvent *event) override {
-        if (!rect().contains(event->position().toPoint())) setAttribute(Qt::WA_NoMouseReplay);
+        if (!rect().contains(event->pos())) setAttribute(Qt::WA_NoMouseReplay);
         QDialog::mousePressEvent(event);
     }
 private:
@@ -360,7 +368,7 @@ public:
             toggle->setChecked(false);
             if (view) view->setFocus(Qt::OtherFocusReason);
         });
-        connect(fontSize, &QComboBox::currentIndexChanged, this, [this] {
+        connect(fontSize, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this] {
             const double size = fontSize->currentData().toDouble();
             applyStyle({{QStringLiteral("fontSize"), size > 0 ? QJsonValue(size) : QJsonValue(QJsonValue::Null)}});
         });
@@ -404,19 +412,37 @@ public:
         connect(qApp, &QApplication::focusChanged, this, [this] { pendingColorRow = 0; });
         for (auto *button : {textColor, fillColor, defaultColor}) button->installEventFilter(this);
         for (auto *button : swatches) button->installEventFilter(this);
+        fontSize->view()->installEventFilter(this);
         host->installEventFilter(this);
         view->installEventFilter(this);
         view->viewport()->installEventFilter(this);
         hide();
     }
+    void setReadOnly(bool value) {
+        if (value) {
+            pendingColorRow = 0;
+            fontSize->hidePopup();
+            icons->dismissPopup();
+        }
+        fontSize->setEnabled(!value);
+        for (auto *button : {bold, italic, reset, textColor, fillColor, defaultColor}) button->setEnabled(!value);
+        for (auto *button : swatches) button->setEnabled(!value);
+        for (auto *input : {tags, static_cast<QLineEdit *>(icons), url, imageUrl}) input->setReadOnly(value);
+        note->setReadOnly(value);
+    }
     enum class Action { ToggleBold, ToggleItalic, ResetStyle, TextColor, FillColor, Tags, Icons, Note, ToggleProperties };
     void activate(Action action) {
+        if (controller->isReadOnly() && action != Action::ToggleProperties) return;
         refresh();
         if (boundId.isEmpty()) return;
         QWidget *target = nullptr;
         switch (action) {
-        case Action::ToggleBold: bold->click(); return;
-        case Action::ToggleItalic: italic->click(); return;
+        case Action::ToggleBold:
+            applyStyle({{QStringLiteral("fontWeight"), bold->isChecked() ? QStringLiteral("normal") : QStringLiteral("bold")}});
+            return;
+        case Action::ToggleItalic:
+            applyStyle({{QStringLiteral("fontStyle"), italic->isChecked() ? QStringLiteral("normal") : QStringLiteral("italic")}});
+            return;
         case Action::ResetStyle: reset->click(); return;
         case Action::ToggleProperties:
             toggle->click();
@@ -445,13 +471,19 @@ protected:
             pendingColorRow = 0;
         if (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) {
             auto *key = static_cast<QKeyEvent *>(event);
+            if (watched == fontSize->view() && fontSize->view()->isVisible() &&
+                key->key() == Qt::Key_Escape) {
+                if (event->type() == QEvent::KeyPress) fontSize->hidePopup();
+                event->accept();
+                return true;
+            }
             const auto modifiers = key->modifiers() & ~Qt::KeypadModifier;
             const int digit = key->key() - Qt::Key_0;
             if (modifiers != Qt::NoModifier || digit < 0 || digit > 9) {
                 pendingColorRow = 0;
             } else if (watched == parentWidget() && event->type() == QEvent::KeyPress) {
                 // Only unhandled child keys reach the editor; shortcuts and inputs win.
-                if (!isVisible() || !isEnabled() || !toggle->isChecked() || boundId.isEmpty()) {
+                if (controller->isReadOnly() || !isVisible() || !isEnabled() || !toggle->isChecked() || boundId.isEmpty()) {
                     pendingColorRow = 0;
                     return false;
                 }
@@ -465,8 +497,9 @@ protected:
                 pendingColorRow = 0;
                 if (digit >= 1 && digit <= 6) {
                     const int index = (row - 1) * 6 + digit - 1;
-                    auto *target = index == 0 ? defaultColor : swatches.at(index - 1);
-                    target->click();
+                    const QJsonValue color = index == 0 ? QJsonValue(QJsonValue::Null)
+                        : QJsonValue(swatches.at(index - 1)->property("color").toString());
+                    applyStyle({{colorKey(), color}});
                     // Applying a color may synchronously destroy the editor.
                 }
                 return true;
@@ -530,6 +563,7 @@ private:
     }
     void apply(const QJsonObject &patch) {
         if (refreshing || boundId.isEmpty()) return;
+        if (controller->isReadOnly()) { refresh(); return; }
         const QString id = boundId;
         const QByteArray json = QJsonDocument(patch).toJson(QJsonDocument::Compact);
         const QPointer<NodePropertiesPanel> guard(this);
@@ -648,7 +682,7 @@ private:
         if (!isVisible() || !view->isVisible()) return;
         presentedNodeId = boundId;
         presentedExpanded = expanded;
-        if (reveal) {
+        if (reveal && !controller->isRestoringHistory()) {
             const QString id = boundId;
             if (!id.isEmpty() && id == controller->selectedNodeId()) {
                 view->ensureNodeVisible(id, QRect(view->viewport()->mapFromGlobal(mapToGlobal(QPoint())), size()));
@@ -667,7 +701,8 @@ public:
     QToolBar *toolbar;
     QComboBox *direction;
     QAction *addChild, *addSibling, *addSiblingBefore, *editSelection, *deleteSelection, *toggleExpanded, *move, *up, *down, *addLink;
-    QAction *rootSelection, *clearSelectionAction, *editLink;
+    QAction *rootSelection, *clearSelectionAction, *editLink, *toggleProperties, *copySelection;
+    QAction *undoAction, *redoAction;
     QList<QAction *> nodeNavigation;
     NodePropertiesPanel *properties;
     QList<QAction *> nodeEditingActions;
@@ -675,6 +710,7 @@ public:
     enum class Navigation { Parent, Child, PreviousSibling, NextSibling };
     QString shortcutHelpText;
     QPointer<ShortcutHelpPopup> helpPopup;
+    QPointer<QDialog> mutationDialog;
     void showHelp() {
         if (!helpPopup) helpPopup = new ShortcutHelpPopup(host, view, shortcutHelpText);
         const QRect available = view->screen()->availableGeometry().adjusted(12, 12, -12, -12);
@@ -751,10 +787,11 @@ public:
         QObject::connect(view, &MindMapView::topicEditingChanged, result, [result, shortcuts](bool editing) {
             result->setShortcuts(editing ? QList<QKeySequence>{} : shortcuts);
         });
-        QObject::connect(result, &QAction::triggered, host, [this, command = std::move(command)] {
+        QObject::connect(result, &QAction::triggered, host, [this, result, command = std::move(command)] {
+            if (!result->isEnabled()) return;
             const QPointer<MindMapEditor> guard(host);
-            view->finishTopicEdit(true);
-            if (guard) command();
+            if (!view->finishTopicEdit(true) || !guard || !result->isEnabled()) return;
+            command();
         });
         return result;
     }
@@ -773,29 +810,37 @@ public:
         const auto selectedNodes = controller->selectedNodeIds();
         const bool hasNodes = !selectedNodes.isEmpty();
         const bool deletableNodes = hasNodes && !nodes.empty() && !selectedNodes.contains(nodes.front().id);
-        const bool movable = node && !node->parent.isEmpty();
-        addChild->setEnabled(node); addLink->setEnabled(node);
-        addSibling->setEnabled(node); addSiblingBefore->setEnabled(node);
+        const bool writable = !controller->isReadOnly();
+        const bool movable = writable && node && !node->parent.isEmpty();
+        undoAction->setEnabled(controller->canUndo());
+        redoAction->setEnabled(controller->canRedo());
+        addChild->setEnabled(writable && node); addLink->setEnabled(writable && node);
+        addSibling->setEnabled(writable && node); addSiblingBefore->setEnabled(writable && node);
         for (auto *action : nodeNavigation) action->setEnabled(node);
-        for (auto *action : nodeEditingActions) action->setEnabled(node != nullptr);
+        for (auto *action : nodeEditingActions) action->setEnabled(node && (writable || action == toggleProperties));
+        properties->setReadOnly(!writable);
+        copySelection->setEnabled(hasNodes || hasLink);
         rootSelection->setEnabled(!nodes.empty());
         clearSelectionAction->setEnabled(hasNodes || hasLink);
-        editSelection->setEnabled(node || hasLink);
-        editLink->setEnabled(hasLink);
-        deleteSelection->setEnabled(deletableNodes || hasLink);
+        editSelection->setEnabled(writable && (node || hasLink));
+        editLink->setEnabled(writable && hasLink);
+        deleteSelection->setEnabled(writable && (deletableNodes || hasLink));
         move->setEnabled(movable);
-        toggleExpanded->setEnabled(node && !node->children.isEmpty());
+        toggleExpanded->setEnabled(writable && node && !node->children.isEmpty());
         toggleExpanded->setText(node && !node->expanded ? tr("Expand") : tr("Collapse"));
         const auto *parent = node ? choice(nodes, node->parent) : nullptr;
         const auto index = parent ? parent->children.indexOf(node->id) : -1;
-        up->setEnabled(parent && index > 0);
-        down->setEnabled(parent && index >= 0 && index + 1 < parent->children.size());
+        up->setEnabled(writable && parent && index > 0);
+        down->setEnabled(writable && parent && index >= 0 && index + 1 < parent->children.size());
         QSignalBlocker blocker(direction);
         direction->setCurrentIndex(direction->findData(int(controller->layoutDirection())));
     }
     void createNode(TopicOperation operation) {
+        if (controller->isReadOnly()) return;
+        const QPointer<MindMapEditor> guard(host);
         const QString id = controller->selectedNodeId();
         const auto nodes = controller->choices();
+        if (!guard) return;
         const auto *node = choice(nodes, id);
         if (!node) return;
         QString parentId = id;
@@ -807,9 +852,10 @@ public:
             index = int(parent->children.indexOf(id)) + (operation == TopicOperation::SiblingAfter ? 1 : 0);
         }
         const auto *parent = choice(nodes, parentId);
-        if (!parent || (!parent->expanded && !controller->setExpanded(parentId, true))) return;
+        if (!parent || (!parent->expanded && !controller->setExpanded(parentId, true)) || !guard) return;
         const QString created = controller->addNode(parentId, QString(), index);
-        if (!created.isEmpty()) view->beginTopicEdit(created, config.shortcuts.acceptTopic);
+        if (guard && !created.isEmpty() && controller->selectedNodeId() == created)
+            view->beginTopicEdit(created, config.shortcuts.acceptTopic);
     }
     void navigate(Navigation command) {
         const auto nodes = controller->choices();
@@ -829,6 +875,7 @@ public:
         if (!target.isEmpty()) controller->selectNode(target);
     }
     void linkDialog(bool insert) {
+        if (controller->isReadOnly()) return;
         const auto nodes = controller->choices();
         if (nodes.empty()) return;
         const QString id = controller->selectedLinkId();
@@ -836,6 +883,7 @@ public:
         if (!insert && link.id.isEmpty()) return;
         const QPointer<MindMapEditor> guard(host);
         QPointer<QDialog> dialog(new QDialog(host));
+        mutationDialog = dialog;
         dialog->setWindowTitle(insert ? tr("Add link") : tr("Edit link"));
         auto *form = new QFormLayout(dialog);
         auto *source = new QComboBox(dialog), *target = new QComboBox(dialog);
@@ -870,6 +918,7 @@ public:
         } else controller->updateLink(id, sourceId, targetId, isDirected, linkTopic);
     }
     void moveDialog() {
+        if (controller->isReadOnly()) return;
         const auto nodes = controller->choices();
         const QString id = controller->selectedNodeId();
         const auto *node = choice(nodes, id);
@@ -877,13 +926,15 @@ public:
         QSet<QString> excluded{id};
         // Choices arrive in child preorder: each excluded parent precedes its descendants.
         for (const auto &entry : nodes) if (excluded.contains(entry.parent)) excluded.insert(entry.id);
-        QDialog dialog(host);
-        dialog.setWindowTitle(tr("Move node"));
-        auto *form = new QFormLayout(&dialog);
-        auto *parent = new QComboBox(&dialog);
+        const QPointer<MindMapEditor> guard(host);
+        QPointer<QDialog> dialog(new QDialog(host));
+        mutationDialog = dialog;
+        dialog->setWindowTitle(tr("Move node"));
+        auto *form = new QFormLayout(dialog);
+        auto *parent = new QComboBox(dialog);
         parent->setObjectName(QStringLiteral("newParent"));
         populate(parent, nodes, excluded);
-        auto *index = new QSpinBox(&dialog);
+        auto *index = new QSpinBox(dialog);
         index->setObjectName(QStringLiteral("insertIndex"));
         auto range = [&] {
             const auto *destination = choice(nodes, parent->currentData().toString());
@@ -891,17 +942,22 @@ public:
             index->setRange(0, maximum);
             index->setValue(maximum);
         };
-        QObject::connect(parent, &QComboBox::currentIndexChanged, &dialog, range);
+        QObject::connect(parent, QOverload<int>::of(&QComboBox::currentIndexChanged), dialog.data(), range);
         parent->setCurrentIndex(parent->findData(node->parent));
         range();
         const auto *oldParent = choice(nodes, node->parent);
         if (oldParent) index->setValue(int(oldParent->children.indexOf(id)));
         form->addRow(tr("New parent"), parent); form->addRow(tr("Insertion index (zero-based)"), index);
-        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
         form->addRow(buttons);
-        QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-        QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-        if (dialog.exec() == QDialog::Accepted) controller->moveNode(id, parent->currentData().toString(), index->value());
+        QObject::connect(buttons, &QDialogButtonBox::accepted, dialog.data(), &QDialog::accept);
+        QObject::connect(buttons, &QDialogButtonBox::rejected, dialog.data(), &QDialog::reject);
+        const bool accepted = dialog->exec() == QDialog::Accepted;
+        if (!guard || !dialog) return;
+        const QString parentId = parent->currentData().toString();
+        const int insertionIndex = index->value();
+        delete dialog.data();
+        if (guard && accepted) controller->moveNode(id, parentId, insertionIndex);
     }
     void reorder(int delta) {
         const auto nodes = controller->choices();
@@ -915,8 +971,14 @@ public:
         error = new QLabel(editor);
         error->setTextFormat(Qt::PlainText); error->setWordWrap(true); error->hide();
         controller = new MindMapController(*view, config, editor);
+        view->setTopicCommitHandler([model = QPointer<MindMapController>(controller)](const QString &id, const QString &draft, bool link) {
+            return model && (link ? model->commitLinkTopicEdit(id, draft) : model->commitTopicEdit(id, draft));
+        });
         toolbar = new QToolBar(editor);
         layout->addWidget(toolbar);
+        undoAction = action("undo", tr("Undo"), config.shortcuts.undo, [this] { host->undo(); });
+        redoAction = action("redo", tr("Redo"), config.shortcuts.redo, [this] { host->redo(); });
+        toolbar->addSeparator();
         addChild = action("addChild", tr("Add Child"), config.shortcuts.addChild, [this] { createNode(TopicOperation::Child); });
         addSibling = action("addSibling", tr("Add Sibling"), config.shortcuts.addSibling, [this] { createNode(TopicOperation::SiblingAfter); });
         addSiblingBefore = action("addSiblingBefore", tr("Add Sibling Before"), config.shortcuts.addSiblingBefore, [this] { createNode(TopicOperation::SiblingBefore); });
@@ -963,11 +1025,11 @@ public:
         direction->addItem(tr("Outline"), int(LayoutDirection::Outline));
         direction->setAccessibleName(tr("Layout direction"));
         toolbar->addWidget(direction);
-        QObject::connect(direction, &QComboBox::currentIndexChanged, editor, [this] {
+        QObject::connect(direction, QOverload<int>::of(&QComboBox::currentIndexChanged), editor, [this] {
             const auto requested = static_cast<LayoutDirection>(direction->currentData().toInt());
-            view->finishTopicEdit(true);
-            controller->setLayoutDirection(requested);
-            updateActions();
+            const QPointer<MindMapEditor> guard(host);
+            if (view->finishTopicEdit(true) && guard) controller->setLayoutDirection(requested);
+            if (guard) updateActions();
         });
         nodeNavigation = {
             action("selectParent", tr("Select parent"), config.shortcuts.selectParent, [this] { navigate(Navigation::Parent); }, false),
@@ -975,6 +1037,9 @@ public:
             action("previousSibling", tr("Select previous sibling"), config.shortcuts.previousSibling, [this] { navigate(Navigation::PreviousSibling); }, false),
             action("nextSibling", tr("Select next sibling"), config.shortcuts.nextSibling, [this] { navigate(Navigation::NextSibling); }, false)
         };
+        copySelection = action("copy", tr("Copy"), {QKeySequence(QKeySequence::Copy)}, [this] {
+            QApplication::clipboard()->setText(host->selectedText());
+        }, false);
         clearSelectionAction = action("clearSelection", tr("Clear selection"), config.shortcuts.clearSelection, [this] { controller->clearSelection(); }, false);
         layout->addWidget(view, 1); layout->addWidget(error);
         properties = new NodePropertiesPanel(editor, view, controller);
@@ -987,7 +1052,7 @@ public:
             action("editTags", tr("Edit tags"), config.shortcuts.editTags, [this] { properties->activate(NodePropertiesPanel::Action::Tags); }, false),
             action("editIcons", tr("Edit icons"), config.shortcuts.editIcons, [this] { properties->activate(NodePropertiesPanel::Action::Icons); }, false),
             action("editNote", tr("Edit note"), config.shortcuts.editNote, [this] { properties->activate(NodePropertiesPanel::Action::Note); }, false),
-            action("toggleProperties", tr("Toggle properties panel"), config.shortcuts.toggleProperties, [this] { properties->activate(NodePropertiesPanel::Action::ToggleProperties); }, false),
+            toggleProperties = action("toggleProperties", tr("Toggle properties panel"), config.shortcuts.toggleProperties, [this] { properties->activate(NodePropertiesPanel::Action::ToggleProperties); }, false),
             action("editTopic", tr("Edit topic"), config.shortcuts.editTopic, [this] {
                 const QString id = controller->selectedNodeId();
                 if (!id.isEmpty()) view->beginTopicEdit(id, config.shortcuts.acceptTopic);
@@ -1000,8 +1065,7 @@ public:
         view->setContextMenuPolicy(Qt::CustomContextMenu);
         QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this, zoomIn, zoomOut, resetZoom, fit](const QPoint &point) {
             const QPointer<MindMapEditor> guard(host);
-            view->finishTopicEdit(true);
-            if (!guard) return;
+            if (!view->finishTopicEdit(true) || !guard) return;
             const QString nodeId = controller->selectedNodeId();
             const bool hasNode = nodeId.isEmpty() == false;
             const QString linkId = controller->selectedLinkId();
@@ -1014,9 +1078,14 @@ public:
                 menu.addActions({addChild, addSibling, addSiblingBefore});
                 menu.addSeparator();
                 menu.addAction(editSelection);
-                menu.addAction(tr("Add URL"), host, [this, nodeId] { host->onAddUrl(nodeId); })->setEnabled(hasNode);
-                menu.addAction(tr("Add Image"), host, [this, nodeId] { host->onAddImage(nodeId); })->setEnabled(hasNode);
+                menu.addAction(tr("Add URL"), host, [this, nodeId] {
+                    if (!controller->isReadOnly()) host->onAddUrl(nodeId);
+                })->setEnabled(!controller->isReadOnly());
+                menu.addAction(tr("Add Image"), host, [this, nodeId] {
+                    if (!controller->isReadOnly()) host->onAddImage(nodeId);
+                })->setEnabled(!controller->isReadOnly());
                 auto *branchMenu = menu.addMenu(tr("Branch Color"));
+                branchMenu->setEnabled(!controller->isReadOnly());
                 auto *branchGroup = new QActionGroup(branchMenu);
                 branchGroup->setExclusive(true);
                 auto addBranchColor = [&](const QString &label, const QColor &color, const QJsonValue &value) {
@@ -1059,6 +1128,7 @@ public:
                 };
                 for (const auto &choice : choices) {
                     auto *action = menu.addAction(QString::fromLatin1(choice.text));
+                    action->setEnabled(!controller->isReadOnly());
                     action->setCheckable(true);
                     group->addAction(action);
                     action->setChecked(link.direction == choice.direction);
@@ -1071,9 +1141,17 @@ public:
             } else {
                 menu.addActions({rootSelection, fit, zoomIn, zoomOut, resetZoom});
             }
+            if (hasNode || !linkId.isEmpty() || controller->selectedNodeIds().size() > 1) {
+                menu.addSeparator();
+                menu.addAction(copySelection);
+            }
             menu.exec(view->mapToGlobal(point));
         });
         QObject::connect(controller, &MindMapController::documentChanged, editor, [this, editor] { updateActions(); emit editor->documentChanged(); });
+        QObject::connect(controller, &MindMapController::undoAvailable, undoAction, &QAction::setEnabled);
+        QObject::connect(controller, &MindMapController::redoAvailable, redoAction, &QAction::setEnabled);
+        QObject::connect(controller, &MindMapController::undoAvailable, editor, &MindMapEditor::undoAvailable);
+        QObject::connect(controller, &MindMapController::redoAvailable, editor, &MindMapEditor::redoAvailable);
         QObject::connect(controller, &MindMapController::selectionChanged, editor, [this, editor](const QString &node, const QString &link) {
             updateActions(); emit editor->selectionChanged(node, link);
         });
@@ -1082,6 +1160,7 @@ public:
         });
         QObject::connect(controller, &MindMapController::commandSucceeded, editor, [this] { error->clear(); error->hide(); updateActions(); });
         QObject::connect(controller, &MindMapController::imageRequested, editor, &MindMapEditor::imageRequested);
+        QObject::connect(view, &MindMapView::pendingEditChanged, editor, &MindMapEditor::pendingEditChanged);
         QObject::connect(view, &MindMapView::nodePicked, controller, &MindMapController::selectNode);
         QObject::connect(view, &MindMapView::nodeSelectionToggled, controller, &MindMapController::toggleNodeSelection);
         QObject::connect(view, &MindMapView::nodeLinkActivated, editor, [this, editor](const QString &id, const QString &url) {
@@ -1089,8 +1168,10 @@ public:
             emit editor->nodeLinkActivated(id, resolved);
         });
         QObject::connect(view, &MindMapView::fileDropped, editor, [this, editor](const QString &nodeId, const QString &filePath) {
+            if (controller->isReadOnly()) return;
+            const QPointer<MindMapEditor> guard(editor);
             const QString resolvedUrl = editor->resolveDroppedFileUrl(filePath);
-            if (resolvedUrl.isEmpty()) return;
+            if (!guard || controller->isReadOnly() || resolvedUrl.isEmpty()) return;
             const QJsonObject patch{{QStringLiteral("hyperLink"), resolvedUrl}};
             const QByteArray json = QJsonDocument(patch).toJson(QJsonDocument::Compact);
             controller->updateNodeProperties(nodeId, json);
@@ -1111,8 +1192,6 @@ public:
         QObject::connect(view, &MindMapView::expansionRequested, controller, &MindMapController::setExpanded);
         QObject::connect(view, &MindMapView::appearanceChanged, controller, &MindMapController::refreshAppearance);
         QObject::connect(view, &MindMapView::editRequested, editSelection, &QAction::trigger);
-        QObject::connect(view, &MindMapView::topicEditRequested, controller, &MindMapController::commitTopicEdit);
-        QObject::connect(view, &MindMapView::linkTopicEditRequested, controller, &MindMapController::commitLinkTopicEdit);
         QObject::connect(view, &MindMapView::linkEndpointChangeRequested, controller, &MindMapController::reconnectLink);
         QObject::connect(view, &MindMapView::linkCreationRequested, editor, [this](const QString &source, const QString &target) {
             const QPointer<MindMapEditor> guard(host);
@@ -1126,7 +1205,10 @@ public:
 };
 MindMapEditor::MindMapEditor(QWidget *parent) : MindMapEditor(EditorConfig{}, parent) {}
 MindMapEditor::MindMapEditor(const EditorConfig &config, QWidget *parent)
-    : QWidget(parent), d(std::make_unique<Private>(this, config)) {}
+    : QWidget(parent) {
+    initializeM3Resources();
+    d = std::make_unique<Private>(this, config);
+}
 MindMapEditor::~MindMapEditor() {
     // Disarm the input before QWidget teardown can send it a committing FocusOut.
     delete d->view;
@@ -1138,6 +1220,22 @@ void MindMapEditor::onAddUrl(const QString &) {}
 void MindMapEditor::onAddImage(const QString &) {}
 bool MindMapEditor::newDocument(const QString &topic) { return d->controller->newDocument(topic); }
 bool MindMapEditor::loadJson(const QByteArray &json) { return d->controller->loadJson(json); }
+bool MindMapEditor::commitActiveEdit() { return d->view->finishTopicEdit(true); }
+bool MindMapEditor::hasPendingEdit() const { return d->view->hasPendingEdit(); }
+void MindMapEditor::setReadOnly(bool value) {
+    const QPointer<MindMapEditor> guard(this);
+    d->controller->setReadOnly(value);
+    if (!guard) return;
+    if (d->controller->isReadOnly() && d->mutationDialog) d->mutationDialog->reject();
+    if (guard) d->updateActions();
+}
+bool MindMapEditor::isReadOnly() const { return d->controller->isReadOnly(); }
+bool MindMapEditor::canUndo() const { return d->controller->canUndo(); }
+bool MindMapEditor::canRedo() const { return d->controller->canRedo(); }
+bool MindMapEditor::undo() { return d->controller->undo(); }
+bool MindMapEditor::redo() { return d->controller->redo(); }
+QByteArray MindMapEditor::nodeJson(const QString &id) const { return d->controller->nodeJson(id); }
+bool MindMapEditor::updateNode(const QString &id, const QByteArray &patch) { return d->controller->updateNodeProperties(id, patch); }
 QByteArray MindMapEditor::toJson() const { return d->controller->toJson(); }
 QString MindMapEditor::toMarkdown() const { return d->controller->toMarkdown(); }
 QString MindMapEditor::toHtml() const { return d->controller->toHtml(); }
@@ -1145,6 +1243,7 @@ QString MindMapEditor::lastError() const { return d->controller->lastError(); }
 QString MindMapEditor::resourceBasePath() const { return d->controller->resourceBasePath(); }
 void MindMapEditor::provideImage(const QString &url, quint64 requestId, const QImage &image) { d->controller->provideImage(url, requestId, image); }
 void MindMapEditor::reloadImages() { d->controller->reloadImages(); }
+void MindMapEditor::setResourceBasePath(const QString &path) { d->controller->setResourceBasePath(path); }
 QString MindMapEditor::addNode(const QString &parent, const QString &topic, int index) { return d->controller->addNode(parent, topic, index); }
 bool MindMapEditor::renameNode(const QString &id, const QString &topic) { return d->controller->renameNode(id, topic); }
 bool MindMapEditor::removeNode(const QString &id) { return d->controller->removeNode(id); }
@@ -1153,19 +1252,43 @@ bool MindMapEditor::setExpanded(const QString &id, bool expanded) { return d->co
 QString MindMapEditor::addLink(const QString &source, const QString &target, bool directed, const QString &topic) { return d->controller->addLink(source, target, directed, topic); }
 bool MindMapEditor::updateLink(const QString &id, const QString &source, const QString &target, bool directed, const QString &topic) { return d->controller->updateLink(id, source, target, directed, topic); }
 bool MindMapEditor::removeLink(const QString &id) { return d->controller->removeLink(id); }
+QVector<OutlineEntry> MindMapEditor::outline() const { return d->controller->outline(); }
+bool MindMapEditor::revealNode(const QString &id) { return d->controller->revealNode(id); }
+FindResult MindMapEditor::findText(const QString &text, Qt::CaseSensitivity sensitivity, bool backward, bool incremental) {
+    return d->controller->findText(text, sensitivity, backward, incremental);
+}
+void MindMapEditor::clearFind() { d->controller->clearFind(); }
 bool MindMapEditor::selectNode(const QString &id) { return d->controller->selectNode(id); }
 bool MindMapEditor::selectLink(const QString &id) { return d->controller->selectLink(id); }
 void MindMapEditor::clearSelection() { d->controller->clearSelection(); }
 QString MindMapEditor::selectedNodeId() const { return d->controller->selectedNodeId(); }
 QStringList MindMapEditor::selectedNodeIds() const { return d->controller->selectedNodeIds(); }
 QString MindMapEditor::selectedLinkId() const { return d->controller->selectedLinkId(); }
+QString MindMapEditor::selectedText() const {
+    QWidget *focus = QApplication::focusWidget();
+    if (focus && isAncestorOf(focus)) {
+        for (auto *input = focus; input && input != this; input = input->parentWidget()) {
+            if (const auto *line = qobject_cast<QLineEdit *>(input)) return line->selectedText();
+            if (const auto *plain = qobject_cast<QPlainTextEdit *>(input))
+                return plain->textCursor().selectedText().replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
+            if (const auto *text = qobject_cast<QTextEdit *>(input))
+                return text->textCursor().selectedText().replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
+        }
+    }
+    return d->controller->selectedText();
+}
 bool MindMapEditor::setLayoutDirection(LayoutDirection direction) { return d->controller->setLayoutDirection(direction); }
 MindMapEditor::LayoutDirection MindMapEditor::layoutDirection() const { return d->controller->layoutDirection(); }
 void MindMapEditor::fitToContents() { d->view->fitContents(); }
+void MindMapEditor::zoom(qreal factor) { d->view->zoom(factor); }
+void MindMapEditor::resetZoom() { d->view->resetZoom(); }
+void MindMapEditor::scrollSteps(int horizontal, int vertical) { d->view->scrollSteps(horizontal, vertical); }
 bool MindMapEditor::focusRoot() {
-    d->view->finishTopicEdit(true);
+    const QPointer<MindMapEditor> guard(this);
+    if (!commitActiveEdit() || !guard) return false;
     const auto nodes = d->controller->choices();
-    if (nodes.empty() || !d->controller->selectNode(nodes.front().id)) return false;
+    if (!guard || nodes.empty() || !d->controller->selectNode(nodes.front().id)) return false;
+    if (!guard) return true;
     d->view->centerNode(nodes.front().id);
     d->view->setFocus(Qt::OtherFocusReason);
     return true;

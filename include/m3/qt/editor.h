@@ -6,10 +6,13 @@
 #include <QStringList>
 #include <QKeySequence>
 #include <QList>
+#include <QVector>
 #include <QWidget>
 #include <memory>
 
-#ifdef M3_QT_BUILD_DLL
+#ifdef M3_QT_STATIC
+#define M3_QT_API
+#elif defined(M3_QT_BUILD_DLL)
 #define M3_QT_API Q_DECL_EXPORT
 #else
 #define M3_QT_API Q_DECL_IMPORT
@@ -94,8 +97,8 @@
 // Direct typing still saves immediately; glyph availability depends on host fonts.
 // Empty icons reserve no space. Nonempty URLs
 // show an indicator beside the topic. Activating it emits nodeLinkActivated with
-// the node ID and resolved target: relative paths become absolute file URLs,
-// absolute/opaque URLs stay unchanged. The host decides whether and how to open it.
+// the node ID and target: relative paths become absolute file URLs unless
+// resolveRelativeUrls is false. The host decides whether and how to open it.
 // Dropping one local file onto a canvas node sets or replaces its URL through
 // resolveDroppedFileUrl, without changing selection.
 // Collapsing the card leaves only its top-right toggle, without changing selection.
@@ -114,6 +117,8 @@
 // Reset appearance clears only font/text/fill, preserving branchColor and opaque
 // style data. Imported invalid values remain unchanged until explicitly edited.
 namespace m3::qt {
+struct OutlineEntry { QString id; QString topic; int level = 1; };
+struct FindResult { int totalMatches = 0; int currentMatch = -1; };
 // Widget policy, copied at construction; no Qt-specific configuration enters the core.
 // Replace a shortcut list to rebind it, or clear it to disable its keyboard binding
 // without removing the toolbar/menu command. Avoid assigning the same sequence to
@@ -142,6 +147,8 @@ namespace m3::qt {
 //          MindMapEditor editor(config);
 struct EditorConfig {
     struct Shortcuts {
+        QList<QKeySequence> undo{QKeySequence(QKeySequence::Undo)};
+        QList<QKeySequence> redo{QKeySequence(QKeySequence::Redo)};
         QList<QKeySequence> addChild{QKeySequence(Qt::Key_Tab), QKeySequence(Qt::Key_Insert)};
         // The root has no sibling: Enter/Shift+Enter append a child there.
         QList<QKeySequence> addSibling{QKeySequence(Qt::Key_Return), QKeySequence(Qt::Key_Enter)};
@@ -182,12 +189,18 @@ struct EditorConfig {
         QList<QKeySequence> showHelp{QKeySequence(Qt::Key_Question), QKeySequence(Qt::SHIFT | Qt::Key_Question)};
         QList<QKeySequence> toggleProperties{QKeySequence(Qt::Key_P)};
     } shortcuts;
+    // Maximum completed document commands; 0 is unlimited. Full native snapshots
+    // retain embedded images/opaque data, so this bounds commands, not bytes.
+    int undoLimit = 100;
     // UI policy only: the removeNode() API never prompts.
     bool confirmSubtreeDeletion = true;
     // Filesystem directory for relative image/link references; empty captures cwd.
     // Relative bases become absolute at construction, without canonicalizing or
-    // requiring existence. Fixed for this editor lifetime; never persisted.
+    // requiring existence. Mutable through setResourceBasePath; never persisted.
     QString resourceBasePath;
+    // False passes image request and activation URLs unchanged to the host,
+    // including relative/protected resource identifiers. No library I/O occurs.
+    bool resolveRelativeUrls = true;
     // New direct children of the root (UI or addNode) get a random palette color.
     // Prefer colors unused by current main branches, comparing their effective
     // QColor values (local override or inherited root color); nested overrides
@@ -206,8 +219,11 @@ public:
     explicit MindMapEditor(const EditorConfig &config, QWidget *parent = nullptr);
     ~MindMapEditor() override;
     QString resourceBasePath() const;
+    // Normalize as at construction and invalidate/re-request image resources.
+    // Document, selection, inline draft and camera remain unchanged.
+    void setResourceBasePath(const QString &path);
     // GUI-thread host image protocol. Connect imageRequested before loading, or
-    // call reloadImages after attaching. The URL is a resolved resource/cache key;
+    // call reloadImages after attaching. The URL follows resolveRelativeUrls;
     // supply that URL and request ID unchanged. Null pixels mean unavailable.
     // Only the first matching response is accepted; stale/unknown IDs are ignored.
     // Requests are deferred, editor-local, and monotonically numbered across loads.
@@ -219,6 +235,25 @@ public:
     void reloadImages();
     bool newDocument(const QString &topic = QStringLiteral("Central topic"));
     bool loadJson(const QByteArray &json);
+    // Accept an inline node/link draft without changing selection or camera.
+    // Returns true for no changed draft or successful acceptance. Rejection
+    // leaves text, caret and focus intact; snapshots never commit implicitly.
+    bool commitActiveEdit();
+    bool hasPendingEdit() const;
+    // Cancels drafts/gestures and gates all semantic commands, not the widget.
+    // Selection, copying, navigation and camera controls remain available.
+    // Host-controlled newDocument/loadJson are permitted in read-only mode.
+    void setReadOnly(bool readOnly);
+    bool isReadOnly() const;
+    bool canUndo() const;
+    bool canRedo() const;
+    // Accept a changed inline draft first, then traverse one document command.
+    // A rejected draft/restoration leaves the cursor unchanged. Read-only or no
+    // available command returns false. Text-input shortcuts keep local history.
+    // Selection is restored; camera/resources are not history. Save retains it;
+    // successful newDocument/loadJson starts a fresh baseline.
+    bool undo();
+    bool redo();
     QByteArray toJson() const;
     // Copied Markdown text of the committed model, empty on error. No selection,
     // layout, or document changes; an active inline draft remains uncommitted.
@@ -230,12 +265,37 @@ public:
     QString lastError() const;
     QString addNode(const QString &parentId, const QString &topic, int index = -1);
     bool renameNode(const QString &id, const QString &topic);
+    // Copied complete committed node record, empty on error. IDs are immutable.
+    QByteArray nodeJson(const QString &id) const;
+    // Validated native node patch. A style object merges members, null members
+    // remove keys; unrelated/opaque style data survives. Unchanged patches emit
+    // no documentChanged. Read-only or invalid patches return false.
+    bool updateNode(const QString &id, const QByteArray &patch);
     bool removeNode(const QString &id);
     bool moveNode(const QString &id, const QString &parentId, int index = -1);
     bool setExpanded(const QString &id, bool expanded);
     QString addLink(const QString &sourceId, const QString &targetId, bool directed, const QString &topic = {});
     bool updateLink(const QString &id, const QString &sourceId, const QString &targetId, bool directed, const QString &topic);
     bool removeLink(const QString &id);
+    // Complete node preorder, including collapsed descendants; root level is 1.
+    // Empty output reports an error for a live document.
+    QVector<OutlineEntry> outline() const;
+    // Select and scroll at the current zoom, temporarily revealing collapsed
+    // ancestors without changing persisted expansion, document history or JSON.
+    // Explicit expansion commands consume that node's temporary override, even
+    // for persisted no-ops. Edits retain existing IDs; New/Open clears overrides.
+    // Available read-only; invalid IDs leave the selection unchanged.
+    bool revealNode(const QString &id);
+    // One match per node/link topic: node preorder, then links in ID order.
+    // Repeated calls wrap; a changed query starts first/last by direction.
+    // Incremental calls retain the previous matching target or choose the first.
+    // currentMatch is zero-based, or -1 with no current result. Edits invalidate
+    // cached matches; successful New/Open also clears the previous search.
+    // Empty input clears Find; no match leaves selection/camera unchanged.
+    FindResult findText(const QString &text, Qt::CaseSensitivity sensitivity,
+                        bool backward = false, bool incremental = false);
+    // Clear Find state without changing selection, camera or temporary reveals.
+    void clearFind();
     bool selectNode(const QString &id);
     bool selectLink(const QString &id);
     void clearSelection();
@@ -244,15 +304,32 @@ public:
     // Full node selection in click order; empty when a link is selected.
     QStringList selectedNodeIds() const;
     QString selectedLinkId() const;
+    // Selection in the focused owned text input, otherwise selected node topics
+    // in selection order joined by LF, or the selected link topic.
+    QString selectedText() const;
     bool setLayoutDirection(LayoutDirection direction);
     LayoutDirection layoutDirection() const;
     void fitToContents();
+    // View-only controls; retain document, selection and inline draft.
+    void zoom(qreal factor);
+    void resetZoom();
+    // Positive steps scroll right/down, negative steps left/up, using native
+    // scrollbar single-step actions.
+    void scrollSteps(int horizontal, int vertical);
     // Commit any inline draft and select the document root. For a shown editor,
     // also center it and focus the canvas without changing zoom. Navigation alone
-    // does not change the document. Returns false if the root cannot be selected.
+    // does not change the document. Returns false if the draft is rejected or
+    // the root cannot be selected.
     bool focusRoot();
 signals:
+    // Committed semantic changes only, never draft typing or camera/selection.
     void documentChanged();
+    // Availability includes read-only policy; emitted only on boolean transitions.
+    void undoAvailable(bool available);
+    void redoAvailable(bool available);
+    // Only transitions between a draft differing from its original and no
+    // changed draft. Cancel/accept emits false; it does not imply a saved map.
+    void pendingEditChanged(bool pending);
     // Fires for every membership change. For multiple nodes both arguments are
     // empty; query selectedNodeIds() to distinguish a group from no selection.
     void selectionChanged(const QString &nodeId, const QString &linkId);

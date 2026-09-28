@@ -17,9 +17,12 @@ else()
     target_compile_options(m3_qt_consumer PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 if(WIN32)
-    add_custom_command(TARGET m3_qt_consumer POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:m3::qt_editor>" "$<TARGET_FILE_DIR:m3_qt_consumer>"
-        VERBATIM)
+    get_target_property(_m3_qt_type m3::qt_editor TYPE)
+    if(_m3_qt_type STREQUAL "SHARED_LIBRARY")
+        add_custom_command(TARGET m3_qt_consumer POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:m3::qt_editor>" "$<TARGET_FILE_DIR:m3_qt_consumer>"
+            VERBATIM)
+    endif()
     get_target_property(_m3_type m3::core TYPE)
     if(_m3_type STREQUAL "SHARED_LIBRARY")
         add_custom_command(TARGET m3_qt_consumer POST_BUILD

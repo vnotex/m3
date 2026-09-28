@@ -20,6 +20,7 @@
 #include <QTimer>
 #include <QToolTip>
 #include <QVBoxLayout>
+#include <QVector>
 #include <algorithm>
 
 namespace m3::qt {
@@ -42,6 +43,9 @@ const Catalog &catalog() {
         Catalog result;
         QString group, line;
         QTextStream stream(&file);
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+        stream.setCodec("UTF-8");
+#endif
         while (stream.readLineInto(&line)) {
             if (line.startsWith(QStringLiteral("# group: "))) {
                 group = line.mid(9);
@@ -52,9 +56,9 @@ const Catalog &catalog() {
             if (semicolon < 0 || comment < semicolon ||
                 line.mid(semicolon + 1, comment - semicolon - 1).trimmed() != QStringLiteral("fully-qualified")) continue;
             const QStringList codes = line.left(semicolon).simplified().split(QLatin1Char(' '));
-            QList<char32_t> points;
+            QVector<uint> points;
             points.reserve(codes.size());
-            for (const auto &code : codes) points.append(char32_t(code.toUInt(nullptr, 16)));
+            for (const auto &code : codes) points.append(code.toUInt(nullptr, 16));
             const QString annotation = line.mid(comment + 1).trimmed();
             const qsizetype version = annotation.indexOf(QStringLiteral(" E"));
             const qsizetype nameStart = annotation.indexOf(QLatin1Char(' '), version + 2);
@@ -229,8 +233,8 @@ void EmojiLineEdit::createPopup() {
     description->setWordWrap(true);
     layout->addWidget(description);
     syncAppearance();
-    connect(categories, &QComboBox::currentIndexChanged, this, [this] { filterMatches(); });
-    connect(categories, &QComboBox::activated, this, [this] { queuePopupFocusCheck(); });
+    connect(categories, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this] { filterMatches(); });
+    connect(categories, QOverload<int>::of(&QComboBox::activated), this, [this] { queuePopupFocusCheck(); });
     connect(choices, &QListView::clicked, this, [this] { chooseCurrent(); });
     connect(choices, &QListView::entered, this, [this](const QModelIndex &index) {
         description->setText(index.data().toString());
@@ -445,6 +449,18 @@ void EmojiLineEdit::keyPressEvent(QKeyEvent *event) {
 bool EmojiLineEdit::eventFilter(QObject *watched, QEvent *event) {
     if (!popup || !popup->isVisible()) return false;
     auto *widget = qobject_cast<QWidget *>(watched);
+    if (widget && categories->view()->isVisible() &&
+        within(widget, categories->view()->window()) &&
+        (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) &&
+        static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape) {
+        // Qt5 hides the combo during ShortcutOverride, leaking KeyPress to the card.
+        if (event->type() == QEvent::KeyPress) {
+            categories->hidePopup();
+            queuePopupFocusCheck();
+        }
+        event->accept();
+        return true;
+    }
     // QWindow receives native mouse events before forwarding them to the QWidget.
     if (event->type() == QEvent::MouseButtonPress && widget) {
         if (!ownsPopupWidget(widget) && !within(widget, this)) dismissPopup();

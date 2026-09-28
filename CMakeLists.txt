@@ -9,6 +9,7 @@ option(M3_BUILD_SHARED "Build m3 as a shared library" ON)
 option(M3_BUILD_TESTS "Build m3 tests" ${_m3_top_level})
 option(M3_BUILD_QT "Build the Qt editor library" OFF)
 option(M3_BUILD_QT_DEMO "Build the Qt editor demo" ${M3_BUILD_QT})
+option(M3_INSTALL "Install m3 libraries, headers and package configuration" ON)
 if(M3_BUILD_QT_DEMO AND NOT M3_BUILD_QT)
     message(FATAL_ERROR "M3_BUILD_QT_DEMO requires M3_BUILD_QT")
 endif()
@@ -41,29 +42,45 @@ target_include_directories(m3core PUBLIC
 target_include_directories(m3core SYSTEM PRIVATE third_party)
 
 include(GNUInstallDirs)
-include(CMakePackageConfigHelpers)
-install(TARGETS m3core EXPORT m3Targets
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-install(DIRECTORY include/m3 DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    PATTERN "qt" EXCLUDE)
-install(FILES LICENSE third_party/nlohmann/LICENSE.MIT DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/m3)
+if(M3_INSTALL)
+    include(CMakePackageConfigHelpers)
+    install(TARGETS m3core EXPORT m3Targets
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    install(DIRECTORY include/m3 DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        PATTERN "qt" EXCLUDE)
+    install(FILES LICENSE third_party/nlohmann/LICENSE.MIT DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/m3)
+    if(M3_BUILD_QT)
+        install(FILES third_party/lucide/LICENSE
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/m3 RENAME lucide-LICENSE)
+        install(FILES third_party/unicode/LICENSE
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/m3 RENAME unicode-LICENSE)
+    endif()
+endif()
 if(M3_BUILD_QT)
-    install(FILES third_party/lucide/LICENSE
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/m3 RENAME lucide-LICENSE)
-    install(FILES third_party/unicode/LICENSE
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/m3 RENAME unicode-LICENSE)
-    find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
+    if(NOT DEFINED QT_DEFAULT_MAJOR_VERSION)
+        set(QT_DEFAULT_MAJOR_VERSION 6)
+    endif()
+    if(QT_DEFAULT_MAJOR_VERSION EQUAL 5)
+        set(_m3_qt_min_version 5.15)
+    elseif(QT_DEFAULT_MAJOR_VERSION EQUAL 6)
+        set(_m3_qt_min_version 6.5)
+    else()
+        message(FATAL_ERROR "QT_DEFAULT_MAJOR_VERSION must be 5 or 6")
+    endif()
+    find_package(Qt${QT_DEFAULT_MAJOR_VERSION} ${_m3_qt_min_version} REQUIRED COMPONENTS Widgets)
     add_subdirectory(src/qt)
 endif()
-configure_package_config_file(cmake/m3Config.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/m3Config.cmake"
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/m3)
-write_basic_package_version_file("${CMAKE_CURRENT_BINARY_DIR}/m3ConfigVersion.cmake"
-    VERSION ${PROJECT_VERSION} COMPATIBILITY SameMajorVersion)
-install(EXPORT m3Targets NAMESPACE m3:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/m3)
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/m3Config.cmake"
-    "${CMAKE_CURRENT_BINARY_DIR}/m3ConfigVersion.cmake" DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/m3)
+if(M3_INSTALL)
+    configure_package_config_file(cmake/m3Config.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/m3Config.cmake"
+        INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/m3)
+    write_basic_package_version_file("${CMAKE_CURRENT_BINARY_DIR}/m3ConfigVersion.cmake"
+        VERSION ${PROJECT_VERSION} COMPATIBILITY SameMajorVersion)
+    install(EXPORT m3Targets NAMESPACE m3:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/m3)
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/m3Config.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/m3ConfigVersion.cmake" DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/m3)
+endif()
 if(M3_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)

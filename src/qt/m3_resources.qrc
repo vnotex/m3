@@ -1,0 +1,10 @@
+<RCC>
+    <qresource prefix="/m3/qt">
+        <file alias="node_properties.qss">node_properties.qss</file>
+        <file alias="color_swatch.qss">color_swatch.qss</file>
+    </qresource>
+    <qresource prefix="/m3/emoji">
+        <file alias="emoji-test.txt">../../third_party/unicode/emoji-test.txt</file>
+        <file alias="LICENSE">../../third_party/unicode/LICENSE</file>
+    </qresource>
+</RCC>

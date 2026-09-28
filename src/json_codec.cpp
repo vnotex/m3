@@ -3,18 +3,9 @@
 #include <cmath>
 #include <string_view>
 #include <unordered_set>
+#include <vector>
 namespace m3 {
 namespace {
-Json encode_outline_node(const Model &model, const Node &node, unsigned level) {
-    Json result = {{"id", node.id}, {"topic", node.attrs.topic}, {"children", Json::array()}};
-    if (level < 6) {
-        auto &children = result["children"].get_ref<Json::array_t &>();
-        children.reserve(node.children.size());
-        for (const auto &id : node.children)
-            children.push_back(encode_outline_node(model, get_node(model, id), level + 1));
-    }
-    return result;
-}
 void schema(bool valid) { require(valid, M3_ERR_SCHEMA, "Invalid document schema"); }
 void keys(const Json &j, std::initializer_list<std::string_view> allowed) {
     schema(j.is_object());
@@ -237,8 +228,33 @@ Json encode_link(const Link &l) {
     return {{"id", l.id}, {"source", l.source}, {"target", l.target}, {"directed", l.directed},
         {"topic", l.topic}, {"icon", l.icon}, {"style", l.style}};
 }
-Json encode_outline(const Model &m) {
-    return encode_outline_node(m, get_node(m, m.root), 1);
+std::string encode_outline(const Model &m) {
+    struct Frame { const Node *node; size_t nextChild = 0; };
+    const auto &root = get_node(m, m.root);
+    std::vector<Frame> pending{{&root}};
+    std::string result;
+    const auto enter = [&](const Node &node) {
+        // Only scalar strings use the JSON serializer: its container traversal recurses.
+        result += "{\"id\":";
+        result += Json(node.id).dump();
+        result += ",\"topic\":";
+        result += Json(node.attrs.topic).dump();
+        result += ",\"children\":[";
+    };
+    enter(root);
+    while (!pending.empty()) {
+        auto &frame = pending.back();
+        if (frame.nextChild == frame.node->children.size()) {
+            result += "]}";
+            pending.pop_back();
+            continue;
+        }
+        if (frame.nextChild != 0) result += ',';
+        const auto &child = get_node(m, frame.node->children[frame.nextChild++]);
+        enter(child);
+        pending.push_back({&child});
+    }
+    return result;
 }
 Json encode_document(const Model &m) {
     Json nodes = Json::array(), links = Json::array();

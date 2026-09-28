@@ -73,10 +73,10 @@ M3_API M3Status m3_mindmap_from_json(const char *json_utf8, M3Mindmap **out_map)
 M3_API M3Status m3_mindmap_to_json(const M3Mindmap *map, char **out_json);
 /* Lossy nested outline, not native schemaVersion 1 or a full-document export.
  * Each node is {"id":string,"topic":string,"children":[node,...]}.
- * The root is level 1; at most six levels are included. Leaves and level-6
- * nodes have children: []; deeper descendants are not visited or returned.
+ * The root is level 1; every descendant is included without a depth limit.
+ * Leaves have children: []. Construction and serialization are iterative.
  * Preserves literal topics (including empty strings) and stored child order,
- * including collapsed descendants within the limit. Omits all other attributes,
+ * including collapsed descendants. Omits all other attributes,
  * cross-links and geometry; visibility does not affect the outline.
  * The document is unchanged. Both arguments are required; a non-null output
  * slot is set to NULL even on failure. The independent UTF-8 snapshot survives

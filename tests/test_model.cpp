@@ -2,6 +2,8 @@
 #include <future>
 #include <exception>
 #include <utility>
+#include <unordered_map>
+#include <vector>
 static void roundtrip() {
     M3Mindmap *raw = nullptr;
     ok(m3_mindmap_create("r", "Root", &raw));
@@ -57,18 +59,32 @@ static void outline() {
             {"topic", "Chain " + std::to_string(i)}, {"children", std::move(children)}});
     }
     input["nodes"].push_back({{"id", "末"}});
-    auto expected = Json::parse(R"({"id":"r","topic":"","children":[
-      {"id":"c","topic":"","children":[]},
-      {"id":"a","topic":"","children":[
-        {"id":"d","topic":"","children":[
-          {"id":"n0","topic":"Chain 0","children":[
-            {"id":"n1","topic":"Chain 1","children":[
-              {"id":"n2","topic":"Chain 2","children":[]},
-              {"id":"末","topic":"","children":[]}]}]}]}]},
-      {"id":"b","topic":"","children":[]}]})");
-    expected["topic"] = input["nodes"][0]["topic"];
     auto map = load(input);
     const auto before = document(map);
+    std::unordered_map<std::string, const Json *> nodes;
+    for (const auto &entry : before.at("nodes")) nodes.emplace(entry.at("id").get<std::string>(), &entry);
+    const auto verify = [&](const char *text, const Json &rootTopic) {
+        const auto tree = Json::parse(text);
+        CHECK(tree.at("id") == before.at("rootId"));
+        std::vector<const Json *> pending{&tree};
+        size_t visited = 0;
+        while (!pending.empty()) {
+            const auto &entry = *pending.back();
+            pending.pop_back();
+            CHECK(entry.is_object() && entry.size() == 3);
+            const auto &original = *nodes.at(entry.at("id").get<std::string>());
+            CHECK(entry.at("topic") == (entry.at("id") == before.at("rootId")
+                ? rootTopic : original.at("topic")));
+            const auto &children = entry.at("children");
+            CHECK(children.is_array() && children.size() == original.at("children").size());
+            for (size_t i = children.size(); i > 0; --i) {
+                CHECK(children[i - 1].at("id") == original.at("children")[i - 1]);
+                pending.push_back(&children[i - 1]);
+            }
+            ++visited;
+        }
+        CHECK(visited == nodes.size());
+    };
     char *raw = reinterpret_cast<char *>(1);
     CHECK(m3_mindmap_get_outline_json(nullptr, &raw) == M3_ERR_INVALID_ARGUMENT);
     CHECK(raw == nullptr && *m3_last_error());
@@ -77,17 +93,15 @@ static void outline() {
     ok(m3_mindmap_get_outline_json(map.get(), &raw));
     Text owned(raw, m3_string_free);
     CHECK(!*m3_last_error());
-    CHECK(Json::parse(owned.get()) == expected);
+    verify(owned.get(), input["nodes"][0]["topic"]);
     CHECK(document(map) == before);
 
     ok(m3_mindmap_update_node(map.get(), "r", R"({"topic":"After snapshot"})"));
     ok(m3_mindmap_get_outline_json(map.get(), &raw));
     Text changed(raw, m3_string_free);
-    auto updated = expected;
-    updated["topic"] = "After snapshot";
-    CHECK(Json::parse(changed.get()) == updated);
+    verify(changed.get(), "After snapshot");
     map.reset();
-    CHECK(Json::parse(owned.get()) == expected);
+    verify(owned.get(), input["nodes"][0]["topic"]);
 
     auto blank = load(Json::object());
     ok(m3_mindmap_get_outline_json(blank.get(), &raw));
