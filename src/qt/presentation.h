@@ -13,18 +13,18 @@
 namespace m3::qt {
 struct ColorSwatch { const char *hex; const char *name; };
 inline constexpr ColorSwatch nodeColors[] = {
-    {"#ffffff", QT_TR_NOOP("White")}, {"#ecf0f1", QT_TR_NOOP("Cloud")},
-    {"#95a5a6", QT_TR_NOOP("Gray")}, {"#34495e", QT_TR_NOOP("Slate")},
-    {"#2c3e50", QT_TR_NOOP("Midnight")}, {"#000000", QT_TR_NOOP("Black")},
-    {"#e74c3c", QT_TR_NOOP("Red")}, {"#e67e22", QT_TR_NOOP("Orange")},
-    {"#f39c12", QT_TR_NOOP("Amber")}, {"#f1c40f", QT_TR_NOOP("Yellow")},
-    {"#2ecc71", QT_TR_NOOP("Green")}, {"#27ae60", QT_TR_NOOP("Forest")},
-    {"#1abc9c", QT_TR_NOOP("Teal")}, {"#16a085", QT_TR_NOOP("Jade")},
-    {"#3498db", QT_TR_NOOP("Blue")}, {"#2980b9", QT_TR_NOOP("Ocean")},
-    {"#9b59b6", QT_TR_NOOP("Purple")}, {"#8e44ad", QT_TR_NOOP("Violet")},
-    {"#ffb6c1", QT_TR_NOOP("Pink")}, {"#f4a6a6", QT_TR_NOOP("Rose")},
-    {"#ffd3a5", QT_TR_NOOP("Peach")}, {"#a8e6cf", QT_TR_NOOP("Mint")},
-    {"#a9d6f5", QT_TR_NOOP("Sky")}
+    {"#ffffff", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "White")}, {"#ecf0f1", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Cloud")},
+    {"#95a5a6", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Gray")}, {"#34495e", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Slate")},
+    {"#2c3e50", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Midnight")}, {"#000000", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Black")},
+    {"#e74c3c", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Red")}, {"#e67e22", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Orange")},
+    {"#f39c12", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Amber")}, {"#f1c40f", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Yellow")},
+    {"#2ecc71", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Green")}, {"#27ae60", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Forest")},
+    {"#1abc9c", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Teal")}, {"#16a085", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Jade")},
+    {"#3498db", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Blue")}, {"#2980b9", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Ocean")},
+    {"#9b59b6", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Purple")}, {"#8e44ad", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Violet")},
+    {"#ffb6c1", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Pink")}, {"#f4a6a6", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Rose")},
+    {"#ffd3a5", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Peach")}, {"#a8e6cf", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Mint")},
+    {"#a9d6f5", QT_TRANSLATE_NOOP("m3::qt::NodeColors", "Sky")}
 };
 // Zero, nullopt and invalid text/fill colors inherit the editor's appearance.
 // Both paths parse local style: NodeProperties keeps the parsed branch override;

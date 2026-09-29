@@ -52,7 +52,7 @@ public:
         setFlag(ItemIgnoresTransformations);
         setAcceptedMouseButtons(Qt::NoButton);
         setCursor(Qt::CrossCursor);
-        setToolTip(QCoreApplication::translate("MindMapView", "Drag to create a link"));
+        setToolTip(QCoreApplication::translate("m3::qt::MindMapView", "Drag to create a link"));
     }
     // The parent supplies only the corner anchor; size and gap are device pixels.
     QRectF boundingRect() const override { return QRectF(0, -20, 20, 20); }
@@ -138,7 +138,7 @@ public:
         setFlag(ItemIgnoresTransformations);
         setAcceptedMouseButtons(Qt::NoButton);
         setCursor(Qt::SizeFDiagCursor);
-        setToolTip(QCoreApplication::translate("MindMapView", "Resize image"));
+        setToolTip(QCoreApplication::translate("m3::qt::MindMapView", "Resize image"));
         hide();
     }
     QRectF boundingRect() const override { return QRectF(-5, -5, 10, 10); }
@@ -179,7 +179,8 @@ public:
             p->drawRect(rect.adjusted(0.5, 0.5, -0.5, -0.5));
             p->setPen(colors.color(QPalette::Text));
             p->drawText(rect.adjusted(4, 4, -4, -4), Qt::AlignCenter | Qt::TextWordWrap,
-                QCoreApplication::translate("MindMapView", failed ? "Image unavailable" : "Loading image"));
+                failed ? QCoreApplication::translate("m3::qt::MindMapView", "Image unavailable")
+                       : QCoreApplication::translate("m3::qt::MindMapView", "Loading image"));
         }
     }
     QImage pixels;
@@ -510,7 +511,8 @@ public:
         setAcceptedMouseButtons(Qt::NoButton);
         setZValue(3);
         setCursor(Qt::OpenHandCursor);
-        setToolTip(QCoreApplication::translate("MindMapView", source ? "Drag to change source" : "Drag to change destination"));
+        setToolTip(source ? QCoreApplication::translate("m3::qt::MindMapView", "Drag to change source")
+                          : QCoreApplication::translate("m3::qt::MindMapView", "Drag to change destination"));
         setPos(link->mapToScene(link->curve.pointAtPercent(source ? 0 : 1)));
     }
     QRectF boundingRect() const override { return QRectF(-5, -5, 10, 10); }

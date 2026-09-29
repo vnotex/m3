@@ -1,3 +1,22 @@
+find_package(Qt${QT_DEFAULT_MAJOR_VERSION} ${_m3_qt_min_version} REQUIRED COMPONENTS LinguistTools)
+set(M3_TS_FILES
+    translations/m3_zh_CN.ts
+    translations/m3_ja.ts)
+set_source_files_properties(${M3_TS_FILES} PROPERTIES
+    OUTPUT_LOCATION "${CMAKE_CURRENT_BINARY_DIR}/translations")
+qt_add_translation(M3_QM_FILES ${M3_TS_FILES})
+
+# Catalog updates are deliberate; ordinary builds only compile into the build tree.
+add_custom_target(m3_update_translations
+    COMMAND Qt${QT_DEFAULT_MAJOR_VERSION}::lupdate
+        -I "${PROJECT_SOURCE_DIR}/include"
+        -locations relative -no-obsolete
+        "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/include/m3/qt"
+        -ts ${M3_TS_FILES}
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Updating m3 translation catalogs"
+    VERBATIM)
+
 if(M3_BUILD_SHARED)
     add_library(m3qt SHARED)
     target_compile_definitions(m3qt PRIVATE M3_QT_BUILD_DLL)
@@ -6,6 +25,7 @@ else()
     target_compile_definitions(m3qt PUBLIC M3_QT_STATIC)
 endif()
 target_sources(m3qt PRIVATE
+    ${M3_QM_FILES}
     ../../include/m3/qt/editor.h
     presentation.h
     mindmap_controller.h
@@ -41,6 +61,7 @@ if(M3_INSTALL)
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    install(FILES ${M3_QM_FILES} DESTINATION ${CMAKE_INSTALL_DATADIR}/m3/translations)
     install(FILES ../../include/m3/qt/editor.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/m3/qt)
     install(EXPORT m3QtTargets NAMESPACE m3:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/m3)
 endif()

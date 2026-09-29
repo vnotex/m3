@@ -1,5 +1,6 @@
 #ifndef M3_QT_EMOJI_LINE_EDIT_H
 #define M3_QT_EMOJI_LINE_EDIT_H
+#include <QCoreApplication>
 #include <QLineEdit>
 
 class QAbstractItemModel;
@@ -11,6 +12,7 @@ class QComboBox;
 namespace m3::qt {
 // Completes the comma-separated entry at the caret without changing line-edit semantics.
 class EmojiLineEdit final : public QLineEdit {
+    Q_DECLARE_TR_FUNCTIONS(m3::qt::EmojiLineEdit)
 public:
     explicit EmojiLineEdit(QWidget *parent = nullptr);
     ~EmojiLineEdit() override;

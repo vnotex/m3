@@ -104,6 +104,7 @@ private:
     QPalette palette;
 };
 class ShortcutHelpPopup final : public QDialog {
+    Q_DECLARE_TR_FUNCTIONS(m3::qt::ShortcutHelpPopup)
 public:
     ShortcutHelpPopup(MindMapEditor *host, MindMapView *canvas, const QString &help)
         : QDialog(host, Qt::Popup), view(canvas) {
@@ -138,6 +139,7 @@ private:
     QPointer<MindMapView> view;
 };
 class NodePropertiesPanel final : public QFrame {
+    Q_DECLARE_TR_FUNCTIONS(m3::qt::NodePropertiesPanel)
 public:
     NodePropertiesPanel(MindMapEditor *host, MindMapView *canvas, MindMapController *model)
         : QFrame(host), view(canvas), controller(model) {
@@ -276,7 +278,7 @@ public:
         palette->addWidget(defaultColor, 0, 0);
         for (const auto &entry : nodeColors) {
             const QString hex = QString::fromLatin1(entry.hex);
-            const QString description = tr("%1 (%2)").arg(tr(entry.name), hex);
+            const QString description = tr("%1 (%2)").arg(QCoreApplication::translate("m3::qt::NodeColors", entry.name), hex);
             const QString contrast = QColor(hex).lightnessF() > 0.55 ? QStringLiteral("#202020") : QStringLiteral("#ffffff");
             auto *button = makeSwatch(hex, contrast);
             button->setObjectName(QStringLiteral("nodeColor_") + hex.mid(1));
@@ -691,6 +693,7 @@ private:
 };
 }
 class MindMapEditor::Private {
+    Q_DECLARE_TR_FUNCTIONS(m3::qt::MindMapEditor)
 public:
     MindMapEditor *host;
     const EditorConfig config;
@@ -1089,7 +1092,7 @@ public:
                 addBranchColor(tr("Auto"), QColor(), QJsonValue(QJsonValue::Null));
                 for (const auto &entry : nodeColors) {
                     const QString hex = QString::fromLatin1(entry.hex);
-                    addBranchColor(tr("%1 (%2)").arg(tr(entry.name), hex), QColor(hex), hex);
+                    addBranchColor(tr("%1 (%2)").arg(QCoreApplication::translate("m3::qt::NodeColors", entry.name), hex), QColor(hex), hex);
                 }
                 menu.addSeparator();
                 menu.addActions({deleteSelection, up, down});

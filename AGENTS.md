@@ -55,8 +55,34 @@ target_link_libraries(mindmap_app PRIVATE m3::qt_editor)
 
 The component discovers Qt Widgets transitively; Qt Test is not a host dependency. Enable `AUTOMOC` on the host target if its own classes use `Q_OBJECT`; this example needs none. Match compiler/ABI, architecture, Qt kit and Debug/Release libraries. Linking does not deploy runtime dependencies: ship m3qt, m3core when shared, and the matching Qt libraries/platform plugins. See `tests/qt_consumer/CMakeLists.txt` for Windows m3 DLL copying; the demo's Qt deployment recipe is in `src/qt/CMakeLists.txt`. A host adding network access must find/link Qt Network itself.
 
+### Translations
+The reusable editor ships Simplified Chinese (`m3_zh_CN`) and Japanese (`m3_ja`) Qt
+catalogs in `src/qt/translations/`. Qt builds require matching-major `LinguistTools`;
+core-only builds and installed consumers do not. Normal builds generate `.qm` files
+under the build tree; installation places them in `${CMAKE_INSTALL_DATADIR}/m3/translations`.
+The host owns a `QTranslator`, loads `m3` with its chosen `QLocale` and `_` separator,
+and installs it before constructing editors. Missing catalogs fall back to English;
+live language switching is not provided. The demo, Qt-free core diagnostics and the
+vendored Unicode emoji names/search corpus are not part of these catalogs.
+
+Refresh source catalogs deliberately with `cmake --build <builddir> --target m3_update_translations`,
+then translate every unfinished entry. That target includes the public include path so
+`MindMapEditor::Private` extracts into the same context as runtime `tr()` calls.
+Helper widgets without `Q_OBJECT` need `Q_DECLARE_TR_FUNCTIONS`; shared color labels
+use the explicit `m3::qt::NodeColors` context. Keep translation source arguments literal.
+
+VNote packages the checked-in `.qm` files, like vtextedit, rather than m3's build outputs.
+After editing the `.ts` files, run the Qt 5.15 `lrelease` tool from the m3 root for each
+catalog and commit both source and binary files (Qt 6 can read these catalogs):
+```powershell
+lrelease src/qt/translations/m3_zh_CN.ts -qm src/qt/translations/m3_zh_CN.qm
+lrelease src/qt/translations/m3_ja.ts -qm src/qt/translations/m3_ja.qm
+```
+Ordinary builds and `m3_update_translations` do not refresh the checked-in `.qm` files.
+
 ### Minimal host with startup Open and Save As
 This complete `main.cpp` accepts one optional JSON path and provides Save As. It uses the same `QFile`/`QSaveFile` policy as the demo, checks failures, and clears the dirty flag only after a successful load or committed save. In an existing app, parent the editor to a page/dock and add it to that container's layout instead of creating another `QApplication`.
+For localized UI, also follow [Translations](#translations) before constructing the editor.
 
 ```cpp
 #include <m3/qt/editor.h>
