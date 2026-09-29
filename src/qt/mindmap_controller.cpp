@@ -822,19 +822,28 @@ bool MindMapController::renameNode(const QString &id, const QString &topic) {
         });
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
-bool MindMapController::commitTopicEdit(const QString &id, const QString &draft) {
+bool MindMapController::commitTopicEdit(const QString &id, const QString &draft, const QString &previousDraft) {
     if (!writable()) return false;
-    if (!strings({id, draft})) return false;
+    if (!strings({id, draft, previousDraft})) return false;
     try {
         const auto parsed = parseTopicEdit(draft);
+        const auto previous = parseTopicEdit(previousDraft);
         Json patch{{"topic", utf8(parsed.topic)}};
-        if (!parsed.tags.isEmpty()) {
+        if (!parsed.tags.isEmpty() || !previous.tags.isEmpty()) {
             char *raw = nullptr;
             const auto read = m3_mindmap_get_node_json(model.get(), id.toUtf8().constData(), &raw);
             Text text(raw, m3_string_free);
             requireStatus(read);
             const auto current = Json::parse(text.get());
             auto &tags = patch["tags"] = current.at("tags");
+            // Replace only the last accepted draft's exact trailing contribution.
+            // Older duplicates and independently changed tags belong to the host.
+            if (!previous.tags.isEmpty() && tags.size() >= size_t(previous.tags.size())) {
+                const auto suffix = tags.end() - previous.tags.size();
+                if (std::equal(previous.tags.cbegin(), previous.tags.cend(), suffix,
+                    [](const QString &tag, const Json &value) { return value == utf8(tag); }))
+                    tags.erase(suffix, tags.end());
+            }
             for (const auto &tag : parsed.tags) tags.push_back(utf8(tag));
         }
         return updateNodeProperties(id, QByteArray::fromStdString(patch.dump()));

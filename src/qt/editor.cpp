@@ -967,8 +967,9 @@ public:
         error = new QLabel(editor);
         error->setTextFormat(Qt::PlainText); error->setWordWrap(true); error->hide();
         controller = new MindMapController(*view, config, editor);
-        view->setTopicCommitHandler([model = QPointer<MindMapController>(controller)](const QString &id, const QString &draft, bool link) {
-            return model && (link ? model->commitLinkTopicEdit(id, draft) : model->commitTopicEdit(id, draft));
+        view->setTopicCommitHandler([model = QPointer<MindMapController>(controller)](
+            const QString &id, const QString &draft, const QString &previousDraft, bool link) {
+            return model && (link ? model->commitLinkTopicEdit(id, draft) : model->commitTopicEdit(id, draft, previousDraft));
         });
         undoAction = action("undo", tr("Undo"), config.shortcuts.undo, [this] { host->undo(); });
         redoAction = action("redo", tr("Redo"), config.shortcuts.redo, [this] { host->redo(); });
@@ -1201,7 +1202,7 @@ void MindMapEditor::onAddUrl(const QString &) {}
 void MindMapEditor::onAddImage(const QString &) {}
 bool MindMapEditor::newDocument(const QString &topic) { return d->controller->newDocument(topic); }
 bool MindMapEditor::loadJson(const QByteArray &json) { return d->controller->loadJson(json); }
-bool MindMapEditor::commitActiveEdit() { return d->view->finishTopicEdit(true); }
+bool MindMapEditor::commitActiveEdit(bool keepEditing) { return d->view->finishTopicEdit(true, false, keepEditing); }
 bool MindMapEditor::hasPendingEdit() const { return d->view->hasPendingEdit(); }
 void MindMapEditor::setReadOnly(bool value) {
     const QPointer<MindMapEditor> guard(this);

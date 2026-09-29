@@ -21,9 +21,9 @@ public:
     ~MindMapView() override;
     void beginTopicEdit(const QString &id, const QList<QKeySequence> &acceptShortcuts);
     void beginLinkTopicEdit(const QString &id, const QList<QKeySequence> &acceptShortcuts);
-    using TopicCommitHandler = std::function<bool(const QString &, const QString &, bool)>;
+    using TopicCommitHandler = std::function<bool(const QString &, const QString &, const QString &, bool)>;
     void setTopicCommitHandler(TopicCommitHandler handler);
-    bool finishTopicEdit(bool commit, bool restoreFocus = false);
+    bool finishTopicEdit(bool commit, bool restoreFocus = false, bool keepEditing = false);
     bool hasPendingEdit() const { return pendingEdit; }
     void setReadOnly(bool value);
     void prepare(NodePresentation &node) const;

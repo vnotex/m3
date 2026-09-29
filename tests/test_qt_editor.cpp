@@ -53,6 +53,7 @@
 #include <QScrollBar>
 #include <QScrollArea>
 #include <QScreen>
+#include <QShortcut>
 #include <QSignalSpy>
 #include <QSpinBox>
 #include <QStatusBar>
@@ -4538,7 +4539,10 @@ static void outline_navigation_case() {
         pump();
         CHECK(exported(editor) == before && changed.size() == changes && selected.size() == selectionCount);
         CHECK(editor.selectedNodeIds() == nodes && editor.selectedLinkId() == link);
-        CHECK(view.transform() == zoom && view.mapToScene(view.viewport()->rect().center()) == camera);
+        CHECK(view.transform() == zoom);
+        // Showing the diagnostic can change viewport parity; scrollbars quantize to pixels.
+        CHECK(QLineF(view.mapToScene(view.viewport()->rect().center()), camera).length() <=
+              1.0 / zoom.m11() + 1e-6);
     };
     rejectedReveal(QStringLiteral("absent"));
     rejectedReveal(QStringLiteral("CHAIN-9"));
@@ -5135,14 +5139,23 @@ static void inline_tags_case() {
     }
     {
         Json expected = reset();
+        const Json baseline = expected;
         CHECK(editor.renameNode(root, QStringLiteral("#")));
         setTopic(expected, "r", QStringLiteral("#"));
         changed.clear();
         shortcut(editor, Qt::Key_F2);
         CHECK(topicInput(editor).toPlainText() == QStringLiteral("##"));
-        topicInput(editor).setPlainText(QStringLiteral("#"));
+        QPointer<QPlainTextEdit> input = &topicInput(editor);
+        input->setPlainText(QStringLiteral("#"));
+        CHECK(editor.hasPendingEdit());
+        // Different raw text with the same parsed topic still advances the accepted draft baseline.
+        CHECK(editor.commitActiveEdit(true));
+        CHECK(activeTopicInput(editor) == input.data() && topicInput(editor).toPlainText() == QStringLiteral("#"));
+        CHECK(!editor.hasPendingEdit() && exported(editor) == expected && changed.isEmpty());
+        CHECK(editor.commitActiveEdit(true) && !editor.hasPendingEdit());
         topicKey(editor, Qt::Key_Return);
         CHECK(exported(editor) == expected && changed.isEmpty() && errors.isEmpty());
+        CHECK(!activeTopicInput(editor) && editor.undo() && exported(editor) == baseline && !editor.canUndo());
     }
     {
         Json expected = reset();
@@ -5189,6 +5202,48 @@ static void inline_tags_case() {
         CHECK(exported(editor) == expected && changed.isEmpty());
         CHECK(errors.size() == 1 && editor.lastError() == QStringLiteral("Text cannot contain NUL characters"));
         CHECK(errors.front().front().toString() == editor.lastError());
+    }
+    {
+        Json expected = reset();
+        const Json baseline = expected;
+        CHECK(record(expected, "nodes", root).at("tags") == Json::array({"x", "y", "x"}));
+        shortcut(editor, Qt::Key_F2);
+        QPointer<QPlainTextEdit> input = &topicInput(editor);
+        auto capture = [&](const QString &draft, const QString &topic, const Json &tags, int changes) {
+            input->setPlainText(draft);
+            CHECK(editor.commitActiveEdit(true));
+            pump();
+            setTopic(expected, "r", topic);
+            for (auto &entry : expected.at("nodes")) if (entry.at("id") == "r") entry["tags"] = tags;
+            CHECK(input && activeTopicInput(editor) == input.data() && topicInput(editor).toPlainText() == draft);
+            CHECK(!editor.hasPendingEdit() && exported(editor) == expected && changed.size() == changes);
+            for (int i = 0; i < 2; ++i) CHECK(editor.commitActiveEdit(true));
+            CHECK(exported(editor) == expected && changed.size() == changes && !editor.hasPendingEdit());
+        };
+        capture(QStringLiteral("Roadmap ##literal #todo #x"), QStringLiteral("Roadmap #literal"),
+                Json::array({"x", "y", "x", "todo", "x"}), 1);
+        // A property edit made between saves is not owned by the inline hashtag draft.
+        const Json externalTags = Json::array({"x", "y", "x", "outside", "todo", "x"});
+        CHECK(editor.updateNode(root, encoded(Json{{"tags", externalTags}, {"style", {{"color", "#123456"}}}})));
+        for (auto &entry : expected.at("nodes")) if (entry.at("id") == "r") {
+            entry["tags"] = externalTags;
+            entry["style"]["color"] = "#123456";
+        }
+        CHECK(activeTopicInput(editor) == input.data() && !editor.hasPendingEdit());
+        CHECK(exported(editor) == expected && changed.size() == 2);
+        capture(QStringLiteral("Roadmap ##literal #next #x"), QStringLiteral("Roadmap #literal"),
+                Json::array({"x", "y", "x", "outside", "next", "x"}), 3);
+        capture(QStringLiteral("Roadmap ##literal"), QStringLiteral("Roadmap #literal"),
+                Json::array({"x", "y", "x", "outside"}), 4);
+        capture(QStringLiteral("Roadmap ##literal #final #final"), QStringLiteral("Roadmap #literal"),
+                Json::array({"x", "y", "x", "outside", "final", "final"}), 5);
+        topicKey(editor, Qt::Key_Return);
+        CHECK(!activeTopicInput(editor) && exported(editor) == expected && changed.size() == 5 && errors.isEmpty());
+        // Captures and Enter did not duplicate tags or create additional document undo steps.
+        for (int i = 0; i < 5; ++i) CHECK(editor.undo());
+        CHECK(exported(editor) == baseline && !editor.canUndo());
+        for (int i = 0; i < 5; ++i) CHECK(editor.redo());
+        CHECK(exported(editor) == expected && !editor.canRedo());
     }
 }
 
@@ -5384,6 +5439,150 @@ static void link_interaction_case() {
 
 static void host_commit_case() {
     const QString a = QStringLiteral("a"), b = QStringLiteral("b"), root = QStringLiteral("r");
+    for (bool link : {false, true}) {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        editor.resetZoom(); editor.zoom(0.85);
+        CHECK(link ? editor.selectLink(QStringLiteral("l1")) : editor.selectNode(a));
+        const Json before = exported(editor);
+        const QStringList nodes = editor.selectedNodeIds();
+        const QString selectedLink = editor.selectedLinkId();
+        const QTransform zoom = graphics(editor).transform();
+        QSignalSpy changed(&editor, &Editor::documentChanged), pending(&editor, &Editor::pendingEditChanged);
+        QSignalSpy selected(&editor, &Editor::selectionChanged), errors(&editor, &Editor::errorOccurred);
+        shortcut(editor, Qt::Key_F2);
+        QPointer<QPlainTextEdit> input = &topicInput(editor);
+        const QString original = input->toPlainText();
+        const QString accepted = link ? QStringLiteral("Retained ##literal #link") : QStringLiteral("Retained node");
+        input->selectAll(); input->insertPlainText(accepted);
+        auto cursor = input->textCursor();
+        cursor.setPosition(2); cursor.setPosition(7, QTextCursor::KeepAnchor);
+        input->setTextCursor(cursor);
+        CHECK(editor.hasPendingEdit() && pending.size() == 1 && pending.back().front().toBool());
+        CHECK(editor.commitActiveEdit(true));
+        pump();
+        Json saved = before;
+        if (link) {
+            for (auto &entry : saved.at("crossLinks")) if (entry.at("id") == "l1") entry["topic"] = utf8(accepted);
+        } else setTopic(saved, "a", accepted);
+        auto retained = [&] {
+            CHECK(input && activeTopicInput(editor) == input.data() && input->hasFocus());
+            CHECK(input->toPlainText() == accepted && !editor.hasPendingEdit());
+            CHECK(input->textCursor().anchor() == 2 && input->textCursor().position() == 7);
+            CHECK(editor.selectedText() == accepted.mid(2, 5));
+            CHECK(exported(editor) == saved && changed.size() == 1);
+            CHECK(pending.size() == 2 && !pending.back().front().toBool());
+            CHECK(editor.selectedNodeIds() == nodes && editor.selectedLinkId() == selectedLink);
+            CHECK(selected.isEmpty() && graphics(editor).transform() == zoom);
+        };
+        retained();
+        for (int i = 0; i < 3; ++i) { CHECK(editor.commitActiveEdit(true)); pump(); retained(); }
+        QPalette palette = editor.palette();
+        palette.setColor(QPalette::Base, QColor(31, 35, 42));
+        palette.setColor(QPalette::Text, QColor(230, 232, 235));
+        editor.setPalette(palette); pump(); retained();
+        QFont font = editor.font(); font.setPixelSize(19);
+        editor.setFont(font); pump(); retained();
+        editor.reloadImages(); pump(); retained();
+        CHECK(errors.isEmpty());
+
+        // The original text undo operation survives saving and appearance-driven scene rebuilds.
+        topicKey(editor, Qt::Key_Z, Qt::ControlModifier);
+        CHECK(activeTopicInput(editor) == input.data() && topicInput(editor).toPlainText() == original);
+        CHECK(editor.hasPendingEdit() && pending.size() == 3 && pending.back().front().toBool());
+        CHECK(exported(editor) == saved && changed.size() == 1);
+        topicKey(editor, Qt::Key_Y, Qt::ControlModifier);
+        CHECK(topicInput(editor).toPlainText() == accepted && !editor.hasPendingEdit());
+        CHECK(pending.size() == 4 && !pending.back().front().toBool());
+        CHECK(exported(editor) == saved && changed.size() == 1);
+        input->moveCursor(QTextCursor::End);
+        QTest::keyClicks(input.data(), " continued");
+        CHECK(editor.hasPendingEdit() && pending.size() == 5 && pending.back().front().toBool());
+        const QString continued = accepted + QStringLiteral(" continued");
+        const QString rejected = continued + QChar(QChar::Null);
+        input->setPlainText(rejected);
+        cursor = input->textCursor();
+        cursor.setPosition(1); cursor.setPosition(5, QTextCursor::KeepAnchor);
+        input->setTextCursor(cursor);
+        CHECK(!editor.commitActiveEdit(true));
+        pump();
+        CHECK(input && activeTopicInput(editor) == input.data() && input->hasFocus());
+        CHECK(input->toPlainText() == rejected && editor.hasPendingEdit());
+        CHECK(input->textCursor().anchor() == 1 && input->textCursor().position() == 5);
+        CHECK(exported(editor) == saved && changed.size() == 1 && pending.size() == 5 && !errors.isEmpty());
+        CHECK(editor.selectedNodeIds() == nodes && editor.selectedLinkId() == selectedLink);
+        CHECK(selected.isEmpty() && graphics(editor).transform() == zoom);
+        input->setPlainText(continued);
+        CHECK(editor.commitActiveEdit(true));
+        pump();
+        if (link) {
+            for (auto &entry : saved.at("crossLinks")) if (entry.at("id") == "l1") entry["topic"] = utf8(continued);
+        } else setTopic(saved, "a", continued);
+        CHECK(activeTopicInput(editor) == input.data() && topicInput(editor).toPlainText() == continued);
+        CHECK(exported(editor) == saved && changed.size() == 2 && !editor.hasPendingEdit());
+        CHECK(pending.size() == 6 && !pending.back().front().toBool());
+        topicKey(editor, Qt::Key_Return);
+        CHECK(!activeTopicInput(editor) && !editor.hasPendingEdit() && exported(editor) == saved && changed.size() == 2);
+        // Repeated captures and final Enter made only the two distinct document commands.
+        CHECK(editor.undo() && changed.size() == 3);
+        Json firstSave = before;
+        if (link) {
+            for (auto &entry : firstSave.at("crossLinks")) if (entry.at("id") == "l1") entry["topic"] = utf8(accepted);
+        } else setTopic(firstSave, "a", accepted);
+        CHECK(exported(editor) == firstSave);
+        CHECK(editor.undo() && exported(editor) == before && !editor.canUndo());
+        CHECK(editor.redo() && exported(editor) == firstSave);
+        CHECK(editor.redo() && exported(editor) == saved && !editor.canRedo());
+    }
+    for (bool link : {false, true}) for (int reaction : {0, 1, 2}) {
+        // Host notifications may synchronously replace the map, lock it, or remove the edited target.
+        Editor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        CHECK(link ? editor.selectLink(QStringLiteral("l1")) : editor.selectNode(a));
+        Json replacement = exported(editor);
+        setTopic(replacement, "a", QStringLiteral("Replacement with reused node id"));
+        for (auto &entry : replacement.at("crossLinks")) if (entry.at("id") == "l1") entry["topic"] = "Replacement link";
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Committed before host reaction"));
+        Json observed;
+        bool reacted = false;
+        QObject::connect(&editor, &Editor::documentChanged, &editor, [&] {
+            if (reacted) return;
+            reacted = true;
+            observed = exported(editor);
+            if (reaction == 0) CHECK(editor.loadJson(encoded(replacement)));
+            else if (reaction == 1) editor.setReadOnly(true);
+            else CHECK(link ? editor.removeLink(QStringLiteral("l1")) : editor.removeNode(a));
+        });
+        editor.commitActiveEdit(true);
+        pump();
+        CHECK(reacted && record(observed, link ? "crossLinks" : "nodes", link ? QStringLiteral("l1") : a).at("topic") == "Committed before host reaction");
+        CHECK(!activeTopicInput(editor) && !editor.hasPendingEdit());
+        if (reaction == 0) CHECK(exported(editor) == replacement && !editor.canUndo() && !editor.canRedo());
+        else if (reaction == 1) CHECK(editor.isReadOnly() && exported(editor) == observed);
+        else {
+            CHECK(!hasRecord(exported(editor), link ? "crossLinks" : "nodes", link ? QStringLiteral("l1") : a));
+            CHECK(editor.undo() && exported(editor) == observed);
+        }
+    }
+    for (bool fromPending : {false, true}) {
+        QPointer<Editor> editor = new Editor;
+        CHECK(editor->loadJson(encoded(editorFixture())));
+        showEditor(*editor);
+        CHECK(editor->selectNode(a));
+        shortcut(*editor, Qt::Key_F2);
+        topicInput(*editor).setPlainText(QStringLiteral("Host closes after capture"));
+        Json observed;
+        const auto closeEditor = [&] { observed = exported(*editor); delete editor.data(); };
+        if (fromPending) QObject::connect(editor.data(), &Editor::pendingEditChanged, qApp,
+                                         [&](bool pending) { if (!pending) closeEditor(); });
+        else QObject::connect(editor.data(), &Editor::documentChanged, qApp, closeEditor);
+        editor->commitActiveEdit(true);
+        pump();
+        CHECK(editor.isNull() && record(observed, "nodes", a).at("topic") == "Host closes after capture");
+    }
     for (bool link : {false, true}) {
         Editor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
@@ -6174,21 +6373,59 @@ static void inline_edit_case() {
         save.setShortcut(QKeySequence::Save);
         save.setShortcutContext(Qt::WindowShortcut);
         host.addAction(&save);
+        editor.resetZoom(); // Leave room for the later zoom-in command.
+        QShortcut custom(QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_J), &host);
+        custom.setContext(Qt::WindowShortcut);
         Json saved, closed;
-        QObject::connect(&save, &QAction::triggered, &host, [&] { saved = exported(editor); });
+        QPointer<QPlainTextEdit> input;
+        int captures = 0;
+        const auto capture = [&] {
+            CHECK(input && activeTopicInput(editor) == input.data() && input->hasFocus());
+            CHECK(input->textCursor().anchor() == 2 && input->textCursor().position() == 8);
+            CHECK(!editor.hasPendingEdit());
+            saved = exported(editor);
+            ++captures;
+        };
+        QObject::connect(&save, &QAction::triggered, &host, capture);
+        QObject::connect(&custom, &QShortcut::activated, &host, capture);
         host.observeClose = [&] { closed = exported(editor); };
         QSignalSpy changed(&editor, &Editor::documentChanged);
         shortcut(editor, Qt::Key_F2);
-        topicInput(editor).setPlainText(QStringLiteral("Host save sees draft"));
+        input = &topicInput(editor);
+        input->setPlainText(QStringLiteral("Host save sees draft"));
+        auto cursor = input->textCursor();
+        cursor.setPosition(2); cursor.setPosition(8, QTextCursor::KeepAnchor);
+        input->setTextCursor(cursor);
         topicKey(editor, Qt::Key_S, Qt::ControlModifier);
         CHECK(record(saved, "nodes", QStringLiteral("root")).at("topic") == "Host save sees draft");
-        CHECK(changed.size() == 1);
+        CHECK(captures == 1 && changed.size() == 1 && activeTopicInput(editor) == input.data());
+        topicKey(editor, Qt::Key_S, Qt::ControlModifier);
+        CHECK(captures == 2 && changed.size() == 1);
+        input->setPlainText(QStringLiteral("Custom shortcut sees current draft"));
+        cursor = input->textCursor();
+        cursor.setPosition(2); cursor.setPosition(8, QTextCursor::KeepAnchor);
+        input->setTextCursor(cursor);
+        topicKey(editor, Qt::Key_J, Qt::ControlModifier | Qt::AltModifier);
+        CHECK(record(saved, "nodes", QStringLiteral("root")).at("topic") == "Custom shortcut sees current draft");
+        CHECK(captures == 3 && changed.size() == 2 && activeTopicInput(editor) == input.data());
+        topicKey(editor, Qt::Key_J, Qt::ControlModifier | Qt::AltModifier);
+        CHECK(captures == 4 && changed.size() == 2);
+        input->setPlainText(QStringLiteral("Invalid") + QChar(QChar::Null));
+        topicKey(editor, Qt::Key_S, Qt::ControlModifier);
+        CHECK(captures == 4 && changed.size() == 2 && exported(editor) == saved);
+        CHECK(activeTopicInput(editor) == input.data() && editor.hasPendingEdit());
+        input->setPlainText(QStringLiteral("Library command still ends editing"));
+        const qreal scale = graphics(editor).transform().m11();
+        trigger(editor, "zoomIn");
+        CHECK(!activeTopicInput(editor) && !editor.hasPendingEdit() && changed.size() == 3);
+        CHECK(graphics(editor).transform().m11() > scale);
+        CHECK(record(exported(editor), "nodes", QStringLiteral("root")).at("topic") == "Library command still ends editing");
         shortcut(editor, Qt::Key_F2);
         topicInput(editor).setPlainText(QStringLiteral("Host close sees draft"));
         host.close();
         pump();
         CHECK(record(closed, "nodes", QStringLiteral("root")).at("topic") == "Host close sees draft");
-        CHECK(changed.size() == 2 && activeTopicInput(editor) == nullptr);
+        CHECK(changed.size() == 4 && activeTopicInput(editor) == nullptr);
         shortcut(editor, Qt::Key_F2);
         topicInput(editor).setPlainText(QStringLiteral("Host popup sees draft"));
         QMenu popup(&host);
@@ -6196,7 +6433,7 @@ static void inline_edit_case() {
         QObject::connect(observe, &QAction::triggered, &host, [&] { saved = exported(editor); });
         popup.popup(host.mapToGlobal(QPoint(30, 30)));
         pump();
-        CHECK(activeTopicInput(editor) == nullptr && changed.size() == 3);
+        CHECK(activeTopicInput(editor) == nullptr && changed.size() == 5);
         popup.setActiveAction(observe);
         QTest::keyClick(&popup, Qt::Key_Return);
         pump();
@@ -9106,6 +9343,43 @@ static void history_limits_case() {
 
 static void history_drafts_case() {
     const QString a = QStringLiteral("a"), b = QStringLiteral("b"), linkId = QStringLiteral("l1");
+    for (bool link : {false, true}) {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        CHECK(link ? editor.selectLink(linkId) : editor.selectNode(a));
+        const Json baseline = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        shortcut(editor, Qt::Key_F2);
+        QPointer<QPlainTextEdit> input = &topicInput(editor);
+        const QString draft = link ? QStringLiteral("Saved #literal link") : QStringLiteral("Saved node #one #two");
+        input->setPlainText(draft);
+        CHECK(editor.commitActiveEdit(true));
+        Json saved = baseline;
+        if (link) {
+            for (auto &entry : saved.at("crossLinks")) if (entry.at("id") == "l1") entry["topic"] = utf8(draft);
+        } else {
+            setTopic(saved, "a", QStringLiteral("Saved node"));
+            for (auto &entry : saved.at("nodes")) if (entry.at("id") == "a") entry["tags"] = {"one", "two"};
+        }
+        CHECK(activeTopicInput(editor) == input.data() && exported(editor) == saved && changed.size() == 1);
+        input->moveCursor(QTextCursor::End);
+        input->insertPlainText(QStringLiteral(" discard #unsaved"));
+        CHECK(editor.hasPendingEdit());
+        topicKey(editor, Qt::Key_Escape);
+        CHECK(!activeTopicInput(editor) && !editor.hasPendingEdit() && exported(editor) == saved && changed.size() == 1);
+        CHECK(editor.undo() && exported(editor) == baseline && !editor.canUndo() && editor.canRedo());
+        shortcut(editor, Qt::Key_F2);
+        input = &topicInput(editor);
+        const auto changes = changed.size();
+        // An unchanged retained capture keeps the existing Redo branch and the editing session.
+        CHECK(editor.commitActiveEdit(true) && editor.commitActiveEdit(true));
+        CHECK(activeTopicInput(editor) == input.data() && input->hasFocus() && !editor.hasPendingEdit());
+        CHECK(exported(editor) == baseline && changed.size() == changes && !editor.canUndo() && editor.canRedo());
+        topicKey(editor, Qt::Key_Escape);
+        CHECK(editor.redo() && exported(editor) == saved && !editor.canRedo());
+        CHECK(editor.undo() && exported(editor) == baseline && !editor.canUndo());
+    }
     for (bool link : {false, true}) {
         Editor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));

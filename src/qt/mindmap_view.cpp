@@ -725,7 +725,7 @@ void MindMapView::updatePendingEdit() {
     pendingEdit = pending;
     emit pendingEditChanged(pending);
 }
-bool MindMapView::finishTopicEdit(bool commit, bool restoreFocus) {
+bool MindMapView::finishTopicEdit(bool commit, bool restoreFocus, bool keepEditing) {
     if (!topicEditor) return true;
     if (finishingTopicEdit && commit) return false;
     const QPointer<QPlainTextEdit> input = topicEditor;
@@ -735,32 +735,50 @@ bool MindMapView::finishTopicEdit(bool commit, bool restoreFocus) {
     if (commit && draft != originalTopicDraft) {
         // The controller may rebuild the scene, but the input/document/caret
         // must survive until semantic acceptance is known.
+        const QString previousDraft = originalTopicDraft;
         if (topicLabel) topicLabel->setVisible(topicLabelVisible);
         topicLabel.clear();
         finishingTopicEdit = true;
         const auto handler = topicCommitHandler;
-        const bool accepted = handler && handler(id, draft, kind == TopicKind::Link);
+        const bool accepted = handler && handler(id, draft, previousDraft, kind == TopicKind::Link);
         if (!guard) return accepted;
         finishingTopicEdit = false;
         // A reentrant host load/read-only change may have explicitly cancelled it.
-        if (topicEditor != input) return accepted;
-        if (!accepted) {
+        if (!input || topicEditor != input) return accepted;
+        if (!accepted || keepEditing) {
             topicLabel = findTopicLabel(scene(), id, kind);
-            if (topicLabel) {
-                topicLabelVisible = topicLabel->isVisible();
-                topicLabel->hide();
-                input->setFont(topicLabel->font());
-                input->setPalette(palette());
+            if (!topicLabel) {
+                // A reentrant command may have removed the edited node or link.
+                finishTopicEdit(false, restoreFocus);
+                return accepted;
             }
+            if (accepted) {
+                originalTopic = topicLabel->toPlainText();
+                originalTopicDraft = draft;
+            }
+            topicLabelVisible = topicLabel->isVisible();
+            topicLabel->hide();
+            input->setFont(topicLabel->font());
+            if (!guard || !input || topicEditor != input) return accepted;
+            input->setPalette(palette());
+            if (!guard || !input || topicEditor != input) return accepted;
             updateTopicEditorGeometry();
-            input->setFocus(Qt::OtherFocusReason);
-            // FocusOut can be delivered in the middle of Qt's focus transfer.
-            if (guard) QTimer::singleShot(0, this, [this, input] {
-                if (input && topicEditor == input) input->setFocus(Qt::OtherFocusReason);
-            });
-            return false;
+            if (!guard || !input || topicEditor != input) return accepted;
+            if (!accepted) {
+                input->setFocus(Qt::OtherFocusReason);
+                // FocusOut can be delivered in the middle of Qt's focus transfer.
+                if (guard) QTimer::singleShot(0, this, [this, input] {
+                    if (input && topicEditor == input) input->setFocus(Qt::OtherFocusReason);
+                });
+                return false;
+            }
+            // Do not replace the input text: its cursor, selection and local undo
+            // belong to the ongoing edit, including across repeated captures.
+            updatePendingEdit();
+            return true;
         }
     }
+    if (commit && keepEditing) return true;
     topicEditor.clear();
     editedId.clear();
     originalTopic.clear();
@@ -1161,7 +1179,9 @@ bool MindMapView::eventFilter(QObject *watched, QEvent *event) {
         (event->type() == QEvent::Close && watched == window())) {
         QPointer<MindMapView> guard(this);
         QPointer<QObject> receiver(watched);
-        const bool accepted = finishTopicEdit(true);
+        // Host shortcuts capture without choosing the host's end-edit policy.
+        // Library commands and inline accept shortcuts still explicitly finish.
+        const bool accepted = finishTopicEdit(true, false, event->type() == QEvent::Shortcut);
         // A rejected draft also vetoes the original action (especially Close).
         if (!accepted) event->ignore();
         return !accepted || !guard || !receiver;

@@ -250,9 +250,13 @@ public:
     bool newDocument(const QString &topic = QStringLiteral("Central topic"));
     bool loadJson(const QByteArray &json);
     // Accept an inline node/link draft without changing selection or camera.
+    // By default editing ends. keepEditing retains the same input, document,
+    // caret, focus and local undo; Escape then abandons only later changes.
+    // Save/autosave should call commitActiveEdit(true), then toJson().
     // Returns true for no changed draft or successful acceptance. Rejection
-    // leaves text, caret and focus intact; snapshots never commit implicitly.
-    bool commitActiveEdit();
+    // leaves text, caret, focus and the previous draft baseline intact.
+    // Snapshots never commit implicitly.
+    bool commitActiveEdit(bool keepEditing = false);
     bool hasPendingEdit() const;
     // Cancels drafts/gestures and gates all semantic commands, not the widget.
     // Selection, copying, navigation and camera controls remain available.
