@@ -182,20 +182,28 @@ bool within(QWidget *child, QWidget *parent) {
     return child && (child == parent || parent->isAncestorOf(child));
 }
 }
-EmojiLineEdit::EmojiLineEdit(QWidget *parent) : QLineEdit(parent) {
+EmojiLineEdit::EmojiLineEdit(QWidget *parent, PickerMode mode) : QLineEdit(parent), mode(mode) {
     connect(this, &QLineEdit::textChanged, this, [this] {
         if (!inserting && hasFocus()) showPopup();
     });
     connect(this, &QLineEdit::cursorPositionChanged, this, [this] {
         if (!inserting && popup && popup->isVisible()) showPopup();
     });
+    if (mode == PickerMode::Embedded) {
+        createPopup();
+        filterMatches();
+    }
+}
+QWidget *EmojiLineEdit::pickerWidget() const {
+    return mode == PickerMode::Embedded ? popup : nullptr;
 }
 EmojiLineEdit::~EmojiLineEdit() { dismissPopup(); }
 void EmojiLineEdit::createPopup() {
-    popup = new QFrame(this, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus);
-    popup->setObjectName(QStringLiteral("emojiPopup"));
+    popup = mode == PickerMode::Embedded ? new QFrame(this)
+        : new QFrame(this, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus);
+    popup->setObjectName(mode == PickerMode::Embedded ? QStringLiteral("embeddedEmojiPicker") : QStringLiteral("emojiPopup"));
     popup->setAccessibleName(tr("Choose an emoji"));
-    popup->setAttribute(Qt::WA_ShowWithoutActivating);
+    if (mode == PickerMode::Floating) popup->setAttribute(Qt::WA_ShowWithoutActivating);
     popup->setFrameShape(QFrame::StyledPanel);
     popup->setAutoFillBackground(true);
     popup->setBackgroundRole(QPalette::Base);
@@ -209,6 +217,11 @@ void EmojiLineEdit::createPopup() {
     categories->setFocusPolicy(Qt::NoFocus);
     categories->addItem(tr("All categories"));
     categories->addItems(catalog().categories);
+    if (mode == PickerMode::Embedded) {
+        // Observe only the owned dropdown, never install the floating app filter.
+        categories->view()->installEventFilter(this);
+        categories->view()->window()->installEventFilter(this);
+    }
     layout->addWidget(categories);
     choices = new EmojiGridView(popup);
     choices->setObjectName(QStringLiteral("emojiChoices"));
@@ -274,6 +287,7 @@ void EmojiLineEdit::showPopup(bool all) {
         query = text().mid(range.first, range.second - range.first);
     }
     filterMatches();
+    if (mode == PickerMode::Embedded) return;
     if (!positionPopup()) return;
     if (!popup->isVisible()) {
         qApp->installEventFilter(this);
@@ -323,6 +337,12 @@ bool EmojiLineEdit::ownsPopupWidget(QWidget *widget) const {
     return within(widget, popup) || within(widget, categories->view()->window());
 }
 void EmojiLineEdit::queuePopupFocusCheck() {
+    if (mode == PickerMode::Embedded) {
+        QTimer::singleShot(0, this, [this] {
+            if (isVisible() && isEnabled() && !categories->view()->isVisible()) setFocus(Qt::OtherFocusReason);
+        });
+        return;
+    }
     if (focusCheckPending) return;
     focusCheckPending = true;
     // Native activation may precede button/focus updates. Inspect settled ownership,
@@ -352,6 +372,10 @@ void EmojiLineEdit::queuePopupFocusCheck() {
     });
 }
 void EmojiLineEdit::dismissPopup() {
+    if (mode == PickerMode::Embedded) {
+        if (categories) categories->hidePopup();
+        return;
+    }
     qApp->removeEventFilter(this);
     if (!navigationHintText.isEmpty() && QToolTip::text() == navigationHintText) QToolTip::hideText();
     navigationHintText.clear();
@@ -368,22 +392,28 @@ void EmojiLineEdit::chooseCurrent() {
         if (start >= range.first && end <= range.second) range = {start, end};
     }
     const QString replacement = glyph + (range.second == text().size() ? QStringLiteral(", ") : QString());
-    dismissPopup();
+    if (mode == PickerMode::Floating) dismissPopup();
     inserting = true;
     QPointer<EmojiLineEdit> guard(this);
     setSelection(range.first, range.second - range.first);
     if (!guard) return;
     // One native edit: preserves undo and the host's synchronous textChanged contract.
     insert(replacement);
-    if (guard) inserting = false;
+    if (!guard) return;
+    inserting = false;
+    if (mode == PickerMode::Embedded && isVisible() && isEnabled()) {
+        setFocus(Qt::OtherFocusReason);
+        if (guard) showPopup();
+    }
 }
 void EmojiLineEdit::focusInEvent(QFocusEvent *event) {
     QLineEdit::focusInEvent(event);
-    if (!popup || !popup->isVisible()) showPopup(true);
+    if (mode == PickerMode::Embedded) showPopup();
+    else if (!popup || !popup->isVisible()) showPopup(true);
 }
 void EmojiLineEdit::focusOutEvent(QFocusEvent *event) {
     QLineEdit::focusOutEvent(event);
-    if (popup && popup->isVisible()) queuePopupFocusCheck();
+    if (mode == PickerMode::Floating && popup && popup->isVisible()) queuePopupFocusCheck();
 }
 void EmojiLineEdit::mousePressEvent(QMouseEvent *event) {
     QLineEdit::mousePressEvent(event);
@@ -412,7 +442,9 @@ bool EmojiLineEdit::event(QEvent *event) {
                 return true;
             }
         }
-        if (key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab) dismissPopup();
+        if (key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab) {
+            if (mode == PickerMode::Floating) dismissPopup();
+        }
         else if (event->type() == QEvent::ShortcutOverride &&
                  (key->key() == Qt::Key_Up || key->key() == Qt::Key_Down || key->key() == Qt::Key_Return ||
                   key->key() == Qt::Key_Enter || key->key() == Qt::Key_Escape ||
@@ -426,7 +458,17 @@ bool EmojiLineEdit::event(QEvent *event) {
 void EmojiLineEdit::keyPressEvent(QKeyEvent *event) {
     if (popup && popup->isVisible()) {
         const int key = event->key();
-        if (key == Qt::Key_Escape) { dismissPopup(); event->accept(); return; }
+        if (key == Qt::Key_Escape) {
+            if (categories->view()->isVisible()) {
+                categories->hidePopup();
+                queuePopupFocusCheck();
+                event->accept();
+            } else if (mode == PickerMode::Floating) {
+                dismissPopup();
+                event->accept();
+            } else event->ignore();
+            return;
+        }
         if (key == Qt::Key_Return || key == Qt::Key_Enter) { chooseCurrent(); event->accept(); return; }
         if ((key == Qt::Key_PageUp || key == Qt::Key_PageDown) && event->modifiers() == Qt::ControlModifier) {
             categories->setCurrentIndex((categories->currentIndex() + (key == Qt::Key_PageDown ? 1 : categories->count() - 1)) % categories->count());
@@ -460,6 +502,10 @@ bool EmojiLineEdit::eventFilter(QObject *watched, QEvent *event) {
         }
         event->accept();
         return true;
+    }
+    if (mode == PickerMode::Embedded) {
+        if (event->type() == QEvent::Hide && widget == categories->view()->window()) queuePopupFocusCheck();
+        return false;
     }
     // QWindow receives native mouse events before forwarding them to the QWidget.
     if (event->type() == QEvent::MouseButtonPress && widget) {

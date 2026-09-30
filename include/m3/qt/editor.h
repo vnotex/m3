@@ -231,6 +231,17 @@ public:
     // previousSibling, nextSibling, copy, clearSelection, toggleBold, toggleItalic,
     // resetStyle, textColor, fillColor, editTags, editIcons, editNote, toggleProperties,
     // editTopic, showHelp. Triggering retains the same checked inline-commit behavior.
+    // toggleBold/toggleItalic are checkable and reflect the selected node's parsed
+    // appearance (including defaults), not QAction's optimistic activation state.
+    // Toolbar formatting: fontSize is a QWidgetAction creating a size combo for each
+    // presentation; textColorPopup, fillColorPopup and iconsPopup carry QMenus.
+    // The editor owns these actions, menus and widgets. Hosts add the actions to a
+    // toolbar and may supply icons and InstantPopup button mode; do not take ownership.
+    // They format one writable selected node, commit an inline draft before applying
+    // a size or opening a menu, and have no shortcuts. Opening/synchronizing is not
+    // a semantic edit and never changes the properties card's expanded state.
+    // Color choices close their menu; Icons saves each edit and stays open. Controls
+    // close when their document/selection/policy or presenting window is invalidated.
     QAction *commandAction(const QString &name) const;
     QString resourceBasePath() const;
     // Normalize as at construction and invalidate/re-request image resources.

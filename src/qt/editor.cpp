@@ -44,9 +44,13 @@
 #include <functional>
 #include <QTextBrowser>
 #include <QToolButton>
+#include <QToolBar>
+#include <QTimer>
 #include <QLabel>
 #include <QVBoxLayout>
 #include <QUrl>
+#include <QWindow>
+#include <QWidgetAction>
 
 static void initializeM3Resources() {
     Q_INIT_RESOURCE(m3_resources);
@@ -138,6 +142,263 @@ protected:
 private:
     QPointer<MindMapView> view;
 };
+QString propertiesText(const char *text) {
+    return QCoreApplication::translate("m3::qt::NodePropertiesPanel", text);
+}
+constexpr int fontSizePresetCount = 13;
+void populateFontSizes(QComboBox *combo) {
+    combo->setEditable(false);
+    combo->setAccessibleName(propertiesText("Font size"));
+    combo->addItem(propertiesText("Default"), 0.0);
+    for (const int size : {10, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64})
+        combo->addItem(propertiesText("%1 px").arg(size), double(size));
+}
+void syncFontSize(QComboBox *combo, qreal size) {
+    const QSignalBlocker blocker(combo);
+    int index = combo->findData(double(size));
+    if (index < 0) {
+        if (combo->count() > fontSizePresetCount) combo->removeItem(fontSizePresetCount);
+        combo->addItem(propertiesText("%1 px").arg(QString::number(size, 'g', 6)), double(size));
+        index = fontSizePresetCount;
+    } else if (index < fontSizePresetCount && combo->count() > fontSizePresetCount) {
+        combo->removeItem(fontSizePresetCount);
+    }
+    combo->setCurrentIndex(index);
+}
+class FontSizeAction final : public QWidgetAction {
+public:
+    FontSizeAction(QObject *parent, std::function<void(qreal)> apply)
+        : QWidgetAction(parent), apply(std::move(apply)) {
+        setObjectName(QStringLiteral("fontSize"));
+        setText(propertiesText("Font size"));
+        setToolTip(text());
+        connect(this, &QAction::changed, this, [this] {
+            if (!isEnabled()) hidePopups();
+        });
+    }
+    void synchronize(qreal size) {
+        currentSize = size;
+        for (auto *widget : createdWidgets()) syncFontSize(static_cast<QComboBox *>(widget), size);
+    }
+    void hidePopups() {
+        for (auto *widget : createdWidgets()) static_cast<QComboBox *>(widget)->hidePopup();
+    }
+protected:
+    QWidget *createWidget(QWidget *parent) override {
+        auto *combo = new QComboBox(parent);
+        combo->setObjectName(QStringLiteral("toolbarFontSize"));
+        populateFontSizes(combo);
+        syncFontSize(combo, currentSize);
+        combo->setToolTip(text());
+        combo->setEnabled(isEnabled());
+        combo->installEventFilter(this);
+        connect(combo, QOverload<int>::of(&QComboBox::activated), this, [this, combo](int index) {
+            if (isEnabled()) apply(combo->itemData(index).toDouble());
+        });
+        return combo;
+    }
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (event->type() == QEvent::Hide || event->type() == QEvent::EnabledChange) {
+            if (auto *combo = qobject_cast<QComboBox *>(watched)) combo->hidePopup();
+        }
+        return QWidgetAction::eventFilter(watched, event);
+    }
+private:
+    std::function<void(qreal)> apply;
+    qreal currentSize = 0;
+};
+class NodeColorPalette final : public QWidget {
+public:
+    NodeColorPalette(QWidget *parent, const QString &namePrefix, std::function<void(const QJsonValue &)> apply)
+        : QWidget(parent), apply(std::move(apply)) {
+        auto *layout = new QGridLayout(this);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(6);
+        static const QString sheet = loadStyleSheet(QStringLiteral(":/m3/qt/color_swatch.qss"));
+        auto makeSwatch = [&](const QString &background, const QString &contrast) {
+            auto *button = new QToolButton(this);
+            button->setCheckable(true);
+            button->setFocusPolicy(Qt::StrongFocus);
+            button->setMinimumWidth(24);
+            button->setFixedHeight(26);
+            button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+            button->setStyleSheet(sheet.arg(background, contrast));
+            const int index = swatches.size();
+            layout->addWidget(button, index / 6, index % 6);
+            swatches.append(button);
+            connect(button, &QToolButton::clicked, this, [this, index] { activateIndex(index); });
+            return button;
+        };
+        auto *automatic = makeSwatch(QStringLiteral("palette(button)"), QStringLiteral("palette(button-text)"));
+        automatic->setObjectName(namePrefix + QStringLiteral("nodeDefaultColor"));
+        automatic->setText(propertiesText("Auto"));
+        automatic->setAccessibleName(propertiesText("Default color"));
+        for (const auto &entry : nodeColors) {
+            const QString hex = QString::fromLatin1(entry.hex);
+            const QString label = propertiesText("%1 (%2)").arg(QCoreApplication::translate("m3::qt::NodeColors", entry.name), hex);
+            const QString contrast = QColor(hex).lightnessF() > 0.55 ? QStringLiteral("#202020") : QStringLiteral("#ffffff");
+            const int index = swatches.size();
+            auto *button = makeSwatch(hex, contrast);
+            button->setObjectName(namePrefix + QStringLiteral("nodeColor_") + hex.mid(1));
+            // Preserve the card's editor-wide palette enumeration contract.
+            if (namePrefix.isEmpty()) button->setProperty("color", hex);
+            button->setAccessibleName(label);
+            button->setToolTip(label);
+            button->setText(QString::number((index / 6 + 1) * 10 + index % 6 + 1));
+        }
+    }
+    void setColor(const QColor &color, const QString &autoToolTip) {
+        currentColor = color;
+        swatches.front()->setToolTip(autoToolTip);
+        syncChecks();
+    }
+    void activateIndex(int index) {
+        if (!isEnabled() || index < 0 || index >= swatches.size()) return;
+        const QJsonValue value = index == 0 ? QJsonValue(QJsonValue::Null)
+            : QJsonValue(QString::fromLatin1(nodeColors[index - 1].hex));
+        apply(value);
+    }
+private:
+    QList<QToolButton *> swatches;
+    QColor currentColor;
+    std::function<void(const QJsonValue &)> apply;
+    void syncChecks() {
+        for (int index = 0; index < swatches.size(); ++index) {
+            const QSignalBlocker blocker(swatches[index]);
+            swatches[index]->setChecked(index == 0 ? !currentColor.isValid()
+                : currentColor == QColor(QString::fromLatin1(nodeColors[index - 1].hex)));
+        }
+    }
+};
+class ColorMenu final : public QMenu {
+public:
+    explicit ColorMenu(QWidget *parent) : QMenu(parent) {
+        connect(this, &QMenu::aboutToHide, this, [this] { pendingRow = 0; });
+        connect(qApp, &QApplication::focusChanged, this, [this] { pendingRow = 0; });
+    }
+    NodeColorPalette *palette = nullptr;
+protected:
+    bool event(QEvent *event) override {
+        if (event->type() == QEvent::ShortcutOverride) {
+            const auto *key = static_cast<QKeyEvent *>(event);
+            if ((key->modifiers() & ~Qt::KeypadModifier) == Qt::NoModifier &&
+                key->key() >= Qt::Key_0 && key->key() <= Qt::Key_9) {
+                event->accept();
+                return true;
+            }
+        }
+        return QMenu::event(event);
+    }
+    void keyPressEvent(QKeyEvent *event) override {
+        const int digit = event->key() - Qt::Key_0;
+        if ((event->modifiers() & ~Qt::KeypadModifier) == Qt::NoModifier && digit >= 0 && digit <= 9) {
+            event->accept();
+            if (!palette || !palette->isEnabled() || event->isAutoRepeat()) return;
+            if (!pendingRow) {
+                if (digit >= 1 && digit <= 4) pendingRow = digit;
+            } else {
+                const int row = pendingRow;
+                pendingRow = 0;
+                if (digit >= 1 && digit <= 6) palette->activateIndex((row - 1) * 6 + digit - 1);
+            }
+            return;
+        }
+        pendingRow = 0;
+        QMenu::keyPressEvent(event);
+    }
+private:
+    int pendingRow = 0;
+};
+class IconsMenu final : public QMenu {
+public:
+    explicit IconsMenu(QWidget *parent) : QMenu(parent) {
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS) || defined(Q_OS_MAC)
+        // Keep an independent input focus window: the toolbar extension can
+        // reclaim Windows popup keyboard routing while this submenu remains visible.
+        setWindowFlags(Qt::Tool | Qt::NoDropShadowWindowHint);
+        setAttribute(Qt::WA_ShowWithoutActivating, false);
+        connect(this, &QMenu::aboutToShow, this, [this] {
+            previousModality = windowModality();
+#if defined(Q_OS_MACOS) || defined(Q_OS_MAC)
+            setWindowModality(Qt::ApplicationModal);
+#else
+            // Windows suppresses native presses on disabled modal owners before Qt
+            // can see them. Keep the owner enabled and consume outside presses below.
+            setWindowModality(Qt::NonModal);
+#endif
+            qApp->installEventFilter(this);
+        });
+        connect(this, &QMenu::aboutToHide, this, [this] {
+            qApp->removeEventFilter(this);
+            setWindowModality(previousModality);
+        });
+#endif
+    }
+    QPointer<EmojiLineEdit> input;
+    void boundPickerSize() {
+        if (!input) return;
+        const QSize available = screen()->availableGeometry().size();
+        input->pickerWidget()->setFixedSize(qMax(1, qMin(420, available.width() - 24)),
+            qMax(1, qMin(360, available.height() - input->sizeHint().height() - 32)));
+    }
+protected:
+    void showEvent(QShowEvent *event) override {
+        QMenu::showEvent(event);
+        if ((windowFlags() & Qt::WindowType_Mask) == Qt::Tool) {
+            QTimer::singleShot(0, this, [this] {
+                if (!isVisible() || !input || !input->isEnabled()) return;
+                const QPointer<IconsMenu> guard(this);
+                const QRect available = screen()->availableGeometry();
+                move(qBound(available.left(), x(), qMax(available.left(), available.right() - width() + 1)),
+                     qBound(available.top(), y(), qMax(available.top(), available.bottom() - height() + 1)));
+                if (!guard) return;
+                raise();
+                if (!guard) return;
+                activateWindow();
+                if (guard && input) input->setFocus(Qt::PopupFocusReason);
+            });
+        } else if (input && input->isEnabled()) input->setFocus(Qt::PopupFocusReason);
+    }
+    void keyPressEvent(QKeyEvent *event) override {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            // The input gets first refusal; otherwise Enter must not close a menu.
+            event->accept();
+            return;
+        }
+        QMenu::keyPressEvent(event);
+    }
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (isVisible() && (windowFlags() & Qt::WindowType_Mask) == Qt::Tool) {
+            if (event->type() == QEvent::ApplicationDeactivate) hide();
+            else if (event->type() == QEvent::MouseButtonPress) {
+                // Inspect native windows before modal filtering suppresses outside
+                // QWidget delivery. The category dropdown remains an owned child.
+                auto *widget = qobject_cast<QWidget *>(watched);
+                if (auto *window = qobject_cast<QWindow *>(watched)) widget = QWidget::find(window->winId());
+                // QWidget::isAncestorOf stops at window boundaries; a combo popup
+                // is a window, but its parentWidget chain still belongs to this menu.
+                auto *owner = widget;
+                while (owner && owner != this) owner = owner->parentWidget();
+                if (widget && !owner) {
+                    hide();
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+private:
+    Qt::WindowModality previousModality = Qt::NonModal;
+};
+QStringList commaValues(const QString &text) {
+    QStringList values;
+    for (const auto &part : text.split(QLatin1Char(','))) {
+        const QString value = part.trimmed();
+        if (!value.isEmpty()) values.append(value);
+    }
+    return values;
+}
 class NodePropertiesPanel final : public QFrame {
     Q_DECLARE_TR_FUNCTIONS(m3::qt::NodePropertiesPanel)
 public:
@@ -196,11 +457,7 @@ public:
         auto *sizeLabel = new QLabel(tr("&Size"), body);
         fontSize = new QComboBox(body);
         fontSize->setObjectName(QStringLiteral("nodeFontSize"));
-        fontSize->setAccessibleName(tr("Font size"));
-        fontSize->addItem(tr("Default"), 0.0);
-        for (const int size : {10, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64})
-            fontSize->addItem(tr("%1 px").arg(size), double(size));
-        presetCount = fontSize->count();
+        populateFontSizes(fontSize);
         sizeLabel->setBuddy(fontSize);
         bold = new QToolButton(body);
         bold->setObjectName(QStringLiteral("nodeBold"));
@@ -257,45 +514,10 @@ public:
             connect(button, &QToolButton::toggled, this, [this](bool checked) { if (checked) refreshColors(); });
         }
         content->addLayout(modeRow);
-        auto *palette = new QGridLayout;
-        palette->setSpacing(6);
-        static const QString swatchStyleSheet = loadStyleSheet(QStringLiteral(":/m3/qt/color_swatch.qss"));
-        auto makeSwatch = [this](const QString &background, const QString &contrast) {
-            auto *button = new QToolButton(body);
-            button->setCheckable(true);
-            button->setFocusPolicy(Qt::StrongFocus);
-            button->setMinimumWidth(24);
-            button->setFixedHeight(26);
-            button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-            button->setStyleSheet(swatchStyleSheet.arg(background, contrast));
-            return button;
-        };
-        defaultColor = makeSwatch(QStringLiteral("palette(button)"), QStringLiteral("palette(button-text)"));
-        defaultColor->setObjectName(QStringLiteral("nodeDefaultColor"));
-        defaultColor->setText(tr("Auto"));
-        defaultColor->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        defaultColor->setAccessibleName(tr("Default color"));
-        palette->addWidget(defaultColor, 0, 0);
-        for (const auto &entry : nodeColors) {
-            const QString hex = QString::fromLatin1(entry.hex);
-            const QString description = tr("%1 (%2)").arg(QCoreApplication::translate("m3::qt::NodeColors", entry.name), hex);
-            const QString contrast = QColor(hex).lightnessF() > 0.55 ? QStringLiteral("#202020") : QStringLiteral("#ffffff");
-            auto *button = makeSwatch(hex, contrast);
-            button->setObjectName(QStringLiteral("nodeColor_") + hex.mid(1));
-            button->setProperty("color", hex);
-            button->setAccessibleName(description);
-            button->setToolTip(description);
-            const int index = int(swatches.size()) + 1;
-            button->setText(QString::number((index / 6 + 1) * 10 + index % 6 + 1));
-            button->setToolButtonStyle(Qt::ToolButtonTextOnly);
-            palette->addWidget(button, index / 6, index % 6);
-            swatches.append(button);
-            connect(button, &QToolButton::toggled, this, [this, hex](bool checked) {
-                if (checked) applyStyle({{colorKey(), hex}});
-                else refreshColors();
-            });
-        }
-        content->addLayout(palette);
+        palette = new NodeColorPalette(body, QString(), [this](const QJsonValue &color) {
+            applyStyle({{colorKey(), color}});
+        });
+        content->addWidget(palette);
         auto *separator = new QFrame(body);
         separator->setFrameShape(QFrame::HLine);
         separator->setFrameShadow(QFrame::Sunken);
@@ -379,10 +601,6 @@ public:
         connect(italic, &QToolButton::toggled, this, [this](bool checked) {
             applyStyle({{QStringLiteral("fontStyle"), checked ? QStringLiteral("italic") : QStringLiteral("normal")}});
         });
-        connect(defaultColor, &QToolButton::toggled, this, [this](bool checked) {
-            if (checked) applyStyle({{colorKey(), QJsonValue(QJsonValue::Null)}});
-            else refreshColors();
-        });
         connect(reset, &QToolButton::clicked, this, [this] {
             applyStyle({{QStringLiteral("fontSize"), QJsonValue(QJsonValue::Null)},
                         {QStringLiteral("fontWeight"), QJsonValue(QJsonValue::Null)},
@@ -411,8 +629,8 @@ public:
         connect(controller, &MindMapController::selectionChanged, this, [this] { refresh(); });
         connect(controller, &MindMapController::documentChanged, this, [this] { refresh(); });
         connect(qApp, &QApplication::focusChanged, this, [this] { pendingColorRow = 0; });
-        for (auto *button : {textColor, fillColor, defaultColor}) button->installEventFilter(this);
-        for (auto *button : swatches) button->installEventFilter(this);
+        for (auto *button : {textColor, fillColor}) button->installEventFilter(this);
+        for (auto *button : palette->findChildren<QToolButton *>()) button->installEventFilter(this);
         fontSize->view()->installEventFilter(this);
         host->installEventFilter(this);
         view->installEventFilter(this);
@@ -426,16 +644,17 @@ public:
             icons->dismissPopup();
         }
         fontSize->setEnabled(!value);
-        for (auto *button : {bold, italic, reset, textColor, fillColor, defaultColor}) button->setEnabled(!value);
-        for (auto *button : swatches) button->setEnabled(!value);
+        for (auto *button : {bold, italic, reset, textColor, fillColor}) button->setEnabled(!value);
+        palette->setEnabled(!value);
         for (auto *input : {tags, static_cast<QLineEdit *>(icons), url, imageUrl}) input->setReadOnly(value);
         note->setReadOnly(value);
     }
     enum class Action { ToggleBold, ToggleItalic, ResetStyle, TextColor, FillColor, Tags, Icons, Note, ToggleProperties };
     void activate(Action action) {
         if (controller->isReadOnly() && action != Action::ToggleProperties) return;
+        const QPointer<NodePropertiesPanel> guard(this);
         refresh();
-        if (boundId.isEmpty()) return;
+        if (!guard || boundId.isEmpty()) return;
         QWidget *target = nullptr;
         switch (action) {
         case Action::ToggleBold:
@@ -498,9 +717,7 @@ protected:
                 pendingColorRow = 0;
                 if (digit >= 1 && digit <= 6) {
                     const int index = (row - 1) * 6 + digit - 1;
-                    const QJsonValue color = index == 0 ? QJsonValue(QJsonValue::Null)
-                        : QJsonValue(swatches.at(index - 1)->property("color").toString());
-                    applyStyle({{colorKey(), color}});
+                    palette->activateIndex(index);
                     // Applying a color may synchronously destroy the editor.
                 }
                 return true;
@@ -534,28 +751,19 @@ private:
     QLabel *title, *subtitle;
     QScrollArea *scroll;
     QComboBox *fontSize;
-    QToolButton *toggle, *bold, *italic, *reset, *textColor, *fillColor, *defaultColor;
+    QToolButton *toggle, *bold, *italic, *reset, *textColor, *fillColor;
     QLineEdit *tags, *url, *imageUrl;
     EmojiLineEdit *icons;
     QPlainTextEdit *note;
-    QList<QToolButton *> swatches;
+    NodeColorPalette *palette;
     QString boundId;
     QString presentedNodeId;
     bool presentedExpanded = false;
     bool repositioning = false;
     NodeStyle currentStyle;
     std::optional<NodeImage> currentImage;
-    int presetCount = 0;
     int pendingColorRow = 0;
     bool refreshing = false;
-    static QStringList commaValues(const QString &text) {
-        QStringList values;
-        for (const auto &part : text.split(QLatin1Char(','))) {
-            const QString value = part.trimmed();
-            if (!value.isEmpty()) values.append(value);
-        }
-        return values;
-    }
     QString colorKey() const {
         return fillColor->isChecked() ? QStringLiteral("background") : QStringLiteral("color");
     }
@@ -575,16 +783,12 @@ private:
     void refreshColors() {
         pendingColorRow = 0;
         const QColor color = fillColor->isChecked() ? currentStyle.backgroundColor : currentStyle.textColor;
-        for (auto *button : swatches) {
-            const QSignalBlocker blocker(button);
-            button->setChecked(color.isValid() && color == QColor(button->property("color").toString()));
-        }
-        const QSignalBlocker blocker(defaultColor);
-        defaultColor->setChecked(!color.isValid());
-        defaultColor->setToolTip(fillColor->isChecked() ? tr("Use the default fill") : tr("Use the default text color"));
+        palette->setColor(color, fillColor->isChecked() ? tr("Use the default fill") : tr("Use the default text color"));
     }
     void refresh() {
+        const QPointer<NodePropertiesPanel> lifetime(this);
         const auto properties = controller->nodeProperties(controller->selectedNodeId());
+        if (!lifetime) return;
         const bool sameNode = properties.id.isEmpty() == false && properties.id == boundId;
         const QScopedValueRollback<bool> guard(refreshing, true);
         boundId = properties.id;
@@ -615,18 +819,7 @@ private:
             const QSignalBlocker blocker(note);
             note->setPlainText(properties.note);
         }
-        {
-            const QSignalBlocker blocker(fontSize);
-            int index = fontSize->findData(double(properties.style.fontSize));
-            if (index < 0) {
-                if (fontSize->count() > presetCount) fontSize->removeItem(presetCount);
-                fontSize->addItem(tr("%1 px").arg(QString::number(properties.style.fontSize, 'g', 6)), double(properties.style.fontSize));
-                index = presetCount;
-            } else if (index < presetCount && fontSize->count() > presetCount) {
-                fontSize->removeItem(presetCount);
-            }
-            fontSize->setCurrentIndex(index);
-        }
+        syncFontSize(fontSize, properties.style.fontSize);
         {
             const QSignalBlocker blocker(bold);
             bold->setChecked(properties.style.bold.value_or(properties.root));
@@ -692,7 +885,7 @@ private:
     }
 };
 }
-class MindMapEditor::Private {
+class MindMapEditor::Private : public QObject {
     Q_DECLARE_TR_FUNCTIONS(m3::qt::MindMapEditor)
 public:
     MindMapEditor *host;
@@ -703,9 +896,204 @@ public:
     QAction *addChild, *addSibling, *addSiblingBefore, *editSelection, *deleteSelection, *toggleExpanded, *move, *up, *down, *addLink;
     QAction *rootSelection, *clearSelectionAction, *editLink, *toggleProperties, *copySelection;
     QAction *undoAction, *redoAction;
+    QAction *boldAction = nullptr, *italicAction = nullptr;
     QList<QAction *> nodeNavigation;
     NodePropertiesPanel *properties;
     QList<QAction *> nodeEditingActions;
+    QList<QAction *> toolbarFormattingActions;
+    FontSizeAction *fontSizeAction = nullptr;
+    quint64 formattingEpoch = 0;
+    struct FormattingBinding { quint64 epoch = 0; QString node; };
+    struct FormattingPopup {
+        QAction *action = nullptr;
+        QMenu *menu = nullptr;
+        QWidget *content = nullptr;
+        FormattingBinding binding;
+        QList<QPointer<QWidget>> presenters;
+    };
+    FormattingPopup textPopup, fillPopup, iconsPopup;
+    EmojiLineEdit *toolbarIcons = nullptr;
+    QList<FormattingPopup *> formattingPopups;
+    NodeColorPalette *textPalette = nullptr, *fillPalette = nullptr;
+    bool canFormat() const {
+        return host->isEnabled() && !controller->isReadOnly() &&
+            controller->selectedNodeIds().size() == 1 && !controller->selectedNodeId().isEmpty();
+    }
+    FormattingBinding formattingBinding() const {
+        return {formattingEpoch, controller->selectedNodeId()};
+    }
+    bool validBinding(const FormattingBinding &binding) const {
+        return binding.epoch == formattingEpoch && !binding.node.isEmpty() &&
+            binding.node == controller->selectedNodeId() && canFormat();
+    }
+    void invalidateFormatting() {
+        ++formattingEpoch;
+        const QPointer<MindMapEditor> guard(host);
+        if (fontSizeAction) fontSizeAction->hidePopups();
+        if (!guard) return;
+        for (auto *popup : formattingPopups) {
+            popup->binding = {};
+            popup->content->setEnabled(false);
+            popup->menu->hide();
+            if (!guard) return;
+        }
+    }
+    void rememberPresenters(FormattingPopup &popup) {
+        popup.presenters.clear();
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        const auto associated = popup.action->associatedObjects();
+#else
+        const auto associated = popup.action->associatedWidgets();
+#endif
+        for (auto *object : associated) {
+            auto *widget = qobject_cast<QWidget *>(object);
+            if (!widget || !widget->isVisible()) continue;
+            for (; widget; widget = widget->parentWidget()) {
+                if ((qobject_cast<QToolBar *>(widget) || (widget->isWindow() && !qobject_cast<QMenu *>(widget))) &&
+                    !popup.presenters.contains(widget)) popup.presenters.append(widget);
+            }
+        }
+    }
+    void preparePopup(FormattingPopup &popup) {
+        popup.content->setEnabled(false);
+        popup.binding = {};
+        const FormattingBinding binding = formattingBinding();
+        const QPointer<MindMapEditor> guard(host);
+        const QPointer<QMenu> menu(popup.menu);
+        const bool committed = validBinding(binding) && host->commitActiveEdit();
+        if (!guard || !menu) return;
+        if (!committed || !validBinding(binding)) {
+            const QPointer<QWidget> rejectedInput(committed ? nullptr : view->focusWidget());
+            QTimer::singleShot(0, menu, [guard, menu, rejectedInput] {
+                if (menu) menu->hide();
+                if (guard && rejectedInput && rejectedInput->isVisible() && guard->window()->isActiveWindow())
+                    rejectedInput->setFocus(Qt::OtherFocusReason);
+            });
+            syncFormatting();
+            return;
+        }
+        popup.binding = binding;
+        syncFormatting();
+        if (!guard || !menu) return;
+        if (!validBinding(binding)) { menu->hide(); return; }
+        rememberPresenters(popup);
+        if (&popup == &iconsPopup) {
+            const QSignalBlocker blocker(toolbarIcons);
+            QString text = toolbarIcons->text();
+            if (!text.isEmpty() && !text.trimmed().endsWith(QLatin1Char(','))) text += QStringLiteral(", ");
+            toolbarIcons->setText(text);
+            toolbarIcons->setCursorPosition(text.size());
+            static_cast<IconsMenu *>(popup.menu)->boundPickerSize();
+            const QPointer<QWidget> ancestor = QApplication::activePopupWidget();
+            if ((menu->windowFlags() & Qt::WindowType_Mask) == Qt::Tool && ancestor && ancestor != menu) {
+                // QMenu's submenu-opening stack still uses its parent after aboutToShow.
+                // Transfer only after it unwinds, then release the ancestor's keyboard
+                // grab and prepare the same bound node as an independent input menu.
+                QTimer::singleShot(0, menu, [this, guard, menu, ancestor, binding] {
+                    if (!guard || !menu || !menu->isVisible() || !validBinding(binding)) return;
+                    const QPoint anchor = menu->pos();
+                    if (ancestor) ancestor->hide();
+                    if (guard && menu && validBinding(binding)) menu->popup(anchor);
+                });
+                return; // Reject input during the popup-stack transfer.
+            }
+        }
+        popup.content->setEnabled(true);
+    }
+    void connectPopup(FormattingPopup &popup, const char *name, const char *label) {
+        popup.action = new QAction(propertiesText(label), host);
+        popup.action->setObjectName(QString::fromLatin1(name));
+        popup.action->setToolTip(popup.action->text());
+        popup.action->setMenu(popup.menu);
+        popup.menu->setObjectName(QString::fromLatin1(name) + QStringLiteral("Menu"));
+        popup.content->setEnabled(false);
+        auto *contentAction = new QWidgetAction(popup.menu);
+        contentAction->setDefaultWidget(popup.content);
+        popup.menu->addAction(contentAction);
+        toolbarFormattingActions.append(popup.action);
+        formattingPopups.append(&popup);
+        QObject::connect(popup.menu, &QMenu::aboutToShow, host, [this, &popup] { preparePopup(popup); });
+        QObject::connect(popup.menu, &QMenu::aboutToHide, host, [&popup] {
+            popup.binding = {};
+            popup.content->setEnabled(false);
+            popup.presenters.clear();
+        });
+    }
+    void applyPopup(FormattingPopup &popup, const QJsonObject &patch, bool closeAfterApply) {
+        if (!popup.menu->isVisible() || !popup.content->isEnabled() || !validBinding(popup.binding)) return;
+        const FormattingBinding binding = popup.binding;
+        const QPointer<MindMapEditor> guard(host);
+        const QPointer<QMenu> menu(popup.menu);
+        const QByteArray json = QJsonDocument(patch).toJson(QJsonDocument::Compact);
+        const bool applied = controller->updateNodeProperties(binding.node, json);
+        if (!guard || !menu) return;
+        syncFormatting();
+        if (!guard || !menu || !applied || !validBinding(binding) || !closeAfterApply) return;
+        menu->hide();
+        if (guard && host->window()->isActiveWindow()) view->setFocus(Qt::OtherFocusReason);
+    }
+    void createColorPopup(FormattingPopup &popup, const char *name, const char *label,
+                          const QString &prefix, const QString &key, NodeColorPalette *&palette) {
+        auto *menu = new ColorMenu(host);
+        popup.menu = menu;
+        palette = new NodeColorPalette(menu, prefix, [this, &popup, key](const QJsonValue &color) {
+            applyPopup(popup, {{QStringLiteral("style"), QJsonObject{{key, color}}}}, true);
+        });
+        menu->palette = palette;
+        popup.content = palette;
+        connectPopup(popup, name, label);
+    }
+    void createIconsPopup() {
+        auto *menu = new IconsMenu(host);
+        iconsPopup.menu = menu;
+        auto *content = new QWidget(menu);
+        auto *layout = new QVBoxLayout(content);
+        layout->setContentsMargins(8, 8, 8, 8);
+        layout->setSpacing(6);
+        toolbarIcons = new EmojiLineEdit(content, EmojiLineEdit::PickerMode::Embedded);
+        toolbarIcons->setObjectName(QStringLiteral("toolbarNodeIcons"));
+        toolbarIcons->setAccessibleName(propertiesText("Icons"));
+        toolbarIcons->setPlaceholderText(propertiesText("Search emoji names or paste emoji"));
+        layout->addWidget(toolbarIcons);
+        layout->addWidget(toolbarIcons->pickerWidget(), 1);
+        menu->input = toolbarIcons;
+        iconsPopup.content = content;
+        connectPopup(iconsPopup, "iconsPopup", "Icons");
+        QObject::connect(toolbarIcons, &QLineEdit::textChanged, host, [this](const QString &text) {
+            applyPopup(iconsPopup, {{QStringLiteral("icons"), QJsonArray::fromStringList(commaValues(text))}}, false);
+        });
+    }
+    void applyFontSize(qreal size) {
+        const FormattingBinding binding = formattingBinding();
+        const QPointer<MindMapEditor> guard(host);
+        if (!validBinding(binding)) { syncFormatting(); return; }
+        const bool committed = host->commitActiveEdit();
+        if (!guard) return;
+        if (!committed || !validBinding(binding)) { syncFormatting(); return; }
+        const QJsonObject style{{QStringLiteral("fontSize"), size > 0 ? QJsonValue(size) : QJsonValue(QJsonValue::Null)}};
+        const QByteArray patch = QJsonDocument(QJsonObject{{QStringLiteral("style"), style}}).toJson(QJsonDocument::Compact);
+        controller->updateNodeProperties(binding.node, patch);
+        if (guard) syncFormatting();
+    }
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        const QPointer<MindMapEditor> guard(host);
+        if (watched == host) {
+            if (event->type() == QEvent::Hide) invalidateFormatting();
+            else if (event->type() == QEvent::EnabledChange) {
+                invalidateFormatting();
+                if (guard) updateActions();
+            }
+        } else if (event->type() == QEvent::Hide || event->type() == QEvent::Close || event->type() == QEvent::Destroy) {
+            for (const auto *popup : formattingPopups) {
+                bool presenting = false;
+                for (const auto &presenter : popup->presenters) {
+                    if (presenter.data() == watched) { presenting = true; break; }
+                }
+                if (presenting) { invalidateFormatting(); break; }
+            }
+        }
+        return false;
+    }
     enum class TopicOperation { Child, SiblingAfter, SiblingBefore };
     enum class Navigation { Parent, Child, PreviousSibling, NextSibling };
     QString shortcutHelpText;
@@ -787,10 +1175,19 @@ public:
             result->setShortcuts(editing ? QList<QKeySequence>{} : shortcuts);
         });
         QObject::connect(result, &QAction::triggered, host, [this, result, command = std::move(command)] {
-            if (!result->isEnabled()) return;
             const QPointer<MindMapEditor> guard(host);
-            if (!view->finishTopicEdit(true) || !guard || !result->isEnabled()) return;
+            if (!result->isEnabled()) { syncFormatting(); return; }
+            const bool appearance = result == boldAction || result == italicAction ||
+                result->objectName() == QStringLiteral("resetStyle");
+            const FormattingBinding binding = formattingBinding();
+            const bool committed = view->finishTopicEdit(true);
+            if (!guard) return;
+            if (!committed || !result->isEnabled() || (appearance && !validBinding(binding))) {
+                syncFormatting();
+                return;
+            }
             command();
+            if (guard) syncFormatting();
         });
         return result;
     }
@@ -802,14 +1199,36 @@ public:
         for (const auto &node : nodes)
             if (!excluded.contains(node.id)) picker->addItem(node.topic + QStringLiteral(" [") + node.id + QLatin1Char(']'), node.id);
     }
+    void syncFormatting() {
+        const QPointer<MindMapEditor> guard(host);
+        const auto node = controller->nodeProperties(controller->selectedNodeId());
+        if (!guard) return;
+        if (boldAction) {
+            const QSignalBlocker blocker(boldAction);
+            boldAction->setChecked(node.style.bold.value_or(node.root));
+        }
+        if (italicAction) {
+            const QSignalBlocker blocker(italicAction);
+            italicAction->setChecked(node.style.italic.value_or(view->font().italic()));
+        }
+        if (fontSizeAction) fontSizeAction->synchronize(node.style.fontSize);
+        if (textPalette) textPalette->setColor(node.style.textColor, propertiesText("Use the default text color"));
+        if (fillPalette) fillPalette->setColor(node.style.backgroundColor, propertiesText("Use the default fill"));
+        if (toolbarIcons && commaValues(toolbarIcons->text()) != node.icons) {
+            const QSignalBlocker blocker(toolbarIcons);
+            toolbarIcons->setText(node.icons.join(QStringLiteral(", ")));
+        }
+    }
     void updateActions() {
+        const QPointer<MindMapEditor> guard(host);
         const auto nodes = controller->choices();
+        if (!guard) return;
         const auto *node = choice(nodes, controller->selectedNodeId());
         const bool hasLink = controller->selectedLinkId().isEmpty() == false;
         const auto selectedNodes = controller->selectedNodeIds();
         const bool hasNodes = !selectedNodes.isEmpty();
         const bool deletableNodes = hasNodes && !nodes.empty() && !selectedNodes.contains(nodes.front().id);
-        const bool writable = !controller->isReadOnly();
+        const bool writable = host->isEnabled() && !controller->isReadOnly();
         const bool movable = writable && node && !node->parent.isEmpty();
         undoAction->setEnabled(controller->canUndo());
         redoAction->setEnabled(controller->canRedo());
@@ -817,6 +1236,8 @@ public:
         addSibling->setEnabled(writable && node); addSiblingBefore->setEnabled(writable && node);
         for (auto *action : nodeNavigation) action->setEnabled(node);
         for (auto *action : nodeEditingActions) action->setEnabled(node && (writable || action == toggleProperties));
+        for (auto *action : toolbarFormattingActions) action->setEnabled(writable && node);
+        if (!writable || !node) fontSizeAction->hidePopups();
         properties->setReadOnly(!writable);
         copySelection->setEnabled(hasNodes || hasLink);
         rootSelection->setEnabled(!nodes.empty());
@@ -831,6 +1252,7 @@ public:
         const auto index = parent ? parent->children.indexOf(node->id) : -1;
         up->setEnabled(writable && parent && index > 0);
         down->setEnabled(writable && parent && index >= 0 && index + 1 < parent->children.size());
+        syncFormatting();
     }
     void createNode(TopicOperation operation) {
         if (controller->isReadOnly()) return;
@@ -962,7 +1384,7 @@ public:
         const auto *parent = node ? choice(nodes, node->parent) : nullptr;
         if (parent) controller->moveNode(node->id, parent->id, int(parent->children.indexOf(node->id)) + delta);
     }
-    Private(MindMapEditor *editor, const EditorConfig &settings) : host(editor), config(settings) {
+    Private(MindMapEditor *editor, const EditorConfig &settings) : QObject(editor), host(editor), config(settings) {
         auto *layout = new QVBoxLayout(editor);
         layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(0);
@@ -1025,8 +1447,8 @@ public:
         layout->addWidget(view, 1); layout->addWidget(error);
         properties = new NodePropertiesPanel(editor, view, controller);
         nodeEditingActions = {
-            action("toggleBold", tr("Toggle bold"), config.shortcuts.toggleBold, [this] { properties->activate(NodePropertiesPanel::Action::ToggleBold); }),
-            action("toggleItalic", tr("Toggle italic"), config.shortcuts.toggleItalic, [this] { properties->activate(NodePropertiesPanel::Action::ToggleItalic); }),
+            boldAction = action("toggleBold", tr("Toggle bold"), config.shortcuts.toggleBold, [this] { properties->activate(NodePropertiesPanel::Action::ToggleBold); }),
+            italicAction = action("toggleItalic", tr("Toggle italic"), config.shortcuts.toggleItalic, [this] { properties->activate(NodePropertiesPanel::Action::ToggleItalic); }),
             action("resetStyle", tr("Reset style"), config.shortcuts.resetStyle, [this] { properties->activate(NodePropertiesPanel::Action::ResetStyle); }),
             action("textColor", tr("Text color"), config.shortcuts.textColor, [this] { properties->activate(NodePropertiesPanel::Action::TextColor); }),
             action("fillColor", tr("Fill color"), config.shortcuts.fillColor, [this] { properties->activate(NodePropertiesPanel::Action::FillColor); }),
@@ -1039,6 +1461,15 @@ public:
                 if (!id.isEmpty()) view->beginTopicEdit(id, config.shortcuts.acceptTopic);
             })
         };
+        boldAction->setCheckable(true);
+        italicAction->setCheckable(true);
+        fontSizeAction = new FontSizeAction(editor, [this](qreal size) { applyFontSize(size); });
+        toolbarFormattingActions.append(fontSizeAction);
+        createColorPopup(textPopup, "textColorPopup", "Text color", QStringLiteral("toolbarText_"),
+                         QStringLiteral("color"), textPalette);
+        createColorPopup(fillPopup, "fillColorPopup", "Fill color", QStringLiteral("toolbarFill_"),
+                         QStringLiteral("background"), fillPalette);
+        createIconsPopup();
         for (auto *action : nodeEditingActions) action->setAutoRepeat(false);
         action("showHelp", tr("Keyboard shortcuts"), config.shortcuts.showHelp, [this] { showHelp(); })->setAutoRepeat(false);
         // Snapshot configured bindings before inline editing temporarily clears them.
@@ -1128,13 +1559,21 @@ public:
             }
             menu.exec(view->mapToGlobal(point));
         });
-        QObject::connect(controller, &MindMapController::documentChanged, editor, [this, editor] { updateActions(); emit editor->documentChanged(); });
+        QObject::connect(controller, &MindMapController::documentChanged, editor, [this, editor] {
+            const QPointer<MindMapEditor> guard(editor);
+            updateActions();
+            if (guard) emit editor->documentChanged();
+        });
         QObject::connect(controller, &MindMapController::undoAvailable, undoAction, &QAction::setEnabled);
         QObject::connect(controller, &MindMapController::redoAvailable, redoAction, &QAction::setEnabled);
         QObject::connect(controller, &MindMapController::undoAvailable, editor, &MindMapEditor::undoAvailable);
         QObject::connect(controller, &MindMapController::redoAvailable, editor, &MindMapEditor::redoAvailable);
         QObject::connect(controller, &MindMapController::selectionChanged, editor, [this, editor](const QString &node, const QString &link) {
-            updateActions(); emit editor->selectionChanged(node, link);
+            const QPointer<MindMapEditor> guard(editor);
+            invalidateFormatting();
+            if (!guard) return;
+            updateActions();
+            if (guard) emit editor->selectionChanged(node, link);
         });
         QObject::connect(controller, &MindMapController::errorOccurred, editor, [this, editor](const QString &message) {
             error->setText(message); error->show(); emit editor->errorOccurred(message);
@@ -1173,6 +1612,7 @@ public:
         QObject::connect(view, &MindMapView::emptyPicked, controller, &MindMapController::clearSelection);
         QObject::connect(view, &MindMapView::expansionRequested, controller, &MindMapController::setExpanded);
         QObject::connect(view, &MindMapView::appearanceChanged, controller, &MindMapController::refreshAppearance);
+        QObject::connect(view, &MindMapView::appearanceChanged, editor, [this] { syncFormatting(); });
         QObject::connect(view, &MindMapView::editRequested, editSelection, &QAction::trigger);
         QObject::connect(view, &MindMapView::linkEndpointChangeRequested, controller, &MindMapController::reconnectLink);
         QObject::connect(view, &MindMapView::linkCreationRequested, editor, [this](const QString &source, const QString &target) {
@@ -1181,6 +1621,7 @@ public:
             if (guard && !created.isEmpty() && controller->selectedLinkId() == created)
                 view->beginLinkTopicEdit(created, config.shortcuts.acceptTopic);
         });
+        qApp->installEventFilter(this);
         controller->newDocument(QStringLiteral("Central topic"));
         updateActions();
     }
@@ -1192,6 +1633,7 @@ MindMapEditor::MindMapEditor(const EditorConfig &config, QWidget *parent)
     d = std::make_unique<Private>(this, config);
 }
 MindMapEditor::~MindMapEditor() {
+    d->invalidateFormatting();
     // Disarm the input before QWidget teardown can send it a committing FocusOut.
     delete d->view;
 }
@@ -1203,12 +1645,22 @@ QString MindMapEditor::resolveDroppedFileUrl(const QString &filePath) const {
 }
 void MindMapEditor::onAddUrl(const QString &) {}
 void MindMapEditor::onAddImage(const QString &) {}
-bool MindMapEditor::newDocument(const QString &topic) { return d->controller->newDocument(topic); }
-bool MindMapEditor::loadJson(const QByteArray &json) { return d->controller->loadJson(json); }
+bool MindMapEditor::newDocument(const QString &topic) {
+    const QPointer<MindMapEditor> guard(this);
+    d->invalidateFormatting();
+    return guard && d->controller->newDocument(topic);
+}
+bool MindMapEditor::loadJson(const QByteArray &json) {
+    const QPointer<MindMapEditor> guard(this);
+    d->invalidateFormatting();
+    return guard && d->controller->loadJson(json);
+}
 bool MindMapEditor::commitActiveEdit(bool keepEditing) { return d->view->finishTopicEdit(true, false, keepEditing); }
 bool MindMapEditor::hasPendingEdit() const { return d->view->hasPendingEdit(); }
 void MindMapEditor::setReadOnly(bool value) {
     const QPointer<MindMapEditor> guard(this);
+    if (value != d->controller->isReadOnly()) d->invalidateFormatting();
+    if (!guard) return;
     d->controller->setReadOnly(value);
     if (!guard) return;
     if (d->controller->isReadOnly() && d->mutationDialog) d->mutationDialog->reject();

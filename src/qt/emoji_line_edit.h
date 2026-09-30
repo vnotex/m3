@@ -14,7 +14,9 @@ namespace m3::qt {
 class EmojiLineEdit final : public QLineEdit {
     Q_DECLARE_TR_FUNCTIONS(m3::qt::EmojiLineEdit)
 public:
-    explicit EmojiLineEdit(QWidget *parent = nullptr);
+    enum class PickerMode { Floating, Embedded };
+    explicit EmojiLineEdit(QWidget *parent = nullptr, PickerMode mode = PickerMode::Floating);
+    QWidget *pickerWidget() const;
     ~EmojiLineEdit() override;
     void dismissPopup();
 protected:
@@ -25,6 +27,7 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
 private:
+    const PickerMode mode;
     QFrame *popup = nullptr;
     QComboBox *categories = nullptr;
     QListView *choices = nullptr;

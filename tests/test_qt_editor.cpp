@@ -42,6 +42,7 @@
 #include <QLineEdit>
 #include <QListView>
 #include <QMessageBox>
+#include <QMainWindow>
 #include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
@@ -3607,6 +3608,603 @@ static void auto_branch_color_case() {
     CHECK(child != sibling && !record(exported(editor), "nodes", child).at("style").contains("branchColor"));
     CHECK(changed.size() == 3);
     topicKey(editor, Qt::Key_Escape);
+}
+
+static void formatting_toolbar_case() {
+    const QString a = QStringLiteral("a"), b = QStringLiteral("b"), root = QStringLiteral("r");
+    const QString alpha = QStringLiteral("Alpha"), grin = QString::fromUtf8("😀");
+    const char *const names[] = {"fontSize", "toggleBold", "toggleItalic", "resetStyle",
+                                "textColorPopup", "fillColorPopup", "iconsPopup"};
+    auto node = [](Json &doc, const QString &id) -> Json & {
+        for (auto &entry : doc.at("nodes")) if (entry.at("id") == utf8(id)) return entry;
+        throw std::runtime_error("Missing formatting fixture node");
+    };
+    Json fixture = editorFixture();
+    node(fixture, a)["style"] = Json{{"branchColor", "#27ae60"},
+        {"custom", {{"integer", UINT64_C(9007199254740993)}, {"nested", Json::array({true, "opaque"})}}}};
+    node(fixture, a)["icons"] = Json::array();
+    node(fixture, a)["tags"] = Json::array({"retained"});
+    node(fixture, a)["hyperLink"] = "https://example.test/retained";
+    node(fixture, a)["note"] = "Retained note";
+    node(fixture, a)["image"] = Json{{"url", "memory:retained"}, {"width", 31}, {"height", 19}};
+
+    QMainWindow host;
+    auto *editor = new Editor;
+    auto *surface = new QWidget;
+    auto *surfaceLayout = new QVBoxLayout(surface);
+    surfaceLayout->setContentsMargins(0, 0, 0, 0);
+    // VNote embeds toolbars in a view layout; QMainWindow dock toolbars expand in place instead.
+    auto *toolbar = new QToolBar(QStringLiteral("Formatting"), surface);
+    surfaceLayout->addWidget(toolbar);
+    surfaceLayout->addWidget(editor, 1);
+    host.setCentralWidget(surface);
+    toolbar->setMovable(false);
+    for (const char *name : names) {
+        auto &action = editAction(*editor, name);
+        toolbar->addAction(&action);
+        if (action.menu()) {
+            auto *button = qobject_cast<QToolButton *>(toolbar->widgetForAction(&action));
+            CHECK(button != nullptr);
+            button->setPopupMode(QToolButton::InstantPopup);
+        }
+    }
+    CHECK(editor->loadJson(encoded(fixture)));
+    CHECK(editor->setLayoutDirection(Editor::LayoutDirection::Right));
+    host.resize(1400, 900);
+    host.show();
+    host.activateWindow();
+    showEditor(*editor, QSize(1400, 850));
+    auto &view = graphics(*editor);
+    auto *panel = editor->findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
+    CHECK(panel != nullptr);
+    auto *scroll = panel->findChild<QScrollArea *>();
+    auto *toggle = panel->findChild<QAbstractButton *>(QStringLiteral("nodePropertiesToggle"));
+    auto *cardSize = panel->findChild<QComboBox *>(QStringLiteral("nodeFontSize"));
+    auto *cardBold = panel->findChild<QAbstractButton *>(QStringLiteral("nodeBold"));
+    auto *cardItalic = panel->findChild<QAbstractButton *>(QStringLiteral("nodeItalic"));
+    auto *size = toolbar->findChild<QComboBox *>(QStringLiteral("toolbarFontSize"));
+    CHECK(scroll && toggle && cardSize && cardBold && cardItalic && size);
+    auto menuFor = [&](const char *name) {
+        auto *menu = editAction(*editor, name).menu();
+        CHECK(menu != nullptr);
+        return menu;
+    };
+    auto *textMenu = menuFor("textColorPopup");
+    auto *fillMenu = menuFor("fillColorPopup");
+    auto *iconsMenu = menuFor("iconsPopup");
+    auto open = [&](const char *name) {
+        host.activateWindow();
+        pump();
+        auto &action = editAction(*editor, name);
+        CHECK(action.isEnabled());
+        auto *widget = toolbar->widgetForAction(&action);
+        CHECK(widget != nullptr);
+        auto *menu = menuFor(name);
+        menu->popup(widget->mapToGlobal(QPoint(0, widget->height())));
+        pump();
+        CHECK(menu->isVisible());
+        return menu;
+    };
+    auto dismiss = [&](QMenu *menu) {
+        QTest::keyClick(menu, Qt::Key_Escape);
+        pump();
+        CHECK(!menu->isVisible());
+    };
+    auto swatch = [](QMenu *menu, const char *name) {
+        auto *button = menu->findChild<QAbstractButton *>(QString::fromLatin1(name));
+        CHECK(button != nullptr);
+        return button;
+    };
+    auto chooseSize = [](QComboBox *combo, int pixels) {
+        const int index = combo->findData(pixels);
+        CHECK(index >= 0);
+        combo->showPopup();
+        pump();
+        auto *choices = combo->view();
+        CHECK(choices->isVisible());
+        choices->setCurrentIndex(combo->model()->index(index, 0));
+        QTest::keyClick(choices, Qt::Key_Return);
+        pump();
+    };
+    auto chooseColor = [&](const char *action, const char *button) {
+        auto *menu = open(action);
+        QTest::mouseClick(swatch(menu, button), Qt::LeftButton);
+        pump();
+        CHECK(!menu->isVisible() && view.hasFocus());
+    };
+    auto resetDocument = [&](const Json &doc) {
+        textMenu->hide(); fillMenu->hide(); iconsMenu->hide();
+        editor->setEnabled(true);
+        editor->setReadOnly(false);
+        CHECK(editor->loadJson(encoded(doc)));
+        CHECK(editor->selectNode(a));
+        host.activateWindow();
+        view.setFocus();
+        pump();
+        CHECK(!editor->canUndo() && !editor->canRedo());
+    };
+    auto iconsInput = [&] {
+        auto *input = iconsMenu->findChild<QLineEdit *>(QStringLiteral("toolbarNodeIcons"));
+        CHECK(input != nullptr);
+        return input;
+    };
+    auto emojiChoices = [&] {
+        auto *choices = iconsMenu->findChild<QListView *>(QStringLiteral("emojiChoices"));
+        CHECK(choices != nullptr);
+        return choices;
+    };
+    auto emojiIndex = [&](const QString &name) {
+        auto *choices = emojiChoices();
+        for (int row = 0; row < choices->model()->rowCount(); ++row) {
+            const QModelIndex index = choices->model()->index(row, 0);
+            if (index.data().toString() == name) return index;
+        }
+        throw std::runtime_error("Missing emoji result: " + utf8(name));
+    };
+    auto clickEmoji = [&](const QString &name) {
+        auto *choices = emojiChoices();
+        const auto index = emojiIndex(name);
+        choices->scrollTo(index);
+        pump();
+        const QRect cell = choices->visualRect(index);
+        CHECK(choices->viewport()->rect().contains(cell.center()));
+        QTest::mouseClick(choices->viewport(), Qt::LeftButton, Qt::NoModifier, cell.center());
+        pump();
+        CHECK(iconsMenu->isVisible() && iconsInput()->hasFocus());
+    };
+    auto synchronized = [&](int pixels) {
+        auto *label = textItem(*editor, alpha);
+        CHECK(size->currentData().toInt() == pixels && cardSize->currentData().toInt() == pixels);
+        CHECK(editAction(*editor, "toggleBold").isChecked() == label->font().bold());
+        CHECK(editAction(*editor, "toggleItalic").isChecked() == label->font().italic());
+        CHECK(cardBold->isChecked() == label->font().bold());
+        CHECK(cardItalic->isChecked() == label->font().italic());
+        const Json appearance = record(exported(*editor), "nodes", a).at("style");
+        for (bool fill : {false, true}) {
+            auto *menu = open(fill ? "fillColorPopup" : "textColorPopup");
+            const std::string key = fill ? "background" : "color";
+            const QString prefix = fill ? QStringLiteral("toolbarFill_") : QStringLiteral("toolbarText_");
+            const QString name = prefix + (appearance.contains(key)
+                ? QStringLiteral("nodeColor_") + qs(appearance.at(key)).mid(1)
+                : QStringLiteral("nodeDefaultColor"));
+            auto *button = menu->findChild<QAbstractButton *>(name);
+            CHECK(button && button->isChecked());
+            dismiss(menu);
+            auto *mode = panel->findChild<QAbstractButton *>(fill ? QStringLiteral("nodeFillColor") : QStringLiteral("nodeTextColor"));
+            CHECK(mode != nullptr); mode->click();
+            auto *cardSwatch = panel->findChild<QAbstractButton *>(name.mid(prefix.size()));
+            CHECK(cardSwatch && cardSwatch->isChecked());
+        }
+        const Json current = exported(*editor);
+        QStringList values;
+        for (const auto &icon : record(current, "nodes", a).at("icons")) values.append(qs(icon));
+        CHECK(panel->findChild<QLineEdit *>(QStringLiteral("nodeIcons"))->text() == values.join(QStringLiteral(", ")));
+    };
+
+    // Each toolbar edit is one undoable native command, not a parallel host-side state.
+    resetDocument(fixture);
+    const Json baseline = exported(*editor);
+    const QTransform zoom = view.transform();
+    QSignalSpy changed(editor, &Editor::documentChanged);
+    for (const char *name : {"textColorPopup", "fillColorPopup", "iconsPopup"}) dismiss(open(name));
+    CHECK(editor->selectNode(b) && editor->selectNode(a));
+    CHECK(exported(*editor) == baseline && changed.isEmpty() && !editor->canUndo());
+    const qreal normalHeight = topicRect(*editor, alpha).height();
+    std::vector<Json> history{baseline};
+    auto snapshot = [&] { history.push_back(exported(*editor)); CHECK(changed.size() == int(history.size()) - 1); };
+    chooseSize(size, 24);
+    CHECK(textItem(*editor, alpha)->font().pixelSize() == 24);
+    CHECK(topicRect(*editor, alpha).height() > normalHeight);
+    snapshot();
+    trigger(*editor, "toggleBold");
+    CHECK(textItem(*editor, alpha)->font().bold()); snapshot();
+    trigger(*editor, "toggleItalic");
+    CHECK(textItem(*editor, alpha)->font().italic()); snapshot();
+    chooseColor("textColorPopup", "toolbarText_nodeColor_e74c3c");
+    CHECK(textItem(*editor, alpha)->defaultTextColor() == QColor(QStringLiteral("#e74c3c"))); snapshot();
+    const QRectF paintedRect = topicRect(*editor, alpha);
+    const QImage unfilled = paintScene(*editor, paintedRect);
+    chooseColor("fillColorPopup", "toolbarFill_nodeColor_a9d6f5");
+    CHECK(paintScene(*editor, paintedRect) != unfilled); snapshot();
+    open("iconsPopup");
+    clickEmoji(QStringLiteral("grinning face"));
+    CHECK(record(exported(*editor), "nodes", a).at("icons") == Json::array({utf8(grin)}));
+    CHECK(ownerItem(textItem(*editor, grin)) == ownerItem(textItem(*editor, alpha)));
+    dismiss(iconsMenu); snapshot();
+    Json styled = baseline;
+    auto &style = node(styled, a)["style"];
+    style["fontSize"] = 24; style["fontWeight"] = "bold"; style["fontStyle"] = "italic";
+    style["color"] = "#e74c3c"; style["background"] = "#a9d6f5";
+    node(styled, a)["icons"] = Json::array({utf8(grin)});
+    CHECK(exported(*editor) == styled && view.transform() == zoom);
+    for (int index = int(history.size()) - 2; index >= 0; --index) {
+        CHECK(editor->undo()); pump();
+        CHECK(exported(*editor) == history[size_t(index)]);
+        synchronized(index == 0 ? 0 : 24);
+    }
+    CHECK(!editor->canUndo());
+    for (size_t index = 1; index < history.size(); ++index) {
+        CHECK(editor->redo()); pump();
+        CHECK(exported(*editor) == history[index]);
+        synchronized(24);
+    }
+    CHECK(!editor->canRedo());
+    trigger(*editor, "resetStyle");
+    Json reset = baseline;
+    node(reset, a)["icons"] = Json::array({utf8(grin)});
+    CHECK(exported(*editor) == reset);
+    synchronized(0);
+    CHECK(!textItem(*editor, alpha)->font().bold() && !textItem(*editor, alpha)->font().italic());
+    CHECK(editor->undo() && exported(*editor) == styled);
+    CHECK(editor->redo() && exported(*editor) == reset);
+
+    // Parsed imported state, root/inherited defaults, and unavailable selections never rewrite JSON.
+    Json imported = fixture;
+    node(imported, a)["style"]["fontSize"] = 17;
+    node(imported, a)["style"]["fontWeight"] = 700;
+    node(imported, a)["style"]["fontStyle"] = "normal";
+    resetDocument(imported);
+    const Json importedBaseline = exported(*editor);
+    changed.clear();
+    synchronized(17);
+    CHECK(size->findData(17) >= 0 && textItem(*editor, alpha)->font().pixelSize() == 17);
+    CHECK(editAction(*editor, "toggleBold").isChecked() && !editAction(*editor, "toggleItalic").isChecked());
+    CHECK(editor->selectNode(root));
+    CHECK(size->currentData().toInt() == 0 && size->findData(17) < 0);
+    CHECK(editAction(*editor, "toggleBold").isChecked());
+    QFont originalFont = editor->font(), italicFont = originalFont;
+    italicFont.setItalic(true);
+    editor->setFont(italicFont); pump();
+    CHECK(editAction(*editor, "toggleItalic").isChecked());
+    CHECK(editor->selectNode(a) && !editAction(*editor, "toggleItalic").isChecked());
+    editor->setFont(originalFont); pump();
+    auto blocked = [&] {
+        for (const char *name : names) { auto &action = editAction(*editor, name); CHECK(!action.isEnabled()); action.trigger(); }
+        CHECK(!size->isEnabled());
+        CHECK(QMetaObject::invokeMethod(size, "activated", Q_ARG(int, size->findData(24))));
+        pump();
+        CHECK(exported(*editor) == importedBaseline && changed.isEmpty() && !editor->canUndo());
+    };
+    editor->setReadOnly(true); blocked();
+    shortcut(*editor, Qt::Key_Right);
+    CHECK(editor->selectedNodeId() == QStringLiteral("d"));
+    editor->setReadOnly(false);
+    CHECK(editor->selectLink(QStringLiteral("l1"))); blocked();
+    CHECK(editor->selectNode(a));
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ControlModifier, labelPoint(*editor, QStringLiteral("Beta")));
+    pump(); CHECK(editor->selectedNodeIds() == QStringList({a, b})); blocked();
+    editor->clearSelection(); blocked();
+    shortcut(*editor, Qt::Key_Home);
+    CHECK(editor->selectedNodeId() == root && exported(*editor) == importedBaseline);
+
+    // Rejected inline commits preserve the draft/caret and undo QAction's optimistic check state.
+    resetDocument(fixture);
+    shortcut(*editor, Qt::Key_F2);
+    auto *draft = &topicInput(*editor);
+    const QString rejected = QStringLiteral("Invalid") + QChar(QChar::Null) + QStringLiteral("draft");
+    draft->setPlainText(rejected);
+    auto cursor = draft->textCursor(); cursor.setPosition(2); cursor.setPosition(5, QTextCursor::KeepAnchor);
+    draft->setTextCursor(cursor);
+    changed.clear();
+    QSignalSpy errors(editor, &Editor::errorOccurred);
+    auto rejectedIntact = [&] {
+        pump();
+        CHECK(activeTopicInput(*editor) == draft && draft->hasFocus());
+        CHECK(draft->toPlainText() == rejected && draft->textCursor().anchor() == 2 && draft->textCursor().position() == 5);
+        CHECK(exported(*editor) == baseline && changed.isEmpty() && !editor->canUndo());
+        CHECK(!editAction(*editor, "toggleBold").isChecked() && size->currentData().toInt() == 0);
+    };
+    trigger(*editor, "toggleBold"); rejectedIntact();
+    // Keyboard activation avoids a synthetic focus transfer committing the draft before the size handler.
+    QTest::keyClick(size, Qt::Key_Down); rejectedIntact();
+    textMenu->popup(toolbar->mapToGlobal(QPoint(0, toolbar->height())));
+    pump(); CHECK(!textMenu->isVisible());
+    host.activateWindow(); // Offscreen popup dismissal may deactivate the host.
+    rejectedIntact();
+    CHECK(!errors.isEmpty());
+    draft->setPlainText(QStringLiteral("Accepted toolbar draft"));
+    trigger(*editor, "toggleBold");
+    Json committed = baseline;
+    setTopic(committed, "a", QStringLiteral("Accepted toolbar draft"));
+    Json committedBold = committed; node(committedBold, a)["style"]["fontWeight"] = "bold";
+    CHECK(exported(*editor) == committedBold && changed.size() == 2 && !activeTopicInput(*editor));
+    CHECK(editor->undo() && exported(*editor) == committed);
+    CHECK(editor->undo() && exported(*editor) == baseline && !editor->canUndo());
+    CHECK(editor->redo() && exported(*editor) == committed);
+    CHECK(editor->redo() && exported(*editor) == committedBold);
+
+    // An old popup cannot mutate a same-ID replacement, or resume after a transient lock.
+    for (int invalidation : {0, 1, 2, 3, 4, 5, 6}) {
+        for (bool icons : {false, true}) {
+            resetDocument(fixture);
+            auto *menu = open(icons ? "iconsPopup" : "textColorPopup");
+            auto *oldSwatch = icons ? nullptr : swatch(menu, "toolbarText_nodeColor_e74c3c");
+            auto *oldInput = icons ? iconsInput() : nullptr;
+            Json replacement = baseline;
+            if (invalidation == 0) {
+                setTopic(replacement, "a", QStringLiteral("Replacement with reused id"));
+                CHECK(editor->loadJson(encoded(replacement)));
+                CHECK(editor->selectNode(a));
+            } else if (invalidation == 1) editor->setReadOnly(true);
+            else if (invalidation == 2) editor->setEnabled(false);
+            else if (invalidation == 3) CHECK(!editor->loadJson(QByteArray("not JSON")));
+            else if (invalidation == 4) CHECK(editor->selectNode(b));
+            else if (invalidation == 5) toolbar->hide();
+            else host.hide();
+            pump(); CHECK(!menu->isVisible());
+            const Json retained = exported(*editor);
+            editor->setReadOnly(false); editor->setEnabled(true); toolbar->show(); host.show();
+            CHECK(editor->selectNode(a));
+            if (oldInput) oldInput->setText(QStringLiteral("stale icon"));
+            else oldSwatch->click();
+            pump();
+            CHECK(exported(*editor) == retained);
+            if (invalidation == 0) CHECK(retained == replacement);
+        }
+    }
+    resetDocument(fixture);
+    size->showPopup(); pump(); CHECK(size->view()->isVisible());
+    editor->setReadOnly(true); pump();
+    CHECK(!size->view()->isVisible() && !size->isEnabled());
+    editor->setReadOnly(false);
+
+    // Immediate host deletion from a successful command or its inline-commit prerequisite is safe.
+    for (int operation : {0, 1, 2, 3, 4}) {
+        QMainWindow closingHost;
+        QPointer<Editor> closing = new Editor;
+        closingHost.setCentralWidget(closing);
+        auto *closingToolbar = closingHost.addToolBar(QStringLiteral("Formatting"));
+        for (const char *name : names) closingToolbar->addAction(&editAction(*closing, name));
+        CHECK(closing->loadJson(encoded(fixture)) && closing->selectNode(a));
+        closingHost.resize(1400, 900); closingHost.show(); showEditor(*closing);
+        QPointer<QAction> action = &editAction(*closing, operation == 0 || operation == 4 ? "toggleBold" :
+            operation == 1 ? "fontSize" : operation == 2 ? "textColorPopup" : "iconsPopup");
+        if (operation == 4) {
+            shortcut(*closing, Qt::Key_F2);
+            topicInput(*closing).setPlainText(QStringLiteral("Committed before close"));
+        }
+        if (action->menu()) { action->menu()->popup(closingToolbar->mapToGlobal(QPoint(0, closingToolbar->height()))); pump(); }
+        Json observed;
+        QObject::connect(closing.data(), &Editor::documentChanged, qApp, [&] { observed = exported(*closing); delete closing.data(); });
+        if (operation == 0 || operation == 4) action->trigger();
+        else if (operation == 1) {
+            auto *combo = closingToolbar->findChild<QComboBox *>(QStringLiteral("toolbarFontSize"));
+            CHECK(combo != nullptr);
+            const int index = combo->findData(10);
+            combo->setCurrentIndex(index);
+            CHECK(QMetaObject::invokeMethod(combo, "activated", Q_ARG(int, index)));
+        } else if (operation == 2) swatch(action->menu(), "toolbarText_nodeColor_e74c3c")->click();
+        else {
+            auto *input = action->menu()->findChild<QLineEdit *>(QStringLiteral("toolbarNodeIcons"));
+            CHECK(input != nullptr); input->setText(grin);
+        }
+        CHECK(closing.isNull() && action.isNull());
+        const auto &observedNode = record(observed, "nodes", a);
+        if (operation == 0) CHECK(observedNode.at("style").at("fontWeight") == "bold");
+        else if (operation == 1) CHECK(observedNode.at("style").at("fontSize") == 10);
+        else if (operation == 2) CHECK(observedNode.at("style").at("color") == "#e74c3c");
+        else if (operation == 3) CHECK(observedNode.at("icons") == Json::array({utf8(grin)}));
+        else { CHECK(observedNode.at("topic") == "Committed before close"); CHECK(!observedNode.at("style").contains("fontWeight")); }
+        pump();
+    }
+
+    // The embedded picker replaces only the active comma entry and keeps an input-capable menu open.
+    Json iconFixture = fixture;
+    node(iconFixture, a)["icons"] = Json::array({utf8(grin), "retained second"});
+    resetDocument(iconFixture);
+    const Json initialIcons = exported(*editor);
+    changed.clear();
+    open("iconsPopup");
+    auto *input = iconsInput();
+    auto *choices = emojiChoices();
+    auto *categories = iconsMenu->findChild<QComboBox *>(QStringLiteral("emojiCategories"));
+    CHECK(categories && input->hasFocus());
+    CHECK(input->text().endsWith(QStringLiteral(", ")) && input->cursorPosition() == input->text().size());
+    CHECK(exported(*editor) == initialIcons && changed.isEmpty());
+    input->setCursorPosition(1);
+    input->setSelection(0, grin.size());
+    QTest::keyClicks(input, "apple"); pump();
+    clickEmoji(QStringLiteral("red apple"));
+    const QString apple = QString::fromUtf8("🍎");
+    CHECK(record(exported(*editor), "nodes", a).at("icons") == Json::array({utf8(apple), "retained second"}));
+    input->setCursorPosition(input->text().size());
+    QTest::keyClicks(input, "rocket"); pump();
+    choices->setCurrentIndex(emojiIndex(QStringLiteral("rocket")));
+    QTest::keyClick(input, Qt::Key_Return); pump();
+    CHECK(iconsMenu->isVisible() && input->hasFocus());
+    const QString rocket = QString::fromUtf8("🚀");
+    CHECK(record(exported(*editor), "nodes", a).at("icons") == Json::array({utf8(apple), "retained second", utf8(rocket)}));
+    QTest::keyClick(input, Qt::Key_A, Qt::ControlModifier);
+    QTest::keyClick(input, Qt::Key_Backspace); pump();
+    CHECK(record(exported(*editor), "nodes", a).at("icons") == Json::array());
+    CHECK(iconsMenu->isVisible() && input->hasFocus());
+
+    QTest::mouseClick(categories, Qt::LeftButton); pump();
+    CHECK(iconsMenu->isVisible() && categories->view()->isVisible());
+    const int food = categories->findText(QStringLiteral("Food & Drink")); CHECK(food >= 0);
+    const QModelIndex foodIndex = categories->model()->index(food, 0);
+    categories->view()->scrollTo(foodIndex);
+    QTest::qWait(QApplication::doubleClickInterval() + 1);
+    const QPoint foodPoint = categories->view()->visualRect(foodIndex).center();
+    QTest::mouseMove(categories->view()->viewport(), foodPoint);
+    QTest::mouseClick(categories->view()->viewport(), Qt::LeftButton, Qt::NoModifier, foodPoint);
+    pump();
+    CHECK(iconsMenu->isVisible() && input->hasFocus() && !categories->view()->isVisible());
+    CHECK(categories->currentIndex() == food);
+    clickEmoji(QStringLiteral("red apple"));
+    CHECK(record(exported(*editor), "nodes", a).at("icons") == Json::array({utf8(apple)}));
+    QTest::keyClicks(input, "apple"); pump();
+    CHECK(emojiIndex(QStringLiteral("red apple")).isValid());
+    CHECK(record(exported(*editor), "nodes", a).at("icons") == Json::array({utf8(apple), "apple"}));
+    choices->setCurrentIndex(emojiIndex(QStringLiteral("red apple")));
+    QTest::keyClick(input, Qt::Key_Return); pump();
+    CHECK(iconsMenu->isVisible() && input->hasFocus());
+    CHECK(record(exported(*editor), "nodes", a).at("icons") == Json::array({utf8(apple), utf8(apple)}));
+
+    // Ctrl navigation moves a visible result, not the text caret or the host's map selection.
+    const QString inputText = input->text();
+    const int caret = input->cursorPosition();
+    const Json beforeNavigation = exported(*editor);
+    choices->scrollToTop(); choices->setCurrentIndex(choices->model()->index(0, 0)); pump();
+    const QModelIndex first = choices->currentIndex(), right = choices->model()->index(1, 0);
+    const QRect firstCell = choices->visualRect(first);
+    CHECK(right.isValid() && choices->visualRect(right).top() == firstCell.top());
+    int belowRow = 1;
+    while (belowRow < choices->model()->rowCount() && choices->visualRect(choices->model()->index(belowRow, 0)).top() == firstCell.top()) ++belowRow;
+    CHECK(belowRow < choices->model()->rowCount());
+    const QModelIndex below = choices->model()->index(belowRow, 0);
+    auto navigate = [&](Qt::Key key, const QModelIndex &expected) {
+        QTest::keyClick(input, key, Qt::ControlModifier); pump();
+        CHECK(choices->currentIndex() == expected && input->text() == inputText && input->cursorPosition() == caret);
+        CHECK(iconsMenu->isVisible() && input->hasFocus() && exported(*editor) == beforeNavigation);
+    };
+    navigate(Qt::Key_L, right); navigate(Qt::Key_H, first);
+    navigate(Qt::Key_J, below); navigate(Qt::Key_K, first);
+    QTest::keyClick(input, Qt::Key_Down); pump();
+    CHECK(choices->currentIndex() == right && exported(*editor) == beforeNavigation);
+    QTest::keyClick(input, Qt::Key_Up); pump();
+    CHECK(choices->currentIndex() == first && exported(*editor) == beforeNavigation);
+    QTest::keyClicks(input, "no-such-emoji-xyz"); pump();
+    CHECK(choices->model()->rowCount() == 0);
+    auto *explanation = iconsMenu->findChild<QLabel *>(QStringLiteral("emojiDescription"));
+    CHECK(explanation && explanation->isVisible() && !explanation->text().isEmpty());
+    CHECK(explanation->text() != first.data().toString());
+    const Json noResults = exported(*editor);
+    QTest::keyClick(input, Qt::Key_Return); pump();
+    CHECK(iconsMenu->isVisible() && input->hasFocus() && exported(*editor) == noResults);
+    // Ordinary map shortcut letters remain ordinary input; no extra nodes or style commands.
+    QTest::keyClicks(input, "bircfotnp"); pump();
+    Json typed = noResults;
+    node(typed, a)["icons"].back() = "no-such-emoji-xyzbircfotnp";
+    CHECK(exported(*editor) == typed && editor->selectedNodeId() == a);
+    QTest::mouseClick(categories, Qt::LeftButton); pump();
+    CHECK(categories->view()->isVisible());
+    QTest::keyClick(categories->view(), Qt::Key_Escape); pump();
+    CHECK(QTest::qWaitFor([&] { return !categories->view()->isVisible() && iconsMenu->isVisible() && input->hasFocus(); }, 1000));
+    QTest::keyClick(input, Qt::Key_Escape); pump();
+    CHECK(!iconsMenu->isVisible() && exported(*editor) == typed);
+
+    // Popups do not alter the user's collapsed-card preference, camera, or dismissal semantics.
+    resetDocument(fixture);
+    if (scroll->isVisible()) { QTest::mouseClick(toggle, Qt::LeftButton); pump(); }
+    CHECK(scroll->isHidden());
+    const QTransform collapsedZoom = view.transform();
+    auto collapsed = [&] { CHECK(scroll->isHidden() && view.transform() == collapsedZoom); };
+    for (const char *name : {"textColorPopup", "fillColorPopup", "iconsPopup"}) {
+        const Json before = exported(*editor);
+        dismiss(open(name)); collapsed();
+        auto *menu = open(name);
+        // Send an outside press at the native popup boundary, where QMenu handles dismissal.
+        const QPoint outside(-12, -12);
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(outside), QPointF(menu->mapToGlobal(outside)),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(menu, &press); pump();
+        CHECK(!menu->isVisible() && exported(*editor) == before); collapsed();
+    }
+    for (bool fill : {false, true}) {
+        const char *name = fill ? "fillColorPopup" : "textColorPopup";
+        const char *key = fill ? "background" : "color";
+        const Json before = exported(*editor);
+        auto *menu = open(name);
+        QTest::keyClicks(menu, "22"); pump();
+        Json red = before; node(red, a)["style"][key] = "#e74c3c";
+        CHECK(exported(*editor) == red && !menu->isVisible()); collapsed();
+        menu = open(name); QTest::keyClicks(menu, "11"); pump();
+        CHECK(exported(*editor) == before && !menu->isVisible()); collapsed();
+        menu = open(name); QTest::keyClick(menu, Qt::Key_2); dismiss(menu);
+        menu = open(name); QTest::keyClick(menu, Qt::Key_1); pump();
+        CHECK(exported(*editor) == before && menu->isVisible());
+        QTest::keyClick(menu, Qt::Key_1); pump();
+        CHECK(exported(*editor) == before && !menu->isVisible()); collapsed();
+    }
+
+    // Imported nonpalette/invalid colors have honest checks and are not normalized on opening.
+    Json unusual = fixture;
+    node(unusual, a)["style"]["color"] = "#123456";
+    node(unusual, a)["style"]["background"] = "not-a-color";
+    resetDocument(unusual);
+    const Json unusualBaseline = exported(*editor);
+    open("textColorPopup");
+    for (auto *button : textMenu->findChildren<QAbstractButton *>()) CHECK(!button->isChecked());
+    dismiss(textMenu);
+    open("fillColorPopup"); CHECK(swatch(fillMenu, "toolbarFill_nodeDefaultColor")->isChecked()); dismiss(fillMenu);
+    CHECK(exported(*editor) == unusualBaseline && !editor->canUndo());
+
+    // A real QMainWindow toolbar extension creates a second size presentation and retains submenu actions.
+    resetDocument(fixture);
+    auto *common = new QAction(QStringLiteral("Host controls preceding the formatting group"), toolbar);
+    toolbar->insertAction(&editAction(*editor, "fontSize"), common);
+    host.setMinimumSize(0, 0);
+    host.resize(120, 700); pump();
+    auto *extension = toolbar->findChild<QToolButton *>(QStringLiteral("qt_toolbar_ext_button"));
+    CHECK(extension && extension->isVisible() && extension->menu());
+    auto *overflow = extension->menu();
+    auto openOverflow = [&] {
+        overflow->popup(extension->mapToGlobal(QPoint(0, extension->height()))); pump();
+        CHECK(overflow->isVisible());
+    };
+    openOverflow();
+    QPointer<QComboBox> overflowSize = overflow->findChild<QComboBox *>(QStringLiteral("toolbarFontSize"));
+    CHECK(overflowSize && overflowSize->isVisible());
+    chooseSize(overflowSize, 28);
+    CHECK(record(exported(*editor), "nodes", a).at("style").at("fontSize") == 28);
+    CHECK(size->currentData().toInt() == 28 && overflowSize->currentData().toInt() == 28);
+    overflow->hide();
+    for (const char *name : {"textColorPopup", "fillColorPopup", "iconsPopup"}) {
+        common->setEnabled(false);
+        const auto modifiedConnection = QObject::connect(editor, &Editor::documentChanged, common, [common] { common->setEnabled(true); });
+        openOverflow();
+        auto &action = editAction(*editor, name);
+        const QRect entry = overflow->actionGeometry(&action);
+        CHECK(entry.isValid() && overflow->rect().contains(entry.center()));
+        QTest::mouseMove(overflow, entry.center());
+        QTest::mouseClick(overflow, Qt::LeftButton, Qt::NoModifier, entry.center()); pump();
+        auto *menu = action.menu();
+        CHECK(QTest::qWaitFor([&] { return menu->isVisible(); }, 1000));
+        if (menu == iconsMenu) {
+            input = iconsInput();
+            categories->setCurrentIndex(0);
+            CHECK(QTest::qWaitFor([&] {
+                return input->isEnabled() && input->hasFocus() &&
+                    QGuiApplication::focusWindow() == menu->windowHandle();
+            }, 1000));
+            // Use the active native window, not direct line-edit delivery: a rebuilt
+            // toolbar extension can lose the submenu from Qt's popup keyboard stack.
+            for (const auto key : {Qt::Key_R, Qt::Key_O, Qt::Key_C, Qt::Key_K, Qt::Key_E, Qt::Key_T}) {
+                CHECK(QGuiApplication::focusWindow());
+                QTest::keyClick(QGuiApplication::focusWindow(), key); pump();
+            }
+            CHECK(menu->isVisible() && input->hasFocus());
+            CHECK(record(exported(*editor), "nodes", a).at("icons") == Json::array({"rocket"}));
+            choices = emojiChoices();
+            choices->setCurrentIndex(emojiIndex(QStringLiteral("rocket")));
+            QTest::keyClick(input, Qt::Key_Return); pump();
+            CHECK(menu->isVisible() && input->hasFocus());
+            CHECK(record(exported(*editor), "nodes", a).at("icons") == Json::array({utf8(rocket)}));
+            dismiss(menu);
+        }
+        else {
+            QTest::keyClicks(menu, "22"); pump();
+            CHECK(record(exported(*editor), "nodes", a).at("style").at(menu == textMenu ? "color" : "background") == "#e74c3c");
+        }
+        QObject::disconnect(modifiedConnection);
+        overflow->hide(); collapsed();
+    }
+    openOverflow();
+    overflowSize = overflow->findChild<QComboBox *>(QStringLiteral("toolbarFontSize"));
+    CHECK(overflowSize != nullptr);
+    overflowSize->showPopup(); pump();
+    const QPointer<QAbstractItemView> overflowChoices(overflowSize->view());
+    CHECK(overflowChoices->isVisible());
+    editor->setEnabled(false); pump();
+    // QAction changes can rebuild the extension menu and release its widget presentation.
+    CHECK(!overflowChoices || !overflowChoices->isVisible());
+    CHECK((!overflowSize || !overflowSize->isEnabled()) && !size->isEnabled());
+    overflow->hide();
+    editor->setEnabled(true);
+    host.resize(1400, 900); pump();
+    CHECK(size->isVisible() && size->currentData().toInt() == 28);
+    collapsed();
 }
 
 static void properties_case() {
@@ -9593,6 +10191,7 @@ int main(int argc, char **argv) {
         else if (name == "multi_selection") multi_selection_case();
         else if (name == "node_drag") node_drag_case();
         else if (name == "properties") properties_case();
+        else if (name == "formatting_toolbar") formatting_toolbar_case();
         else if (name == "branch_color") { branch_color_case(); auto_branch_color_case(); }
         else if (name == "hyperlinks") hyperlinks_case();
         else if (name == "controls") controls_case();
