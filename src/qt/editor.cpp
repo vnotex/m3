@@ -1581,6 +1581,7 @@ public:
         QObject::connect(controller, &MindMapController::commandSucceeded, editor, [this] { error->clear(); error->hide(); updateActions(); });
         QObject::connect(controller, &MindMapController::imageRequested, editor, &MindMapEditor::imageRequested);
         QObject::connect(controller, &MindMapController::layoutDirectionChanged, editor, &MindMapEditor::layoutDirectionChanged);
+        QObject::connect(view, &MindMapView::zoomFactorChanged, editor, &MindMapEditor::zoomFactorChanged);
         QObject::connect(view, &MindMapView::pendingEditChanged, editor, &MindMapEditor::pendingEditChanged);
         QObject::connect(view, &MindMapView::nodePicked, controller, &MindMapController::selectNode);
         QObject::connect(view, &MindMapView::nodeSelectionToggled, controller, &MindMapController::toggleNodeSelection);
@@ -1717,6 +1718,7 @@ QString MindMapEditor::selectedText() const {
 bool MindMapEditor::setLayoutDirection(LayoutDirection direction) { return d->controller->setLayoutDirection(direction); }
 MindMapEditor::LayoutDirection MindMapEditor::layoutDirection() const { return d->controller->layoutDirection(); }
 void MindMapEditor::fitToContents() { d->view->fitContents(); }
+qreal MindMapEditor::zoomFactor() const { return d->view->transform().m11(); }
 void MindMapEditor::zoom(qreal factor) { d->view->zoom(factor); }
 void MindMapEditor::resetZoom() { d->view->resetZoom(); }
 void MindMapEditor::scrollSteps(int horizontal, int vertical) { d->view->scrollSteps(horizontal, vertical); }

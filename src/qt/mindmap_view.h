@@ -39,6 +39,7 @@ public:
     void resetZoom();
     void scrollSteps(int horizontal, int vertical);
 signals:
+    void zoomFactorChanged(qreal factor);
     void pendingEditChanged(bool pending);
     void linkCreationRequested(const QString &source, const QString &target);
     void linkEndpointChangeRequested(const QString &id, bool source, const QString &original, const QString &node);

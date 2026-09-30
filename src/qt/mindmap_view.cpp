@@ -1512,9 +1512,11 @@ void MindMapView::fitContents() {
         const qreal padding = 24 / scale;
         bounds.adjust(-padding, -padding, padding, padding);
     }
+    const qreal previous = transform().m11();
     setSceneRect(bounds);
     fitInView(bounds, Qt::KeepAspectRatio);
     updateTopicEditorGeometry();
+    if (!qFuzzyCompare(previous, transform().m11())) emit zoomFactorChanged(transform().m11());
 }
 void MindMapView::zoom(qreal factor) {
     clearLinkReconnect();
@@ -1527,6 +1529,7 @@ void MindMapView::zoom(qreal factor) {
     scale(target / current, target / current);
     preserveCenter(center);
     updateTopicEditorGeometry();
+    if (!qFuzzyCompare(current, transform().m11())) emit zoomFactorChanged(transform().m11());
 }
 void MindMapView::scrollSteps(int horizontal, int vertical) {
     const QPointer<MindMapView> guard(this);
@@ -1547,8 +1550,10 @@ void MindMapView::resetZoom() {
     clearImageResize();
     pendingFit = false;
     const QPointF center = sceneCenter(*this, viewport()->size());
+    const qreal previous = transform().m11();
     resetTransform(); preserveCenter(center);
     updateTopicEditorGeometry();
+    if (!qFuzzyCompare(previous, transform().m11())) emit zoomFactorChanged(transform().m11());
 }
 QGraphicsItem *MindMapView::targetAt(const QPoint &position) const {
     for (auto *item = itemAt(position); item; item = item->parentItem()) {
