@@ -1299,7 +1299,7 @@ void MindMapView::install(Presentation presentation, bool fit) {
     delete old;
     preserveCenter(center);
     pendingFit = pendingFit || fit;
-    if (pendingFit && isVisible()) fitContents();
+    if (pendingFit) fitContents();
     updateTopicEditorGeometry();
 }
 QImage MindMapView::renderImage(Presentation presentation) const {
@@ -1502,7 +1502,13 @@ void MindMapView::fitContents() {
     clearLinkReconnect();
     clearLinkCreation();
     clearImageResize();
-    if (!isVisible() || viewport()->width() <= 0 || viewport()->height() <= 0) { pendingFit = true; return; }
+    const bool wasFit = zoomFit;
+    zoomFit = true;
+    if (!isVisible() || viewport()->width() <= 0 || viewport()->height() <= 0) {
+        pendingFit = true;
+        if (!wasFit) emit zoomChanged(transform().m11(), true);
+        return;
+    }
     pendingFit = false;
     QRectF bounds = scene()->sceneRect();
     if (!bounds.isEmpty()) {
@@ -1516,7 +1522,7 @@ void MindMapView::fitContents() {
     setSceneRect(bounds);
     fitInView(bounds, Qt::KeepAspectRatio);
     updateTopicEditorGeometry();
-    if (!qFuzzyCompare(previous, transform().m11())) emit zoomFactorChanged(transform().m11());
+    if (!wasFit || !qFuzzyCompare(previous, transform().m11())) emit zoomChanged(transform().m11(), true);
 }
 void MindMapView::zoom(qreal factor) {
     clearLinkReconnect();
@@ -1529,7 +1535,9 @@ void MindMapView::zoom(qreal factor) {
     scale(target / current, target / current);
     preserveCenter(center);
     updateTopicEditorGeometry();
-    if (!qFuzzyCompare(current, transform().m11())) emit zoomFactorChanged(transform().m11());
+    const bool wasFit = zoomFit;
+    zoomFit = false;
+    if (wasFit || !qFuzzyCompare(current, transform().m11())) emit zoomChanged(transform().m11(), false);
 }
 void MindMapView::scrollSteps(int horizontal, int vertical) {
     const QPointer<MindMapView> guard(this);
@@ -1553,7 +1561,9 @@ void MindMapView::resetZoom() {
     const qreal previous = transform().m11();
     resetTransform(); preserveCenter(center);
     updateTopicEditorGeometry();
-    if (!qFuzzyCompare(previous, transform().m11())) emit zoomFactorChanged(transform().m11());
+    const bool wasFit = zoomFit;
+    zoomFit = false;
+    if (wasFit || !qFuzzyCompare(previous, transform().m11())) emit zoomChanged(transform().m11(), false);
 }
 QGraphicsItem *MindMapView::targetAt(const QPoint &position) const {
     for (auto *item = itemAt(position); item; item = item->parentItem()) {

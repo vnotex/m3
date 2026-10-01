@@ -35,11 +35,12 @@ public:
     void ensureLinkVisible(const QString &id);
     void centerNode(const QString &id);
     void fitContents();
+    bool isZoomFit() const { return zoomFit; }
     void zoom(qreal factor);
     void resetZoom();
     void scrollSteps(int horizontal, int vertical);
 signals:
-    void zoomFactorChanged(qreal factor);
+    void zoomChanged(qreal factor, bool fit);
     void pendingEditChanged(bool pending);
     void linkCreationRequested(const QString &source, const QString &target);
     void linkEndpointChangeRequested(const QString &id, bool source, const QString &original, const QString &node);
@@ -79,6 +80,7 @@ private:
     QSet<QString> selectedNodes;
     bool suppressNodeDoubleClick = false;
     bool pendingFit = false;
+    bool zoomFit = false;
     QPointF panPosition;
     QHash<QString, QString> nodeParents;
     QGraphicsItem *linkCreationHandle = nullptr;

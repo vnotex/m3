@@ -342,6 +342,8 @@ public:
     // View-only controls; retain document, selection and inline draft.
     // Current canvas scale; fit may produce values outside the step-zoom range.
     qreal zoomFactor() const;
+    // True after initial/explicit fit, including while fitting awaits a visible viewport.
+    bool isZoomFit() const;
     void zoom(qreal factor);
     void resetZoom();
     // Positive steps scroll right/down, negative steps left/up, using native
@@ -353,8 +355,9 @@ public:
     // the root cannot be selected.
     bool focusRoot();
 signals:
-    // View-only scale changes, including initial/deferred fit; never emitted for pan.
-    void zoomFactorChanged(qreal factor);
+    // View-only scale or Fit/manual-mode changes, including initial/deferred fit.
+    // Mode transitions emit even at the same scale; pan never emits.
+    void zoomChanged(qreal factor, bool fit);
     // Committed semantic changes only, never draft typing or camera/selection.
     void documentChanged();
     // View-only: emitted after a successful actual layout change, including API calls.
