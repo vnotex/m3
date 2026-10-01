@@ -4211,6 +4211,36 @@ static void properties_case() {
     properties_visibility_case();
     emoji_category_popup_case();
     {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        auto &view = graphics(editor);
+        auto *panel = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
+        auto *scroll = panel->findChild<QScrollArea *>();
+        auto *toggle = panel->findChild<QToolButton *>(QStringLiteral("nodePropertiesToggle"));
+        CHECK(scroll && toggle && scroll->isVisible());
+        const auto before = exported(editor);
+        const auto selection = editor.selectedNodeId();
+        const auto zoom = editor.zoomFactor();
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        editor.collapseNodeProperties();
+        editor.collapseNodeProperties();
+        pump();
+        CHECK(scroll->isHidden() && panel->width() <= toggle->width() + 8);
+        CHECK(view.hasFocus() && editor.selectedNodeId() == selection);
+        CHECK(editor.zoomFactor() == zoom && exported(editor) == before && changed.isEmpty());
+        toggle->click();
+        CHECK(scroll->isVisible());
+        editor.clearSelection();
+        editor.setReadOnly(true);
+        editor.collapseNodeProperties();
+        CHECK(editor.selectedNodeId().isEmpty() && !panel->isVisible());
+        CHECK(editor.selectNode(selection));
+        pump();
+        CHECK(panel->isVisible() && scroll->isHidden());
+        CHECK(editor.isReadOnly() && exported(editor) == before && changed.isEmpty());
+    }
+    {
         Editor imageEditor;
         CHECK(imageEditor.loadJson(encoded(editorFixture())));
         showEditor(imageEditor, QSize(1100, 900));

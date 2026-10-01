@@ -587,10 +587,7 @@ public:
         });
         auto *collapse = new QShortcut(QKeySequence(Qt::Key_Escape), this);
         collapse->setContext(Qt::WidgetWithChildrenShortcut);
-        connect(collapse, &QShortcut::activated, this, [this] {
-            toggle->setChecked(false);
-            if (view) view->setFocus(Qt::OtherFocusReason);
-        });
+        connect(collapse, &QShortcut::activated, this, [this] { this->collapse(); });
         connect(fontSize, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this] {
             const double size = fontSize->currentData().toDouble();
             applyStyle({{QStringLiteral("fontSize"), size > 0 ? QJsonValue(size) : QJsonValue(QJsonValue::Null)}});
@@ -636,6 +633,10 @@ public:
         view->installEventFilter(this);
         view->viewport()->installEventFilter(this);
         hide();
+    }
+    void collapse() {
+        toggle->setChecked(false);
+        if (view) view->setFocus(Qt::OtherFocusReason);
     }
     void setReadOnly(bool value) {
         if (value) {
@@ -1641,6 +1642,7 @@ MindMapEditor::~MindMapEditor() {
 QAction *MindMapEditor::commandAction(const QString &name) const {
     return name.isEmpty() ? nullptr : findChild<QAction *>(name, Qt::FindDirectChildrenOnly);
 }
+void MindMapEditor::collapseNodeProperties() { d->properties->collapse(); }
 QString MindMapEditor::resolveDroppedFileUrl(const QString &filePath) const {
     return QUrl::fromLocalFile(filePath).toString(QUrl::FullyEncoded);
 }

@@ -243,6 +243,9 @@ public:
     // Color choices close their menu; Icons saves each edit and stays open. Controls
     // close when their document/selection/policy or presenting window is invalidated.
     QAction *commandAction(const QString &name) const;
+    // Collapse the properties card and focus the canvas, including read-only or no selection.
+    // Idempotent; keeps document, selection and zoom. The user may expand it again.
+    void collapseNodeProperties();
     QString resourceBasePath() const;
     // Normalize as at construction and invalidate/re-request image resources.
     // Document, selection, inline draft and camera remain unchanged.
