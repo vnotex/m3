@@ -890,7 +890,7 @@ class MindMapEditor::Private : public QObject {
     Q_DECLARE_TR_FUNCTIONS(m3::qt::MindMapEditor)
 public:
     MindMapEditor *host;
-    const EditorConfig config;
+    EditorConfig config;
     MindMapView *view;
     MindMapController *controller;
     QLabel *error;
@@ -1390,6 +1390,7 @@ public:
         layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(0);
         view = new MindMapView(editor);
+        view->setStyle(config.style);
         error = new QLabel(editor);
         error->setTextFormat(Qt::PlainText); error->setWordWrap(true); error->hide();
         controller = new MindMapController(*view, config, editor);
@@ -1643,6 +1644,19 @@ QAction *MindMapEditor::commandAction(const QString &name) const {
     return name.isEmpty() ? nullptr : findChild<QAction *>(name, Qt::FindDirectChildrenOnly);
 }
 void MindMapEditor::collapseNodeProperties() { d->properties->collapse(); }
+void MindMapEditor::setStyle(const EditorConfig::Style &style) {
+    d->config.style = style;
+    d->view->setStyle(style);
+}
+void MindMapEditor::setUndoLimit(int limit) {
+    d->config.undoLimit = qMax(0, limit);
+    d->controller->setUndoLimit(d->config.undoLimit);
+}
+void MindMapEditor::setConfirmSubtreeDeletion(bool enabled) { d->config.confirmSubtreeDeletion = enabled; }
+void MindMapEditor::setAutoRandomBranchColor(bool enabled) {
+    d->config.autoRandomBranchColor = enabled;
+    d->controller->setAutoRandomBranchColor(enabled);
+}
 QString MindMapEditor::resolveDroppedFileUrl(const QString &filePath) const {
     return QUrl::fromLocalFile(filePath).toString(QUrl::FullyEncoded);
 }

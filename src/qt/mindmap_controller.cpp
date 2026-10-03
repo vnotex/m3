@@ -637,6 +637,23 @@ void MindMapController::notifyHistoryAvailability() {
         emit redoAvailable(redo);
     }
 }
+void MindMapController::trimHistory() {
+    if (!undoLimit) return;
+    const size_t capacity = undoLimit + size_t(1);
+    if (history.size() <= capacity) return;
+    const size_t past = std::min(historyCursor, history.size() - capacity);
+    history.erase(history.begin(), history.begin() + past);
+    historyCursor -= past;
+    // Keep the current snapshot even when most of the excess is redo history.
+    if (history.size() > capacity) history.resize(capacity);
+}
+void MindMapController::setUndoLimit(int limit) {
+    const size_t normalized = size_t(std::max(0, limit));
+    if (undoLimit == normalized) return;
+    undoLimit = normalized;
+    trimHistory();
+    notifyHistoryAvailability();
+}
 template<typename Operation>
 bool MindMapController::transact(Operation &&operation,
                                  const QString &preferredNode, const QString &preferredLink,
@@ -679,11 +696,7 @@ bool MindMapController::transact(Operation &&operation,
         history.push_back(std::move(next));
         ++historyCursor;
         ++documentRevision;
-        if (undoLimit && historyCursor > undoLimit) {
-            const auto excess = historyCursor - undoLimit;
-            history.erase(history.begin(), history.begin() + excess);
-            historyCursor -= excess;
-        }
+        trimHistory();
         return finishChange({}, false, false, preferredNode, preferredLink);
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }

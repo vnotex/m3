@@ -123,7 +123,8 @@ class QAction;
 namespace m3::qt {
 struct OutlineEntry { QString id; QString topic; int level = 1; };
 struct FindResult { int totalMatches = 0; int currentMatch = -1; };
-// Widget policy, copied at construction; no Qt-specific configuration enters the core.
+// Widget policy, initialized at construction; style and behavior have live setters.
+// No Qt-specific configuration enters the core.
 // Replace a shortcut list to rebind it, or clear it to disable its keyboard binding
 // without removing the command action. Avoid assigning the same sequence to
 // multiple map commands. Bindings are local to this widget; link/move dialogs and
@@ -150,6 +151,12 @@ struct FindResult { int totalMatches = 0; int currentMatch = -1; };
 // Example: config.shortcuts.addChild = {QKeySequence(QStringLiteral("Ctrl+J"))};
 //          MindMapEditor editor(config);
 struct EditorConfig {
+    struct Style {
+        // Comma-separated fallback list; empty or unavailable inherits the host.
+        QString fontFamily;
+        // 0 inherits the host; otherwise 1..256 points. Node sizes remain pixels.
+        int fontPointSize = 0;
+    } style;
     struct Shortcuts {
         QList<QKeySequence> undo{QKeySequence(QKeySequence::Undo)};
         QList<QKeySequence> redo{QKeySequence(QKeySequence::Redo)};
@@ -222,6 +229,13 @@ public:
     explicit MindMapEditor(QWidget *parent = nullptr);
     explicit MindMapEditor(const EditorConfig &config, QWidget *parent = nullptr);
     ~MindMapEditor() override;
+    // GUI-thread appearance/policy changes; no document edit or draft commit.
+    void setStyle(const EditorConfig::Style &style);
+    // Lowering a positive limit discards excess undo/redo states; 0 is unlimited.
+    void setUndoLimit(int limit);
+    void setConfirmSubtreeDeletion(bool enabled);
+    // Affects future direct-root-child creation only, never existing colors.
+    void setAutoRandomBranchColor(bool enabled);
     // Borrowed command action by stable, case-sensitive name; null for empty/missing.
     // The editor owns lifetime, shortcuts and enablement. Hosts may present actions
     // in toolbars/menus, but must not delete, reparent or override those policies.

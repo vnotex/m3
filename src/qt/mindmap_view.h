@@ -1,5 +1,6 @@
 #ifndef M3_QT_MINDMAP_VIEW_H
 #define M3_QT_MINDMAP_VIEW_H
+#include "m3/qt/editor.h"
 #include "presentation.h"
 #include <QGraphicsView>
 #include <QHash>
@@ -19,6 +20,7 @@ class MindMapView : public QGraphicsView {
 public:
     explicit MindMapView(QWidget *parent = nullptr);
     ~MindMapView() override;
+    void setStyle(const EditorConfig::Style &style);
     void beginTopicEdit(const QString &id, const QList<QKeySequence> &acceptShortcuts);
     void beginLinkTopicEdit(const QString &id, const QList<QKeySequence> &acceptShortcuts);
     using TopicCommitHandler = std::function<bool(const QString &, const QString &, const QString &, bool)>;
@@ -75,6 +77,9 @@ protected:
     void showEvent(QShowEvent *event) override;
     void changeEvent(QEvent *event) override;
 private:
+    EditorConfig::Style style;
+    QString resolvedFontFamily;
+    void applyStyleFont();
     bool readOnly = false;
     Qt::MouseButton panning = Qt::NoButton;
     QSet<QString> selectedNodes;

@@ -18,6 +18,8 @@ public:
     explicit MindMapController(MindMapView &view, const EditorConfig &config, QObject *parent);
     QString resourceBasePath() const { return resourceBase; }
     void setResourceBasePath(const QString &path);
+    void setUndoLimit(int limit);
+    void setAutoRandomBranchColor(bool enabled) { autoRandomBranchColor = enabled; }
     void setReadOnly(bool value);
     bool isReadOnly() const { return readOnly; }
     QString resolveResourceUrl(const QString &value) const;
@@ -87,16 +89,18 @@ private:
     QByteArray currentSnapshot;
     std::vector<HistoryState> history;
     size_t historyCursor = 0;
-    const size_t undoLimit;
+    size_t undoLimit;
     quint64 documentRevision = 0;
     bool undoWasAvailable = false, redoWasAvailable = false, restoringHistory = false;
     void notifyHistoryAvailability();
+    void trimHistory();
     bool restoreHistory(size_t cursor);
     MindMapView &view;
     QString error, selectedLink;
     QStringList selectedNodes;
     QString resourceBase;
-    const bool resolveRelativeUrls, autoRandomBranchColor;
+    const bool resolveRelativeUrls;
+    bool autoRandomBranchColor;
     bool readOnly = false;
     struct ImageResource {
         quint64 requestId = 0;

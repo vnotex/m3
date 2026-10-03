@@ -27,6 +27,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
+#include <QFontDatabase>
 #include <QFocusEvent>
 #include <QGraphicsItem>
 #include <QGraphicsPathItem>
@@ -7305,6 +7306,197 @@ static void shortcut_help_case() {
 }
 
 static void configuration_case() {
+    const Json styledDocument = Json::parse(R"({"schemaVersion":1,"rootId":"r","nodes":[
+        {"id":"r","topic":"Configured root\nSecond line","children":["a","b"],"tags":["style-tag"],"icons":["ABC"]},
+        {"id":"a","topic":"Inherited text\nSecond line"},
+        {"id":"b","topic":"Pixel override","style":{"fontSize":24}}],
+        "crossLinks":[{"id":"l","source":"a","target":"b","directed":false,"topic":"Styled link"}]})");
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const auto families = QFontDatabase::families();
+#else
+    const auto families = QFontDatabase().families();
+#endif
+    CHECK(!families.isEmpty());
+    const QString family = families.front().section(QLatin1Char('['), 0, 0).trimmed();
+    const QString fallback = QStringLiteral("  m3-unavailable-font-7EAF, , %1  ").arg(family.toLower());
+    {
+        m3::qt::EditorConfig config;
+        config.style = {fallback, 18};
+        Editor editor(config);
+        CHECK(textItem(editor, QStringLiteral("Central topic"))->font().pointSize() == 18);
+        CHECK(editor.loadJson(encoded(styledDocument)));
+        showEditor(editor);
+        const QByteArray json = editor.toJson();
+        const QString markdown = editor.toMarkdown();
+        QSignalSpy changed(&editor, &Editor::documentChanged), pending(&editor, &Editor::pendingEditChanged);
+        const auto unchanged = [&] {
+            CHECK(editor.toJson() == json && editor.toMarkdown() == markdown);
+            CHECK(changed.isEmpty() && pending.isEmpty() && !editor.canUndo() && !editor.canRedo());
+            CHECK(textItem(editor, QStringLiteral("Pixel override"))->font().pixelSize() == 24);
+        };
+        const auto configuredFonts = [&] {
+            for (const auto &text : {QStringLiteral("Configured root\nSecond line"),
+                                    QStringLiteral("Inherited text\nSecond line"), QStringLiteral("Styled link"),
+                                    QStringLiteral("ABC")}) {
+                const QFont font = textItem(editor, text)->font();
+                CHECK(font.family() == family && font.pointSize() == 18 && font.pixelSize() == -1);
+            }
+            const QFont tagFont = textItem(editor, QStringLiteral("style-tag"))->font();
+            CHECK(tagFont.family() == family && qAbs(tagFont.pointSizeF() - 18 * 0.85) < 0.01);
+            CHECK(textItem(editor, QStringLiteral("Configured root\nSecond line"))->font().bold());
+            CHECK(!textItem(editor, QStringLiteral("Inherited text\nSecond line"))->font().bold());
+            unchanged();
+        };
+        configuredFonts();
+        const QSize largeImage = HtmlPage(editor.toHtml()).image().size();
+        const qreal largeHeight = topicRect(editor, QStringLiteral("Inherited text\nSecond line")).height();
+        const QSizeF pixelSize = topicRect(editor, QStringLiteral("Pixel override")).size();
+        editor.setStyle({fallback, 9});
+        pump();
+        CHECK(topicRect(editor, QStringLiteral("Inherited text\nSecond line")).height() < largeHeight);
+        CHECK(topicRect(editor, QStringLiteral("Pixel override")).size() == pixelSize);
+        CHECK(HtmlPage(editor.toHtml()).image().height() < largeImage.height());
+        unchanged();
+        editor.setStyle(config.style);
+        QFont hostFont = editor.font();
+        hostFont.setFamily(families.back().section(QLatin1Char('['), 0, 0).trimmed());
+        hostFont.setPointSize(13);
+        hostFont.setItalic(true);
+        editor.setFont(hostFont);
+        QPalette palette = editor.palette();
+        palette.setColor(QPalette::Base, QColor(31, 35, 42));
+        palette.setColor(QPalette::Text, QColor(230, 232, 235));
+        editor.setPalette(palette);
+        pump();
+        configuredFonts();
+        CHECK(editor.font() == hostFont);
+        CHECK(textItem(editor, QStringLiteral("Inherited text\nSecond line"))->font().italic());
+        CHECK(textItem(editor, QStringLiteral("Styled link"))->defaultTextColor() == palette.color(QPalette::Text));
+        CHECK(graphics(editor).backgroundBrush().color() == palette.color(QPalette::Base));
+        editor.setStyle({});
+        pump();
+        CHECK(graphics(editor).font() == hostFont);
+        unchanged();
+        // Family and size inherit independently; an unavailable list is not a platform fallback.
+        editor.setStyle({QStringLiteral("m3-unavailable-font-7EAF"), 18});
+        CHECK(graphics(editor).font().family() == hostFont.family() && graphics(editor).font().pointSize() == 18);
+        editor.setStyle({fallback, 0});
+        CHECK(graphics(editor).font().family() == family && graphics(editor).font().pointSize() == 13);
+        hostFont.setPointSize(15);
+        editor.setFont(hostFont);
+        CHECK(graphics(editor).font().family() == family && graphics(editor).font().pointSize() == 15);
+        editor.setStyle({fallback, 999});
+        CHECK(graphics(editor).font().pointSize() == 256);
+        editor.setStyle({QString(), -1});
+        CHECK(graphics(editor).font() == hostFont);
+        unchanged();
+    }
+    for (bool link : {false, true}) {
+        m3::qt::EditorConfig config;
+        config.style = {fallback, 12};
+        Editor editor(config);
+        CHECK(editor.loadJson(encoded(styledDocument)));
+        const Json baseline = exported(editor);
+        CHECK(editor.renameNode(QStringLiteral("r"), QStringLiteral("History marker")));
+        CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Left));
+        showEditor(editor);
+        editor.resetZoom(); editor.zoom(0.85);
+        CHECK(link ? editor.selectLink(QStringLiteral("l")) : editor.selectNode(QStringLiteral("a")));
+        const Json before = exported(editor);
+        const QString markdown = editor.toMarkdown();
+        const QStringList nodes = editor.selectedNodeIds();
+        const QString selectedLink = editor.selectedLinkId();
+        shortcut(editor, Qt::Key_F2);
+        QPointer<QPlainTextEdit> input = &topicInput(editor);
+        const QString original = input->toPlainText();
+        const QString draft = link ? QStringLiteral("Link draft #literal") : QStringLiteral("Node draft retained");
+        input->selectAll(); input->insertPlainText(draft);
+        auto cursor = input->textCursor();
+        cursor.setPosition(2); cursor.setPosition(7, QTextCursor::KeepAnchor);
+        input->setTextCursor(cursor);
+        const QTransform zoom = graphics(editor).transform();
+        const QPointF center = graphics(editor).mapToScene(graphics(editor).viewport()->rect().center());
+        QSignalSpy changed(&editor, &Editor::documentChanged), pending(&editor, &Editor::pendingEditChanged);
+        QSignalSpy selected(&editor, &Editor::selectionChanged), errors(&editor, &Editor::errorOccurred);
+        const auto retained = [&] {
+            CHECK(input && activeTopicInput(editor) == input.data() && input->hasFocus());
+            CHECK(input->toPlainText() == draft && editor.hasPendingEdit());
+            CHECK(input->textCursor().anchor() == 2 && input->textCursor().position() == 7);
+            CHECK(editor.selectedText() == draft.mid(2, 5) && input->document()->isUndoAvailable());
+            CHECK(exported(editor) == before && editor.toMarkdown() == markdown);
+            CHECK(changed.isEmpty() && pending.isEmpty() && selected.isEmpty() && errors.isEmpty());
+            CHECK(editor.canUndo() && !editor.canRedo());
+            CHECK(editor.selectedNodeIds() == nodes && editor.selectedLinkId() == selectedLink);
+            CHECK(editor.layoutDirection() == Editor::LayoutDirection::Left && graphics(editor).transform() == zoom);
+            CHECK(QLineF(center, graphics(editor).mapToScene(graphics(editor).viewport()->rect().center())).length() <= 2.0 / zoom.m11());
+            CHECK(textItem(editor, QStringLiteral("Pixel override"))->font().pixelSize() == 24);
+        };
+        for (int points : {18, 22}) {
+            editor.setStyle({fallback, points});
+            pump(); retained();
+            CHECK(input->font().family() == family && input->font().pointSize() == points);
+            CHECK(textItem(editor, QStringLiteral("History marker"))->font().pointSize() == points);
+        }
+        QFont hostFont = editor.font(); hostFont.setPointSize(10);
+        editor.setFont(hostFont);
+        QPalette palette = editor.palette(); palette.setColor(QPalette::Text, QColor(20, 60, 90));
+        editor.setPalette(palette);
+        pump(); retained();
+        CHECK(input->font().pointSize() == 22 && input->palette() == graphics(editor).palette());
+        topicKey(editor, Qt::Key_Z, Qt::ControlModifier);
+        CHECK(input && input->toPlainText() == original && !editor.hasPendingEdit());
+        CHECK(exported(editor) == before && changed.isEmpty());
+        topicKey(editor, Qt::Key_Y, Qt::ControlModifier);
+        CHECK(input->toPlainText() == draft && editor.hasPendingEdit());
+        topicKey(editor, Qt::Key_Escape);
+        CHECK(editor.undo() && exported(editor) == baseline && !editor.canUndo());
+    }
+    {
+        Editor editor;
+        showEditor(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        const Json before = exported(editor);
+        editor.setAutoRandomBranchColor(false);
+        editor.setConfirmSubtreeDeletion(false);
+        CHECK(exported(editor) == before && changed.isEmpty());
+        trigger(editor, "addChild");
+        const QString plain = editor.selectedNodeId();
+        topicKey(editor, Qt::Key_Escape);
+        CHECK(!record(exported(editor), "nodes", plain).at("style").contains("branchColor"));
+        CHECK(editor.selectNode(QStringLiteral("root")));
+        editor.setAutoRandomBranchColor(true);
+        trigger(editor, "addChild");
+        const QString colored = editor.selectedNodeId();
+        topicKey(editor, Qt::Key_Escape);
+        const QString color = qs(record(exported(editor), "nodes", colored).at("style").at("branchColor"));
+        QStringList palette;
+        for (auto *button : editor.findChildren<QToolButton *>())
+            if (button->property("color").isValid()) palette.append(button->property("color").toString());
+        CHECK(QColor(color).isValid() && palette.contains(color));
+        const Json withColor = exported(editor);
+        const auto count = changed.size();
+        editor.setAutoRandomBranchColor(false);
+        editor.setConfirmSubtreeDeletion(true);
+        CHECK(exported(editor) == withColor && changed.size() == count);
+        const QString uncolored = editor.addNode(QStringLiteral("root"), QStringLiteral("Uncolored again"));
+        CHECK(!uncolored.isEmpty() && !record(exported(editor), "nodes", uncolored).at("style").contains("branchColor"));
+        CHECK(record(exported(editor), "nodes", colored) == record(withColor, "nodes", colored));
+        const QString child = editor.addNode(plain, QStringLiteral("Descendant"));
+        CHECK(!child.isEmpty() && editor.selectNode(plain));
+        const Json subtree = exported(editor);
+        const auto commands = changed.size();
+        dialogs({deleteResponse(false)}, [&] { trigger(editor, "deleteSelection"); });
+        CHECK(exported(editor) == subtree && changed.size() == commands);
+        dialogs({deleteResponse(true)}, [&] { trigger(editor, "deleteSelection"); });
+        CHECK(!hasRecord(exported(editor), "nodes", plain) && !hasRecord(exported(editor), "nodes", child));
+        CHECK(changed.size() == commands + 1);
+        dialogs({}, [&] { CHECK(editor.removeNode(uncolored)); });
+        CHECK(!hasRecord(exported(editor), "nodes", uncolored));
+        editor.setConfirmSubtreeDeletion(false);
+        CHECK(editor.selectNode(colored));
+        dialogs({}, [&] { trigger(editor, "deleteSelection"); });
+        CHECK(!hasRecord(exported(editor), "nodes", colored));
+    }
     {
         QTemporaryDir first, second;
         CHECK(first.isValid() && second.isValid());
@@ -9967,6 +10159,78 @@ static void history_limits_case() {
             CHECK(editor.undo() && exported(editor) == states[static_cast<size_t>(i)]);
         CHECK(!editor.canUndo());
     }
+    // A live limit bounds the entire history, including redo states beyond the current snapshot.
+    for (int current : {5, 3, 1, 0}) {
+        Editor editor;
+        CHECK(editor.newDocument(QStringLiteral("Revision 0")));
+        std::vector<Json> states{exported(editor)};
+        for (int i = 1; i <= 5; ++i) {
+            CHECK(editor.renameNode(root, QStringLiteral("Revision %1").arg(i)));
+            states.push_back(exported(editor));
+        }
+        for (int i = 5; i > current; --i) CHECK(editor.undo());
+        CHECK(exported(editor) == states[static_cast<size_t>(current)]);
+        showEditor(editor);
+        shortcut(editor, Qt::Key_F2);
+        QPointer<QPlainTextEdit> input = &topicInput(editor);
+        const QString original = input->toPlainText();
+        input->moveCursor(QTextCursor::End);
+        input->insertPlainText(QStringLiteral(" draft"));
+        auto cursor = input->textCursor();
+        cursor.setPosition(1); cursor.setPosition(4, QTextCursor::KeepAnchor);
+        input->setTextCursor(cursor);
+        const QStringList selection = editor.selectedNodeIds();
+        auto *scene = graphics(editor).scene();
+        QSignalSpy changed(&editor, &Editor::documentChanged), pending(&editor, &Editor::pendingEditChanged);
+        QSignalSpy selected(&editor, &Editor::selectionChanged);
+        QSignalSpy undoAvailable(&editor, &Editor::undoAvailable), redoAvailable(&editor, &Editor::redoAvailable);
+        editor.setUndoLimit(2);
+        pump();
+        const int first = std::min(current, 3), last = first + 2;
+        CHECK(exported(editor) == states[static_cast<size_t>(current)]);
+        CHECK(input && activeTopicInput(editor) == input.data() && input->hasFocus());
+        CHECK(input->toPlainText() == original + QStringLiteral(" draft") && editor.hasPendingEdit());
+        CHECK(input->textCursor().anchor() == 1 && input->textCursor().position() == 4);
+        CHECK(changed.isEmpty() && pending.isEmpty() && selected.isEmpty());
+        CHECK(graphics(editor).scene() == scene && editor.selectedNodeIds() == selection);
+        CHECK(editor.canUndo() == (current > first) && editor.canRedo() == (current < last));
+        CHECK(undoAvailable.size() == (current > 0 && current == first ? 1 : 0));
+        if (!undoAvailable.isEmpty()) CHECK(!undoAvailable.front().front().toBool());
+        CHECK(redoAvailable.isEmpty());
+        topicKey(editor, Qt::Key_Z, Qt::ControlModifier);
+        CHECK(input->toPlainText() == original && !editor.hasPendingEdit() && changed.isEmpty());
+        topicKey(editor, Qt::Key_Escape);
+        // Increasing cannot restore the discarded oldest past or farthest future snapshots.
+        editor.setUndoLimit(20);
+        for (int i = current - 1; i >= first; --i)
+            CHECK(editor.undo() && exported(editor) == states[static_cast<size_t>(i)]);
+        CHECK(!editor.canUndo() && !editor.undo());
+        for (int i = first + 1; i <= last; ++i)
+            CHECK(editor.redo() && exported(editor) == states[static_cast<size_t>(i)]);
+        CHECK(!editor.canRedo() && !editor.redo());
+        // Zero (and a negative normalized to zero) allows later commands beyond the old bound.
+        editor.setUndoLimit(2);
+        editor.setUndoLimit(current == 0 ? -1 : 0);
+        for (int i = 1; i <= 5; ++i)
+            CHECK(editor.renameNode(root, QStringLiteral("Unlimited %1").arg(i)));
+        for (int i = 4; i >= 1; --i) {
+            CHECK(editor.undo());
+            CHECK(record(exported(editor), "nodes", root).at("topic") == utf8(QStringLiteral("Unlimited %1").arg(i)));
+        }
+        CHECK(editor.undo() && exported(editor) == states[static_cast<size_t>(last)]);
+        for (int i = last - 1; i >= first; --i)
+            CHECK(editor.undo() && exported(editor) == states[static_cast<size_t>(i)]);
+        CHECK(!editor.canUndo());
+    }
+    // Availability observers may destroy the facade during a live trim.
+    QPointer<Editor> closing = new Editor;
+    for (int i = 1; i <= 5; ++i) CHECK(closing->renameNode(root, QString::number(i)));
+    for (int i = 5; i > 1; --i) CHECK(closing->undo());
+    QObject::connect(closing.data(), &Editor::undoAvailable, qApp, [&](bool available) {
+        if (!available) delete closing.data();
+    });
+    closing->setUndoLimit(2);
+    CHECK(closing.isNull());
 }
 
 static void history_drafts_case() {

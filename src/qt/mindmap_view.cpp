@@ -10,6 +10,7 @@
 #include <QMimeData>
 #include <QUrl>
 #include <QFocusEvent>
+#include <QFontDatabase>
 #include <QGraphicsItem>
 #include <QKeyEvent>
 #include <QMenu>
@@ -32,6 +33,27 @@
 
 namespace m3::qt {
 namespace {
+QString resolveFontFamily(const QString &families) {
+    if (families.isEmpty()) return {};
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    auto installed = QFontDatabase::families();
+#else
+    auto installed = QFontDatabase().families();
+#endif
+    for (auto &family : installed) {
+        const int foundry = family.indexOf(QLatin1Char('['));
+        const int end = family.lastIndexOf(QLatin1Char(']'));
+        if (foundry >= 0 && end > foundry) family.remove(foundry, end - foundry + 1);
+        family = family.trimmed();
+    }
+    for (const auto &candidate : families.split(QLatin1Char(','))) {
+        const QString requested = candidate.trimmed();
+        if (requested.isEmpty()) continue;
+        for (const auto &family : installed)
+            if (requested.compare(family, Qt::CaseInsensitive) == 0) return family;
+    }
+    return {};
+}
 QString droppedLocalFilePath(const QMimeData *mime) {
     if (!mime) return {};
     const auto urls = mime->urls();
@@ -627,9 +649,22 @@ MindMapView::MindMapView(QWidget *parent) : QGraphicsView(parent) {
     setBackgroundBrush(palette().brush(QPalette::Base));
     if (parent) {
         parent->installEventFilter(this);
-        setFont(parent->font());
         setPalette(parent->palette());
     }
+    applyStyleFont();
+}
+void MindMapView::setStyle(const EditorConfig::Style &value) {
+    const EditorConfig::Style normalized{value.fontFamily.trimmed(), qBound(0, value.fontPointSize, 256)};
+    if (style.fontFamily == normalized.fontFamily && style.fontPointSize == normalized.fontPointSize) return;
+    if (style.fontFamily != normalized.fontFamily) resolvedFontFamily = resolveFontFamily(normalized.fontFamily);
+    style = normalized;
+    applyStyleFont();
+}
+void MindMapView::applyStyleFont() {
+    QFont effective = parentWidget() ? parentWidget()->font() : QApplication::font();
+    if (!resolvedFontFamily.isEmpty()) effective.setFamily(resolvedFontFamily);
+    if (style.fontPointSize > 0) effective.setPointSize(style.fontPointSize);
+    setFont(effective);
 }
 MindMapView::~MindMapView() {
     clearImageResize();
@@ -1115,7 +1150,7 @@ bool MindMapView::eventFilter(QObject *watched, QEvent *event) {
     if (watched == parentWidget() &&
         (event->type() == QEvent::FontChange || event->type() == QEvent::PaletteChange)) {
         const QPointer<MindMapView> guard(this);
-        if (event->type() == QEvent::FontChange) setFont(parentWidget()->font());
+        if (event->type() == QEvent::FontChange) applyStyleFont();
         else setPalette(parentWidget()->palette());
         return !guard;
     }
