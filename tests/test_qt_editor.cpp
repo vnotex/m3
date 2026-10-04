@@ -1054,7 +1054,10 @@ static void document_case() {
         QByteArray("{"),
         QByteArray(R"({"schemaVersion":1,"rootId":"r","nodes":[{"id":"r","topic":"first","topic":"second"}]})"),
         QByteArray(R"({"schemaVersion":1,"rootId":"r","nodes":[]})"),
-        QByteArray()
+        QByteArray("[]"),
+        QByteArray("null"),
+        QByteArray("\v\f"),
+        QByteArray(" \0", 2)
     };
     QByteArray nul = encoded(input);
     nul.insert(7, '\0');
@@ -1096,6 +1099,49 @@ static void document_case() {
     CHECK(editor.newDocument(QString()));
     CHECK(record(exported(editor), "nodes", QStringLiteral("root")).at("topic") == "");
     CHECK(changed.size() == 4);
+
+    for (const auto &blank : {QByteArray(), QByteArray(" \t\r\n")}) {
+        Editor emptyInput;
+        CHECK(emptyInput.loadJson(encoded(input)));
+        showEditor(emptyInput);
+        CHECK(emptyInput.renameNode(QStringLiteral("a"), QStringLiteral("First edit")));
+        CHECK(emptyInput.renameNode(QStringLiteral("a"), QStringLiteral("Second edit")));
+        CHECK(emptyInput.undo() && emptyInput.canUndo() && emptyInput.canRedo());
+        CHECK(emptyInput.selectNode(QStringLiteral("a")));
+        shortcut(emptyInput, Qt::Key_F2);
+        topicInput(emptyInput).setPlainText(QStringLiteral("Uncommitted draft"));
+        CHECK(emptyInput.hasPendingEdit());
+        QSignalSpy loaded(&emptyInput, &Editor::documentChanged);
+        QSignalSpy errors(&emptyInput, &Editor::errorOccurred);
+        CHECK(emptyInput.loadJson(blank));
+        pump();
+        CHECK(exported(emptyInput) == initial);
+        CHECK(emptyInput.selectedNodeIds() == QStringList{QStringLiteral("root")});
+        CHECK(emptyInput.selectedLinkId().isEmpty());
+        CHECK(!emptyInput.canUndo() && !emptyInput.canRedo());
+        CHECK(!emptyInput.hasPendingEdit() && !activeTopicInput(emptyInput));
+        CHECK(loaded.size() == 1 && errors.isEmpty() && emptyInput.lastError().isEmpty());
+        auto &view = graphics(emptyInput);
+        const auto *rootLabel = textItem(emptyInput, QStringLiteral("Central topic"));
+        const auto rootRect = view.mapFromScene(rootLabel->sceneBoundingRect()).boundingRect();
+        CHECK(view.viewport()->rect().contains(rootRect));
+        Editor reopened;
+        CHECK(reopened.loadJson(emptyInput.toJson()));
+        CHECK(exported(reopened) == initial);
+        CHECK(!emptyInput.addNode(QStringLiteral("root"), QStringLiteral("Child")).isEmpty());
+        CHECK(emptyInput.undo() && exported(emptyInput) == initial);
+    }
+    {
+        Editor readOnly;
+        CHECK(readOnly.loadJson(encoded(input)));
+        readOnly.setReadOnly(true);
+        CHECK(readOnly.loadJson(QByteArray()));
+        CHECK(readOnly.isReadOnly() && exported(readOnly) == initial);
+        CHECK(readOnly.selectedNodeId() == QStringLiteral("root"));
+        CHECK(!readOnly.canUndo() && !readOnly.canRedo());
+        CHECK(readOnly.addNode(QStringLiteral("root"), QStringLiteral("Blocked")).isEmpty());
+        CHECK(exported(readOnly) == initial);
+    }
 }
 
 static void tree_edits_case() {

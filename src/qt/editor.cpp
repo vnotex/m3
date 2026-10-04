@@ -51,6 +51,7 @@
 #include <QUrl>
 #include <QWindow>
 #include <QWidgetAction>
+#include <algorithm>
 
 static void initializeM3Resources() {
     Q_INIT_RESOURCE(m3_resources);
@@ -1668,6 +1669,10 @@ bool MindMapEditor::newDocument(const QString &topic) {
     return guard && d->controller->newDocument(topic);
 }
 bool MindMapEditor::loadJson(const QByteArray &json) {
+    if (std::all_of(json.cbegin(), json.cend(), [](char ch) {
+            return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
+        })) return newDocument();
+
     const QPointer<MindMapEditor> guard(this);
     d->invalidateFormatting();
     return guard && d->controller->loadJson(json);

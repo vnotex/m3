@@ -276,6 +276,9 @@ public:
     // document, selection, zoom or inline draft; requests visible images again.
     void reloadImages();
     bool newDocument(const QString &topic = QStringLiteral("Central topic"));
+    // Empty or JSON-whitespace-only bytes create the default root, as newDocument().
+    // Other input follows the normal import rules; failure preserves the current map.
+    // Like any successful load, blank input resets history and selects/fits the root.
     bool loadJson(const QByteArray &json);
     // Accept an inline node/link draft without changing selection or camera.
     // By default editing ends. keepEditing retains the same input, document,
