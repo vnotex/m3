@@ -143,23 +143,20 @@ protected:
 private:
     QPointer<MindMapView> view;
 };
-QString propertiesText(const char *text) {
-    return QCoreApplication::translate("m3::qt::NodePropertiesPanel", text);
-}
 constexpr int fontSizePresetCount = 13;
 void populateFontSizes(QComboBox *combo) {
     combo->setEditable(false);
-    combo->setAccessibleName(propertiesText("Font size"));
-    combo->addItem(propertiesText("Default"), 0.0);
+    combo->setAccessibleName(QCoreApplication::translate("m3::qt::NodePropertiesPanel", "Font size"));
+    combo->addItem(QCoreApplication::translate("m3::qt::NodePropertiesPanel", "Default"), 0.0);
     for (const int size : {10, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64})
-        combo->addItem(propertiesText("%1 px").arg(size), double(size));
+        combo->addItem(QCoreApplication::translate("m3::qt::NodePropertiesPanel", "%1 px").arg(size), double(size));
 }
 void syncFontSize(QComboBox *combo, qreal size) {
     const QSignalBlocker blocker(combo);
     int index = combo->findData(double(size));
     if (index < 0) {
         if (combo->count() > fontSizePresetCount) combo->removeItem(fontSizePresetCount);
-        combo->addItem(propertiesText("%1 px").arg(QString::number(size, 'g', 6)), double(size));
+        combo->addItem(QCoreApplication::translate("m3::qt::NodePropertiesPanel", "%1 px").arg(QString::number(size, 'g', 6)), double(size));
         index = fontSizePresetCount;
     } else if (index < fontSizePresetCount && combo->count() > fontSizePresetCount) {
         combo->removeItem(fontSizePresetCount);
@@ -171,7 +168,7 @@ public:
     FontSizeAction(QObject *parent, std::function<void(qreal)> apply)
         : QWidgetAction(parent), apply(std::move(apply)) {
         setObjectName(QStringLiteral("fontSize"));
-        setText(propertiesText("Font size"));
+        setText(QCoreApplication::translate("m3::qt::NodePropertiesPanel", "Font size"));
         setToolTip(text());
         connect(this, &QAction::changed, this, [this] {
             if (!isEnabled()) hidePopups();
@@ -233,11 +230,11 @@ public:
         };
         auto *automatic = makeSwatch(QStringLiteral("palette(button)"), QStringLiteral("palette(button-text)"));
         automatic->setObjectName(namePrefix + QStringLiteral("nodeDefaultColor"));
-        automatic->setText(propertiesText("Auto"));
-        automatic->setAccessibleName(propertiesText("Default color"));
+        automatic->setText(QCoreApplication::translate("m3::qt::NodePropertiesPanel", "Auto"));
+        automatic->setAccessibleName(QCoreApplication::translate("m3::qt::NodePropertiesPanel", "Default color"));
         for (const auto &entry : nodeColors) {
             const QString hex = QString::fromLatin1(entry.hex);
-            const QString label = propertiesText("%1 (%2)").arg(QCoreApplication::translate("m3::qt::NodeColors", entry.name), hex);
+            const QString label = QCoreApplication::translate("m3::qt::NodePropertiesPanel", "%1 (%2)").arg(QCoreApplication::translate("m3::qt::NodeColors", entry.name), hex);
             const QString contrast = QColor(hex).lightnessF() > 0.55 ? QStringLiteral("#202020") : QStringLiteral("#ffffff");
             const int index = swatches.size();
             auto *button = makeSwatch(hex, contrast);
@@ -1003,7 +1000,7 @@ public:
         popup.content->setEnabled(true);
     }
     void connectPopup(FormattingPopup &popup, const char *name, const char *label) {
-        popup.action = new QAction(propertiesText(label), host);
+        popup.action = new QAction(QCoreApplication::translate("m3::qt::NodePropertiesPanel", label), host);
         popup.action->setObjectName(QString::fromLatin1(name));
         popup.action->setToolTip(popup.action->text());
         popup.action->setMenu(popup.menu);
@@ -1054,8 +1051,8 @@ public:
         layout->setSpacing(6);
         toolbarIcons = new EmojiLineEdit(content, EmojiLineEdit::PickerMode::Embedded);
         toolbarIcons->setObjectName(QStringLiteral("toolbarNodeIcons"));
-        toolbarIcons->setAccessibleName(propertiesText("Icons"));
-        toolbarIcons->setPlaceholderText(propertiesText("Search emoji names or paste emoji"));
+        toolbarIcons->setAccessibleName(QCoreApplication::translate("m3::qt::NodePropertiesPanel", "Icons"));
+        toolbarIcons->setPlaceholderText(QCoreApplication::translate("m3::qt::NodePropertiesPanel", "Search emoji names or paste emoji"));
         layout->addWidget(toolbarIcons);
         layout->addWidget(toolbarIcons->pickerWidget(), 1);
         menu->input = toolbarIcons;
@@ -1214,8 +1211,8 @@ public:
             italicAction->setChecked(node.style.italic.value_or(view->font().italic()));
         }
         if (fontSizeAction) fontSizeAction->synchronize(node.style.fontSize);
-        if (textPalette) textPalette->setColor(node.style.textColor, propertiesText("Use the default text color"));
-        if (fillPalette) fillPalette->setColor(node.style.backgroundColor, propertiesText("Use the default fill"));
+        if (textPalette) textPalette->setColor(node.style.textColor, QCoreApplication::translate("m3::qt::NodePropertiesPanel", "Use the default text color"));
+        if (fillPalette) fillPalette->setColor(node.style.backgroundColor, QCoreApplication::translate("m3::qt::NodePropertiesPanel", "Use the default fill"));
         if (toolbarIcons && commaValues(toolbarIcons->text()) != node.icons) {
             const QSignalBlocker blocker(toolbarIcons);
             toolbarIcons->setText(node.icons.join(QStringLiteral(", ")));

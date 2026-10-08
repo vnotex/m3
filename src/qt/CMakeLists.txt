@@ -1,7 +1,8 @@
 find_package(Qt${QT_DEFAULT_MAJOR_VERSION} ${_m3_qt_min_version} REQUIRED COMPONENTS LinguistTools)
 set(M3_TS_FILES
     translations/m3_zh_CN.ts
-    translations/m3_ja.ts)
+    translations/m3_ja.ts
+    translations/m3_ko.ts)
 set_source_files_properties(${M3_TS_FILES} PROPERTIES
     OUTPUT_LOCATION "${CMAKE_CURRENT_BINARY_DIR}/translations")
 qt_add_translation(M3_QM_FILES ${M3_TS_FILES})
