@@ -1142,6 +1142,94 @@ static void document_case() {
         CHECK(readOnly.addNode(QStringLiteral("root"), QStringLiteral("Blocked")).isEmpty());
         CHECK(exported(readOnly) == initial);
     }
+
+    for (int mode : {0, 1, 2, 3}) {
+        QWidget host;
+        QVBoxLayout layout(&host);
+        host.resize(1000, 700);
+        host.show();
+        pump();
+        Editor embedded(&host);
+        CHECK(embedded.loadJson(QByteArray()));
+        embedded.show();
+        // The host attaches the already-shown child before returning to the event loop.
+        layout.addWidget(&embedded);
+        if (mode == 1) embedded.zoom(1.5);
+        if (mode == 2) embedded.hide();
+        if (mode == 3) {
+            embedded.hide();
+            embedded.fitToContents();
+            embedded.show();
+        }
+        QSignalSpy edits(&embedded, &Editor::documentChanged);
+        pump();
+        if (mode == 2) {
+            embedded.show();
+            pump();
+        }
+        CHECK(exported(embedded) == initial && edits.isEmpty());
+        CHECK(embedded.selectedNodeId() == QStringLiteral("root"));
+        const qreal scale = embedded.zoomFactor();
+        if (mode == 3) {
+            CHECK(embedded.isZoomFit());
+            embedded.fitToContents();
+            CHECK(qFuzzyCompare(scale, embedded.zoomFactor()));
+        } else if (mode == 1) {
+            CHECK(scale == 1.5 && !embedded.isZoomFit());
+        } else {
+            CHECK(scale == 1.0 && !embedded.isZoomFit());
+            auto &view = graphics(embedded);
+            auto *label = textItem(embedded, QStringLiteral("Central topic"));
+            const QRect rootRect = view.mapFromScene(label->sceneBoundingRect()).boundingRect();
+            CHECK(rootRect.height() >= label->boundingRect().height());
+            CHECK(view.viewport()->rect().contains(rootRect));
+            const QPoint center = view.mapFromScene(ownerItem(label)->sceneBoundingRect().center());
+            CHECK((center - view.viewport()->rect().center()).manhattanLength() <= 2);
+        }
+        // Later host resizes retain both default and explicitly requested zoom.
+        host.resize(1100, 800);
+        pump();
+        CHECK(qFuzzyCompare(scale, embedded.zoomFactor()));
+    }
+    // An asymmetric map must center its root, not its scene bounding box.
+    for (const auto direction : {Editor::LayoutDirection::Right, Editor::LayoutDirection::Left,
+                                 Editor::LayoutDirection::Outline}) {
+        QWidget host;
+        QVBoxLayout layout(&host);
+        host.resize(1000, 700);
+        host.show();
+        pump();
+        Editor embedded(&host);
+        embedded.resize(0, 0);
+        CHECK(embedded.setLayoutDirection(direction));
+        embedded.zoom(2.0);
+        CHECK(embedded.loadJson(encoded(input)));
+        embedded.show();
+        layout.addWidget(&embedded);
+        pump();
+        auto &view = graphics(embedded);
+        const auto rootTopic = qs(record(expected, "nodes", QStringLiteral("r")).at("topic"));
+        auto checkRootCamera = [&] {
+            CHECK(embedded.zoomFactor() == 1.0 && !embedded.isZoomFit());
+            CHECK(embedded.selectedNodeId() == QStringLiteral("r"));
+            const QPoint center = view.mapFromScene(topicRect(embedded, rootTopic).center());
+            CHECK((center - view.viewport()->rect().center()).manhattanLength() <= 2);
+        };
+        checkRootCamera();
+        embedded.fitToContents();
+        CHECK(embedded.isZoomFit());
+        CHECK(embedded.loadJson(encoded(input)));
+        pump();
+        checkRootCamera();
+        embedded.zoom(1.5);
+        const auto camera = view.transform();
+        const auto center = view.mapToScene(view.viewport()->rect().center());
+        CHECK(!embedded.loadJson(QByteArray("{")));
+        CHECK(view.transform() == camera && view.mapToScene(view.viewport()->rect().center()) == center);
+        CHECK(embedded.newDocument());
+        pump();
+        CHECK(embedded.zoomFactor() == 1.0 && !embedded.isZoomFit());
+    }
 }
 
 static void tree_edits_case() {

@@ -1294,10 +1294,11 @@ void MindMapView::prepare(NodePresentation &node) const {
                                     (node.hyperlink.isEmpty() ? 0 : 24) + (node.hasChildren ? 18 : 0)),
                             qMax(qreal(36), contentBottom + 8));
 }
-void MindMapView::install(Presentation presentation, bool fit) {
+void MindMapView::install(Presentation presentation, bool resetCamera) {
     // Build before touching the current scene, selection or active draft.
     QHash<QString, QString> parents;
     for (const auto &edge : presentation.treeEdges) parents.insert(edge.target, edge.source);
+    const QPointF rootCenter = presentation.nodes.front().rectangle.center();
     auto replacement = buildScene(std::move(presentation), font(), palette());
     selectedNodes.clear();
     suppressNodeDoubleClick = false;
@@ -1313,8 +1314,8 @@ void MindMapView::install(Presentation presentation, bool fit) {
     clearNodeLinkPress();
     QGraphicsTextItem *replacementLabel = topicEditor ? findTopicLabel(replacement.get(), editedId, editedKind) : nullptr;
     const QPointF center = sceneCenter(*this, viewport()->size());
-    if (topicEditor && (!finishingTopicEdit || fit)) {
-        if (fit || !replacementLabel || replacementLabel->toPlainText() != originalTopic) {
+    if (topicEditor && (!finishingTopicEdit || resetCamera)) {
+        if (resetCamera || !replacementLabel || replacementLabel->toPlainText() != originalTopic) {
             QPointer<MindMapView> guard(this);
             finishTopicEdit(false);
             if (!guard) return;
@@ -1332,10 +1333,19 @@ void MindMapView::install(Presentation presentation, bool fit) {
     replacement->setParent(this);
     setScene(replacement.release());
     delete old;
-    preserveCenter(center);
-    pendingFit = pendingFit || fit;
-    if (pendingFit) fitContents();
+    const bool cameraChanged = resetCamera && (zoomFit || !qFuzzyCompare(transform().m11(), qreal(1)));
+    if (resetCamera) {
+        pendingFit = false;
+        pendingCenter = rootCenter;
+        zoomFit = false;
+        resetTransform();
+    } else if (pendingCenter) {
+        pendingCenter = rootCenter;
+    }
+    preserveCenter(resetCamera ? rootCenter : center);
     updateTopicEditorGeometry();
+    schedulePendingCamera();
+    if (cameraChanged) emit zoomChanged(1.0, false);
 }
 QImage MindMapView::renderImage(Presentation presentation) const {
     auto detached = buildScene(std::move(presentation), font(), palette());
@@ -1527,6 +1537,7 @@ void MindMapView::centerNode(const QString &id) {
     for (auto *item : scene()->items()) {
         if (auto *node = dynamic_cast<NodeItem *>(item); node && node->id == id) {
             pendingFit = false;
+            pendingCenter.reset();
             preserveCenter(node->sceneBoundingRect().center());
             updateTopicEditorGeometry();
             return;
@@ -1538,6 +1549,7 @@ void MindMapView::fitContents() {
     clearLinkCreation();
     clearImageResize();
     const bool wasFit = zoomFit;
+    pendingCenter.reset();
     zoomFit = true;
     if (!isVisible() || viewport()->width() <= 0 || viewport()->height() <= 0) {
         pendingFit = true;
@@ -1564,6 +1576,7 @@ void MindMapView::zoom(qreal factor) {
     clearLinkCreation();
     clearImageResize();
     pendingFit = false;
+    pendingCenter.reset();
     const QPointF center = sceneCenter(*this, viewport()->size());
     const qreal current = transform().m11();
     const qreal target = std::clamp(current * factor, qreal(0.1), qreal(4));
@@ -1592,6 +1605,7 @@ void MindMapView::resetZoom() {
     clearLinkCreation();
     clearImageResize();
     pendingFit = false;
+    pendingCenter.reset();
     const QPointF center = sceneCenter(*this, viewport()->size());
     const qreal previous = transform().m11();
     resetTransform(); preserveCenter(center);
@@ -1941,6 +1955,7 @@ void MindMapView::mouseMoveEvent(QMouseEvent *event) {
             // Keep the original scene point under the pointer; incremental centering loses pixels.
             const QPointF delta = panPosition - mapToScene(current);
             pendingFit = false;
+            pendingCenter.reset();
             preserveCenter(sceneCenter(*this, viewport()->size()) + delta);
             event->accept();
             return;
@@ -2150,20 +2165,33 @@ void MindMapView::preserveCenter(const QPointF &center) {
     horizontalScrollBar()->setValue(horizontalScrollBar()->value() + horizontalOffset);
     verticalScrollBar()->setValue(verticalScrollBar()->value() + qRound(offset.y()));
 }
+void MindMapView::schedulePendingCamera() {
+    if ((!pendingFit && !pendingCenter) || cameraScheduled || !isVisible()) return;
+    cameraScheduled = true;
+    QTimer::singleShot(0, this, [this] {
+        cameraScheduled = false;
+        if (!isVisible() || viewport()->width() <= 0 || viewport()->height() <= 0) return;
+        if (pendingCenter) {
+            const QPointF center = *pendingCenter;
+            pendingCenter.reset();
+            preserveCenter(center);
+            updateTopicEditorGeometry();
+        } else if (pendingFit) fitContents();
+    });
+}
 void MindMapView::resizeEvent(QResizeEvent *event) {
     clearLinkReconnect();
     clearLinkCreation();
     clearImageResize();
     const QPointF center = sceneCenter(*this, event->oldSize());
     QGraphicsView::resizeEvent(event);
-    if (pendingFit) fitContents();
+    if (pendingFit || pendingCenter) schedulePendingCamera();
     else if (event->oldSize().isValid()) preserveCenter(center);
     updateTopicEditorGeometry();
 }
 void MindMapView::showEvent(QShowEvent *event) {
     QGraphicsView::showEvent(event);
-    // Context-bound callback cannot outlive the view. Layout has settled by then.
-    if (pendingFit) QTimer::singleShot(0, this, [this] { if (pendingFit) fitContents(); });
+    schedulePendingCamera();
 }
 void MindMapView::changeEvent(QEvent *event) {
     QGraphicsView::changeEvent(event);

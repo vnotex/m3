@@ -10,6 +10,7 @@
 #include <QSet>
 #include <QStringList>
 #include <functional>
+#include <optional>
 
 class QGraphicsTextItem;
 class QPlainTextEdit;
@@ -29,7 +30,7 @@ public:
     bool hasPendingEdit() const { return pendingEdit; }
     void setReadOnly(bool value);
     void prepare(NodePresentation &node) const;
-    void install(Presentation presentation, bool fit);
+    void install(Presentation presentation, bool resetCamera);
     QImage renderImage(Presentation presentation) const;
     void showError(const QString &message);
     void setSelection(const QStringList &nodes, const QString &link);
@@ -85,6 +86,9 @@ private:
     QSet<QString> selectedNodes;
     bool suppressNodeDoubleClick = false;
     bool pendingFit = false;
+    std::optional<QPointF> pendingCenter;
+    bool cameraScheduled = false;
+    void schedulePendingCamera();
     bool zoomFit = false;
     QPointF panPosition;
     QHash<QString, QString> nodeParents;

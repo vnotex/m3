@@ -514,13 +514,13 @@ Presentation MindMapController::prepare(const M3Mindmap *map, const QByteArray &
     result.bounds = rectangle(layout.at("bounds"));
     return result;
 }
-void MindMapController::install(Presentation presentation, bool fit) {
+void MindMapController::install(Presentation presentation, bool resetCamera) {
     QSet<QString> nodes, links;
     for (const auto &n : presentation.nodes) nodes.insert(n.id);
     for (const auto &l : presentation.links) links.insert(l.id);
     const QPointer<MindMapController> guard(this);
     const auto revision = documentRevision;
-    view.install(std::move(presentation), fit);
+    view.install(std::move(presentation), resetCamera);
     if (!guard) return;
     if (revision != documentRevision) {
         // A host may replace the document while installation cancels a draft.
@@ -700,7 +700,7 @@ bool MindMapController::transact(Operation &&operation,
         return finishChange({}, false, false, preferredNode, preferredLink);
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
-bool MindMapController::finishChange(std::optional<Presentation> prepared, bool fit, bool restoring,
+bool MindMapController::finishChange(std::optional<Presentation> prepared, bool resetCamera, bool restoring,
                                     const QString &preferredNode, const QString &preferredLink) {
     const QPointer<MindMapController> guard(this);
     const auto revision = documentRevision;
@@ -715,7 +715,7 @@ bool MindMapController::finishChange(std::optional<Presentation> prepared, bool 
         if (revision == documentRevision) {
             auto presentation = prepared ? std::move(*prepared) : prepare(model.get(), currentSnapshot, direction, temporaryExpanded);
             const QString root = presentation.nodes.front().id;
-            install(std::move(presentation), fit);
+            install(std::move(presentation), resetCamera);
             if (!guard) return true;
             if (revision == documentRevision) {
                 if (visibleNodes.contains(preferredNode)) { nodes = QStringList{preferredNode}; link.clear(); }
@@ -724,7 +724,7 @@ bool MindMapController::finishChange(std::optional<Presentation> prepared, bool 
                     if (!visibleNodes.contains(nodes.at(i - 1))) nodes.removeAt(i - 1);
                 if (!visibleLinks.contains(link)) link.clear();
                 if (restoring && nodes.isEmpty() && link.isEmpty()) nodes = QStringList{root};
-                selection(std::move(nodes), std::move(link), !restoring && !fit && !preferredNode.isEmpty());
+                selection(std::move(nodes), std::move(link), !restoring && !resetCamera && !preferredNode.isEmpty());
             }
         }
     } catch (const std::exception &e) {

@@ -28,7 +28,7 @@ class QAction;
 // It contains the canvas, properties card and diagnostics, but no toolbar rows or
 // layout picker. Hosts (including the demo) own toolbar presentation.
 // New editors contain the selected root "root" / "Central topic". New/load
-// replace it atomically, select the new root, and fit once; failed imports retain
+// replace it atomically, select and center the new root at 100%; failed imports retain
 // the document and selection. Import accepts native JSON, optional-field nested
 // trees, and Mind Elixir. toJson is a copied native JSON snapshot, including
 // opaque metadata, or empty on error. toMarkdown is a separate copied text
@@ -55,7 +55,7 @@ class QAction;
 // Drag empty space with the left mouse button to pan; the middle button pans anywhere.
 // Empty space shows an open hand cursor, closing during a pan. Empty clicks clear selection.
 // Node context menus separate creation from editing/reordering and omit viewport actions.
-// With no selection the menu contains only Focus Main Node, Fit, Zoom In, Zoom Out and 100%.
+// With no selection the menu contains only Focus Main Node, Fit, 100%, Zoom In and Zoom Out.
 // For a single node, Collapse/Expand, Move and Add Link are command/shortcut actions.
 // A single selected node shows a small arrow outside its top-right corner. Drag it onto
 // another visible node to create an undirected cross-link without moving either node.
@@ -77,7 +77,7 @@ class QAction;
 // also scrolls the node clear of the panel, preserving zoom and keyboard focus.
 // If it cannot fit, scrolling exposes the largest portion in a clear viewport region.
 // An already-presented panel does not constrain subsequent pan or property edits.
-// Startup fit and explicit fit/centering commands retain their camera placement.
+// Startup centering and explicit fit/centering commands retain their camera placement.
 // Expanding a node centers it at the current zoom; large branches may still
 // extend beyond the viewport.
 // Topics/labels are plain Unicode text. Embedded NULs are rejected.
@@ -278,7 +278,7 @@ public:
     bool newDocument(const QString &topic = QStringLiteral("Central topic"));
     // Empty or JSON-whitespace-only bytes create the default root, as newDocument().
     // Other input follows the normal import rules; failure preserves the current map.
-    // Like any successful load, blank input resets history and selects/fits the root.
+    // Like any successful load, blank input resets history and centers the selected root at 100%.
     bool loadJson(const QByteArray &json);
     // Accept an inline node/link draft without changing selection or camera.
     // By default editing ends. keepEditing retains the same input, document,
@@ -362,7 +362,7 @@ public:
     // View-only controls; retain document, selection and inline draft.
     // Current canvas scale; fit may produce values outside the step-zoom range.
     qreal zoomFactor() const;
-    // True after initial/explicit fit, including while fitting awaits a visible viewport.
+    // True after explicit fit, including while fitting awaits a visible viewport.
     bool isZoomFit() const;
     void zoom(qreal factor);
     void resetZoom();
@@ -375,7 +375,7 @@ public:
     // the root cannot be selected.
     bool focusRoot();
 signals:
-    // View-only scale or Fit/manual-mode changes, including initial/deferred fit.
+    // View-only scale or Fit/manual-mode changes, including new/load reset and deferred fit.
     // Mode transitions emit even at the same scale; pan never emits.
     void zoomChanged(qreal factor, bool fit);
     // Committed semantic changes only, never draft typing or camera/selection.

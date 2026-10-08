@@ -1554,7 +1554,7 @@ public:
                 menu.addSeparator();
                 menu.addAction(deleteSelection);
             } else {
-                menu.addActions({rootSelection, fit, zoomIn, zoomOut, resetZoom});
+                menu.addActions({rootSelection, fit, resetZoom, zoomIn, zoomOut});
             }
             if (hasNode || !linkId.isEmpty() || controller->selectedNodeIds().size() > 1) {
                 menu.addSeparator();

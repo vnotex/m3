@@ -131,13 +131,13 @@ private:
     Presentation prepare(const M3Mindmap *map, const QByteArray &json,
                          MindMapEditor::LayoutDirection requested, QSet<QString> &expansions,
                          bool useImageCache = true);
-    void install(Presentation presentation, bool fit);
+    void install(Presentation presentation, bool resetCamera);
     bool replace(Map candidate);
     template<typename Operation>
     bool transact(Operation &&operation,
                   const QString &preferredNode = {}, const QString &preferredLink = {},
                   const QString &clearedExpansion = {});
-    bool finishChange(std::optional<Presentation> prepared = {}, bool fit = false, bool restoring = false,
+    bool finishChange(std::optional<Presentation> prepared = {}, bool resetCamera = false, bool restoring = false,
                       const QString &preferredNode = {}, const QString &preferredLink = {});
     void selection(QStringList nodes, QString link, bool ensureVisible = true);
     void restoreSelection();
