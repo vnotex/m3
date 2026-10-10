@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Overview
-`m3` ("Mindmap in Markdown") is a C++17 mind-map library with a public C API and an optional Qt Widgets editor/demo. Native JSON is the persistence format; Markdown, outline JSON and Qt HTML exports are projections, not full-fidelity round-trip formats.
+`m3` ("Mind Map in Markdown") is a C++17 mind-map library with a public C API and an optional Qt Widgets editor/demo. Native JSON is the persistence format; Markdown, outline JSON and Qt HTML exports are projections, not full-fidelity round-trip formats.
 
 ## Architecture & Data Flow
 - `m3core` / `m3::core`: `src/api.cpp` wraps the semantic model, JSON/Markdown codecs and layout engine behind the C ABI. The model owns an ordered rooted tree plus cross-links; it has no Qt dependency.
