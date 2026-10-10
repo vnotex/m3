@@ -128,7 +128,7 @@ private:
     bool strings(std::initializer_list<QString> values);
     void success();
     QByteArray snapshot(const M3Mindmap *map);
-    Presentation prepare(const M3Mindmap *map, const QByteArray &json,
+    Presentation prepare(const QByteArray &json,
                          MindMapEditor::LayoutDirection requested, QSet<QString> &expansions,
                          bool useImageCache = true);
     void install(Presentation presentation, bool resetCamera);

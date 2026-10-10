@@ -75,10 +75,6 @@ M3LayoutDirection coreDirection(MindMapEditor::LayoutDirection d) {
     }
     throw std::runtime_error("Invalid layout direction");
 }
-QRectF rectangle(const Json &j) {
-    return {j.at("x").get<double>(), j.at("y").get<double>(),
-            j.at("width").get<double>(), j.at("height").get<double>()};
-}
 std::optional<NodeImage> nodeImage(const Json &value) {
     if (value.is_null()) return std::nullopt;
     return NodeImage{string(value.at("url")), value.at("width").get<double>(), value.at("height").get<double>()};
@@ -320,7 +316,7 @@ bool MindMapController::revealTarget(FindTarget target) {
                     if (!nodes.value(ancestor)->at("expanded").get<bool>()) expansions.insert(ancestor);
                 }
             }
-            auto presentation = prepare(model.get(), currentSnapshot, direction, expansions);
+            auto presentation = prepare(currentSnapshot, direction, expansions);
             temporaryExpanded.swap(expansions);
             install(std::move(presentation), false);
             if (!guard || revision != documentRevision) return false;
@@ -424,12 +420,12 @@ QString MindMapController::toMarkdown() {
 QString MindMapController::toHtml() {
     try {
         const auto document = currentSnapshot;
-        auto presentation = prepare(model.get(), document, direction, temporaryExpanded);
+        auto presentation = prepare(document, direction, temporaryExpanded);
         const auto image = view.renderImage(std::move(presentation));
         return encodeHtml(document, image);
     } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
-Presentation MindMapController::prepare(const M3Mindmap *map, const QByteArray &json,
+Presentation MindMapController::prepare(const QByteArray &json,
                                        MindMapEditor::LayoutDirection requested, QSet<QString> &expansions,
                                        bool useImageCache) {
     const auto data = Json::parse(json.constData(), json.constData() + json.size());
@@ -437,27 +433,25 @@ Presentation MindMapController::prepare(const M3Mindmap *map, const QByteArray &
     std::unordered_map<std::string, const Json *> index;
     index.reserve(nodes.size());
     for (const auto &n : nodes) index.emplace(n.at("id").get<std::string>(), &n);
-    // Only layout sees temporary expansion. The committed map/snapshot and every
-    // history entry keep the user's persisted collapsed state.
-    Map layoutMap(nullptr, m3_mindmap_destroy);
     for (auto it = expansions.begin(); it != expansions.end();) {
-        const auto id = utf8(*it);
-        const auto record = index.find(id);
-        if (record == index.end()) { it = expansions.erase(it); continue; }
-        ++it;
-        if (record->second->at("expanded").get<bool>()) continue;
-        if (!layoutMap) {
-            M3Mindmap *raw = nullptr;
-            const auto parsed = m3_mindmap_from_json(json.constData(), &raw);
-            layoutMap.reset(raw);
-            requireStatus(parsed);
-        }
-        requireStatus(m3_mindmap_update_node(layoutMap.get(), id.c_str(), R"({"expanded":true})"));
+        if (index.find(utf8(*it)) == index.end()) it = expansions.erase(it);
+        else ++it;
     }
     Presentation result;
     result.outline = requested == MindMapEditor::LayoutDirection::Outline;
-    struct Frame { const Json *record; QColor inheritedBranchColor; };
-    std::vector<Frame> pending{{index.at(data.at("rootId").get<std::string>()), {}}};
+    // Reserve the full tree's geometry. Folding only changes visibility, never
+    // branch balancing or sibling positions, including documents loaded folded.
+    std::vector<M3LayoutNode> sizes;
+    sizes.reserve(nodes.size());
+    std::vector<size_t> visibleIndexes;
+    struct Frame {
+        const Json *record;
+        QColor inheritedBranchColor;
+        size_t parent, visibleParent;
+        bool visible;
+    };
+    std::vector<Frame> pending{{index.at(data.at("rootId").get<std::string>()), {},
+                                M3_NO_PARENT, M3_NO_PARENT, true}};
     while (!pending.empty()) {
         const auto frame = pending.back();
         pending.pop_back();
@@ -487,31 +481,37 @@ Presentation MindMapController::prepare(const M3Mindmap *map, const QByteArray &
         node.style = nodeStyle(record.at("style"));
         if (!node.style.branchColor.isValid()) node.style.branchColor = frame.inheritedBranchColor;
         view.prepare(node);
-        if (node.expanded)
-            for (auto it = children.rbegin(); it != children.rend(); ++it)
-                pending.push_back({index.at(it->get<std::string>()), node.style.branchColor});
-        result.nodes.push_back(std::move(node));
+        const size_t position = sizes.size();
+        sizes.push_back({frame.parent, node.rectangle.width(), node.rectangle.height()});
+        // Preorder follows declared children, not the flat JSON record order.
+        for (auto it = children.rbegin(); it != children.rend(); ++it)
+            pending.push_back({index.at(it->get<std::string>()), node.style.branchColor,
+                               position, result.nodes.size(), frame.visible && node.expanded});
+        if (frame.visible) {
+            if (frame.visibleParent != M3_NO_PARENT)
+                result.treeEdges.push_back({result.nodes[frame.visibleParent].id, node.id});
+            visibleIndexes.push_back(position);
+            result.nodes.push_back(std::move(node));
+        }
     }
-    std::vector<QByteArray> ids;
-    ids.reserve(result.nodes.size());
-    for (const auto &node : result.nodes) ids.push_back(node.id.toUtf8());
-    std::vector<M3NodeSize> sizes;
-    sizes.reserve(result.nodes.size());
-    for (size_t i = 0; i < result.nodes.size(); ++i)
-        sizes.push_back({ids[i].constData(), result.nodes[i].rectangle.width(), result.nodes[i].rectangle.height()});
     const M3LayoutOptions options{coreDirection(requested), result.outline ? 32.0 : 64.0,
                                   result.outline ? 8.0 : 20.0};
-    char *raw = nullptr;
-    const auto status = m3_mindmap_layout_json(layoutMap ? layoutMap.get() : map, sizes.data(), sizes.size(), &options, &raw);
-    Text layoutText(raw, m3_string_free);
+    M3LayoutResult *raw = nullptr;
+    const auto status = m3_layout_tree(sizes.data(), sizes.size(), &options, &raw);
+    const std::unique_ptr<M3LayoutResult, decltype(&m3_layout_result_free)> layout(raw, m3_layout_result_free);
     requireStatus(status);
-    const auto layout = Json::parse(layoutText.get());
-    QHash<QString, size_t> visible;
-    for (size_t i = 0; i < result.nodes.size(); ++i) visible.insert(result.nodes[i].id, i);
-    for (const auto &n : layout.at("nodes")) result.nodes[visible.value(string(n.at("id")))].rectangle = rectangle(n);
-    for (const auto &e : layout.at("treeEdges")) result.treeEdges.push_back({string(e.at("source")), string(e.at("target"))});
-    for (const auto &l : layout.at("crossLinks")) result.links.push_back(linkPresentation(l));
-    result.bounds = rectangle(layout.at("bounds"));
+    QSet<QString> visible;
+    for (size_t i = 0; i < result.nodes.size(); ++i) {
+        auto &node = result.nodes[i];
+        const auto &rect = layout->rects[visibleIndexes[i]];
+        node.rectangle = QRectF(rect.x, rect.y, rect.width, rect.height);
+        result.bounds = result.bounds.united(node.rectangle);
+        visible.insert(node.id);
+    }
+    for (const auto &link : data.at("crossLinks")) {
+        if (visible.contains(string(link.at("source"))) && visible.contains(string(link.at("target"))))
+            result.links.push_back(linkPresentation(link));
+    }
     return result;
 }
 void MindMapController::install(Presentation presentation, bool resetCamera) {
@@ -559,7 +559,7 @@ bool MindMapController::replace(Map candidate) {
     try {
         auto bytes = snapshot(candidate.get());
         QSet<QString> expansions;
-        auto presentation = prepare(candidate.get(), bytes, direction, expansions, false);
+        auto presentation = prepare(bytes, direction, expansions, false);
         const QString root = presentation.nodes.front().id;
         std::vector<HistoryState> baseline;
         baseline.push_back({bytes, {root}, {}});
@@ -672,7 +672,7 @@ bool MindMapController::transact(Operation &&operation,
             if (!expansionChanged) { success(); return true; }
             // Explicitly collapsing a temporarily revealed node can be a
             // persistent no-op, but must still close its presentation branch.
-            auto presentation = prepare(model.get(), currentSnapshot, direction, expansions);
+            auto presentation = prepare(currentSnapshot, direction, expansions);
             const QPointer<MindMapController> guard(this);
             const auto revision = documentRevision;
             temporaryExpanded.swap(expansions);
@@ -713,7 +713,7 @@ bool MindMapController::finishChange(std::optional<Presentation> prepared, bool 
         success();
         if (!guard) return true;
         if (revision == documentRevision) {
-            auto presentation = prepared ? std::move(*prepared) : prepare(model.get(), currentSnapshot, direction, temporaryExpanded);
+            auto presentation = prepared ? std::move(*prepared) : prepare(currentSnapshot, direction, temporaryExpanded);
             const QString root = presentation.nodes.front().id;
             install(std::move(presentation), resetCamera);
             if (!guard) return true;
@@ -753,7 +753,7 @@ bool MindMapController::restoreHistory(size_t cursor) {
         Map candidate(raw, m3_mindmap_destroy);
         requireStatus(parsed);
         auto expansions = temporaryExpanded;
-        auto presentation = prepare(candidate.get(), target.json, direction, expansions);
+        auto presentation = prepare(target.json, direction, expansions);
         model.swap(candidate);
         currentSnapshot = target.json;
         historyCursor = cursor;
@@ -966,12 +966,9 @@ bool MindMapController::setExpanded(const QString &id, bool expanded) {
     }
     try {
         const auto patch = Json{{"expanded", expanded}}.dump();
-        const auto revision = documentRevision;
-        if (!transact([&](M3Mindmap *candidate) {
+        return transact([&](M3Mindmap *candidate) {
             return m3_mindmap_update_node(candidate, id.toUtf8().constData(), patch.c_str());
-        }, fallback, {}, id)) return false;
-        if (guard && expanded && documentRevision == revision + 1) view.centerNode(id);
-        return true;
+        }, fallback, {}, id);
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 QString MindMapController::addLink(const QString &source, const QString &target, bool directed, const QString &topic) {
@@ -1060,7 +1057,7 @@ bool MindMapController::removeLink(const QString &id) {
 bool MindMapController::setLayoutDirection(MindMapEditor::LayoutDirection requested) {
     const QPointer<MindMapController> guard(this);
     try {
-        auto presentation = prepare(model.get(), currentSnapshot, requested, temporaryExpanded);
+        auto presentation = prepare(currentSnapshot, requested, temporaryExpanded);
         install(std::move(presentation), false);
         if (!guard) return true;
         const bool changed = direction != requested;
@@ -1130,7 +1127,7 @@ void MindMapController::refreshAppearance() {
     if (!model) return;
     const QPointer<MindMapController> guard(this);
     try {
-        install(prepare(model.get(), currentSnapshot, direction, temporaryExpanded), false);
+        install(prepare(currentSnapshot, direction, temporaryExpanded), false);
         if (!guard) return;
         restoreSelection();
     } catch (const std::exception &e) {

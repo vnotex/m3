@@ -78,8 +78,10 @@ class QAction;
 // If it cannot fit, scrolling exposes the largest portion in a clear viewport region.
 // An already-presented panel does not constrain subsequent pan or property edits.
 // Startup centering and explicit fit/centering commands retain their camera placement.
-// Expanding a node centers it at the current zoom; large branches may still
-// extend beyond the viewport.
+// Folding hides/shows descendants without rebalancing branches or compacting rows;
+// hidden nodes retain layout space, so visible node positions and the camera stay put.
+// Collapsing a selected descendant still selects/reveals its ancestor. Explicit
+// focus/fit commands remain available; expanded branches may extend beyond the viewport.
 // Topics/labels are plain Unicode text. Embedded NULs are rejected.
 // A single selected node has a floating properties card; other selections hide it.
 // Appearance, tags, icons, URL, Image URL and note edits persist immediately without changing

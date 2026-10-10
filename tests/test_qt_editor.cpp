@@ -1978,8 +1978,6 @@ static void render_case() {
     CHECK(texts(editor, QStringLiteral("plain link")).isEmpty());
     CHECK(!texts(editor, QStringLiteral("<b>plain</b>")).isEmpty());
     CHECK(topicRect(editor, wrapped).height() > topicRect(editor, QStringLiteral("<b>plain</b>")).height());
-    const QRectF initialVisible = graphics(editor).mapFromScene(renderedBounds(editor)).boundingRect();
-    CHECK(QRectF(graphics(editor).viewport()->rect()).adjusted(-3, -3, 3, 3).contains(initialVisible));
     const QRectF sceneBounds = graphics(editor).scene()->sceneRect();
     const QRectF contentBounds = renderedBounds(editor);
     CHECK(sceneBounds.left() <= contentBounds.left() - 31 && sceneBounds.right() >= contentBounds.right() + 31);
@@ -8539,8 +8537,6 @@ static void controls_case() {
         for (size_t i = 0; i < rows.size(); ++i) {
             CHECK(std::abs(rectangles[i].left() - rectangles.front().left() - 32 * rows[i].second) < 0.01);
             if (i > 0) CHECK(rectangles[i].top() > rectangles[i - 1].bottom());
-            if (i > 1) CHECK(std::abs((rectangles[i].top() - rectangles[i - 1].bottom()) -
-                                     (rectangles[1].top() - rectangles[0].bottom())) < 0.01);
         }
         assertTreeConnectors(editor, rectangles);
         return rectangles;
@@ -8620,9 +8616,9 @@ static void controls_case() {
     CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == false);
     CHECK(texts(editor, QStringLiteral("Double click topic")).isEmpty());
     CHECK(texts(editor, QStringLiteral("Delta")).isEmpty());
-    const auto compactNodes = checkOutline({{rootTopic, 0}, {QStringLiteral("Alpha"), 1},
-                                           {QStringLiteral("Beta"), 1}, {QString(), 1}});
-    CHECK(compactNodes[2].top() < expandedNodes[4].top());
+    const auto foldedNodes = checkOutline({{rootTopic, 0}, {QStringLiteral("Alpha"), 1},
+                                          {QStringLiteral("Beta"), 1}, {QString(), 1}});
+    CHECK(foldedNodes == std::vector<QRectF>({expandedNodes[0], expandedNodes[1], expandedNodes[4], expandedNodes[5]}));
     CHECK(editor.selectedNodeId() == QStringLiteral("a"));
     shortcut(editor, Qt::Key_Space);
     CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == true);
@@ -9561,6 +9557,123 @@ static void tree_edits_scene() {
     CHECK(finiteRect(emptyNodeRect(editor)));
 }
 
+static Json foldingFixture() {
+    return Json::parse(R"json({
+        "schemaVersion":1,"rootId":"53f7ebf31cde25df",
+        "crossLinks":[{"directed":false,"icon":"","id":"5203211b-f5a3-4dc5-b0cf-2207db4c4555","source":"54c54ce77c9fb334","style":{},"target":"53f7ebf31cde25df","topic":"Very good"}],
+        "nodes":[
+            {"children":["53f7ee14ad5cfe73","53f814646ada783d","54d500c5bf4fb1b3","0907a3dc-10ba-4c96-9faa-d426bd57915d"],"expanded":true,"hyperLink":"","icons":[],"id":"53f7ebf31cde25df","image":null,"note":"","style":{"background":"#8e44ad","color":"#e74c3c","fontStyle":"italic","fontWeight":"bold"},"tags":[],"topic":"VNote"},
+            {"children":[],"expanded":true,"hyperLink":"","icons":[],"id":"53f7ee14ad5cfe73","image":null,"note":"","style":{},"tags":[],"topic":"haha"},
+            {"children":["54c54ce77c9fb334","57fe23a342aa9934","059e9ab4-a2fc-4f5d-a153-418057246bc4"],"expanded":true,"hyperLink":"","icons":["\ud83d\ude03"],"id":"53f814646ada783d","image":null,"note":"","style":{"background":"#95a5a6","color":"#16a085"},"tags":[],"topic":"haha"},
+            {"children":[],"expanded":true,"hyperLink":"","icons":[],"id":"54c54ce77c9fb334","image":null,"note":"","style":{"background":"#2ecc71","color":"#2980b9"},"tags":[],"topic":"haha"},
+            {"children":["57fe23f7c15f111a","57fe25185cc996fe"],"expanded":true,"hyperLink":"","icons":[],"id":"57fe23a342aa9934","image":null,"note":"","style":{"color":"#f39c12"},"tags":[],"topic":"new node"},
+            {"children":[],"expanded":true,"hyperLink":"https://bing.com","icons":[],"id":"57fe23f7c15f111a","image":null,"note":"Very interesting question here is about the samkkdjfkdljfkjdf","style":{},"tags":[],"topic":"haha"},
+            {"children":["57fe25b07a7a6eef","57fe263af1d4a0ce"],"expanded":true,"hyperLink":"","icons":[],"id":"57fe25185cc996fe","image":null,"note":"","style":{},"tags":[],"topic":"new node"},
+            {"children":[],"expanded":true,"hyperLink":"","icons":[],"id":"57fe25b07a7a6eef","image":null,"note":"","style":{},"tags":[],"topic":"new node"},
+            {"children":[],"expanded":true,"hyperLink":"","icons":[],"id":"57fe263af1d4a0ce","image":null,"note":"","style":{},"tags":[],"topic":"new node"},
+            {"children":[],"expanded":true,"hyperLink":"","icons":[],"id":"059e9ab4-a2fc-4f5d-a153-418057246bc4","image":null,"note":"","style":{},"tags":[],"topic":"It is very simple question"},
+            {"children":[],"expanded":true,"hyperLink":"","icons":["\ud83d\ude06","\ud83d\ude02"],"id":"54d500c5bf4fb1b3","image":null,"note":"","style":{"fontStyle":"normal","fontWeight":"normal"},"tags":[],"topic":"a very simple question"},
+            {"children":[],"expanded":true,"hyperLink":"","icons":[],"id":"0907a3dc-10ba-4c96-9faa-d426bd57915d","image":null,"note":"","style":{"branchColor":"#e74c3c"},"tags":[],"topic":""}
+        ]
+    })json");
+}
+
+static void folding_positions() {
+    const QString root = QStringLiteral("53f7ebf31cde25df");
+    const QString branch = QStringLiteral("53f814646ada783d");
+    const QString branchIcon = QString::fromUtf8("\xf0\x9f\x98\x83");
+    const Json input = foldingFixture();
+    for (auto direction : {Editor::LayoutDirection::Balanced, Editor::LayoutDirection::Right,
+                           Editor::LayoutDirection::Left, Editor::LayoutDirection::Outline}) {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(input)));
+        CHECK(editor.setLayoutDirection(direction));
+        showEditor(editor, QSize(1101, 901));
+        auto &view = graphics(editor);
+        // Keep the root visible, but deliberately away from the viewport center.
+        editor.scrollSteps(1, 1);
+        pump();
+        const Json original = exported(editor);
+        const QTransform zoom = view.transform();
+        const QPointF origin = view.viewportTransform().map(QPointF());
+        using LabelRectangle = std::pair<QString, QRectF>;
+        auto rectangles = [&] {
+            std::vector<LabelRectangle> result;
+            for (auto *item : view.scene()->items()) {
+                auto *label = dynamic_cast<QGraphicsTextItem *>(item);
+                if (!label || !label->isVisible() || !label->parentItem()) continue;
+                // Node and cross-link labels both remain at their restored geometry.
+                result.emplace_back(label->toPlainText(), label->sceneBoundingRect());
+            }
+            return result;
+        };
+        const auto initial = rectangles();
+        auto stable = [&](bool allVisible) {
+            pump();
+            CHECK(view.transform() == zoom);
+            CHECK(QLineF(view.viewportTransform().map(QPointF()), origin).length() <= 1.0);
+            const auto current = rectangles();
+            if (allVisible) CHECK(current.size() == initial.size());
+            for (const auto &entry : current) {
+                // Routing labels can change when obstacles are hidden; nodes cannot.
+                if (entry.first == QStringLiteral("Very good")) continue;
+                CHECK(std::find(initial.begin(), initial.end(), entry) != initial.end());
+            }
+        };
+        for (int cycle = 0; cycle < 3; ++cycle) {
+            CHECK(editor.setExpanded(branch, false));
+            stable(false);
+            CHECK(texts(editor, QStringLiteral("Very good")).isEmpty());
+            CHECK(texts(editor, QStringLiteral("It is very simple question")).isEmpty());
+            CHECK(editor.setExpanded(branch, true));
+            stable(true);
+            CHECK(editor.setExpanded(root, false));
+            stable(false);
+            CHECK(texts(editor, branchIcon).isEmpty());
+            CHECK(editor.setExpanded(root, true));
+            stable(true);
+            CHECK(exported(editor) == original);
+        }
+        CHECK(editor.undo()); // Undo the final root expansion.
+        stable(false);
+        CHECK(editor.redo());
+        stable(true);
+
+        // Loading the same folded document reserves the same hidden geometry.
+        Json folded = input;
+        for (auto &node : folded["nodes"]) if (qs(node["id"]) == branch) node["expanded"] = false;
+        Editor reopened;
+        CHECK(reopened.loadJson(encoded(folded)));
+        CHECK(reopened.setLayoutDirection(direction));
+        showEditor(reopened);
+        CHECK(topicRect(reopened, branchIcon) == topicRect(editor, branchIcon));
+        CHECK(reopened.setExpanded(branch, true));
+        CHECK(topicRect(reopened, branchIcon) == topicRect(editor, branchIcon));
+    }
+
+    // Actual affordance and keyboard paths also keep a panned, fractional-zoom map steady.
+    Editor editor;
+    CHECK(editor.loadJson(encoded(input)));
+    showEditor(editor, QSize(1101, 901));
+    CHECK(editor.selectNode(branch));
+    editor.zoom(1.375);
+    editor.scrollSteps(1, 0);
+    pump();
+    auto &view = graphics(editor);
+    const QRectF parent = topicRect(editor, branchIcon);
+    const QPointF before = view.viewportTransform().map(parent.center());
+    const QPoint circle = view.mapFromScene(QPointF(parent.right() - 15, parent.center().y()));
+    CHECK(view.viewport()->rect().contains(circle));
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, circle);
+    pump();
+    CHECK(!record(exported(editor), "nodes", branch).at("expanded").get<bool>());
+    CHECK(QLineF(view.viewportTransform().map(topicRect(editor, branchIcon).center()), before).length() <= 1.0);
+    shortcut(editor, Qt::Key_Space);
+    CHECK(record(exported(editor), "nodes", branch).at("expanded").get<bool>());
+    CHECK(QLineF(view.viewportTransform().map(topicRect(editor, branchIcon).center()), before).length() <= 1.0);
+    CHECK(std::abs(editor.zoomFactor() - 1.375) < 1e-6);
+}
+
 static void collapse_scene() {
     Editor editor;
     const Json input = editorFixture();
@@ -9594,66 +9707,7 @@ static void collapse_scene() {
     CHECK(!texts(editor, QStringLiteral("Hidden child")).isEmpty());
     CHECK(editor.selectNode(inserted));
 
-    // Centering must work at either scene edge, without fitting or selecting the branch.
-    Json centeredInput = editorFixture();
-    for (auto &entry : centeredInput.at("nodes")) if (entry.at("id") == "a") {
-        entry["expanded"] = false;
-        entry["children"] = Json({"d", "e", "f"});
-    }
-    centeredInput["nodes"].push_back({{"id", "e"}, {"topic", "Second child"}});
-    centeredInput["nodes"].push_back({{"id", "f"}, {"topic", "Third child"}});
-    for (const auto direction : {Editor::LayoutDirection::Right, Editor::LayoutDirection::Left}) {
-        Editor centered;
-        CHECK(centered.loadJson(encoded(centeredInput)));
-        CHECK(centered.setLayoutDirection(direction));
-        showEditor(centered);
-        trigger(centered, "resetZoom");
-        CHECK(centered.selectNode(QStringLiteral("a")));
-        auto &centeredView = graphics(centered);
-        const QTransform zoom = centeredView.transform();
-        const Json collapsed = exported(centered);
-        Json expanded = collapsed;
-        for (auto &entry : expanded.at("nodes")) if (entry.at("id") == "a") entry["expanded"] = true;
-        QSignalSpy centeredChanges(&centered, &Editor::documentChanged), centeredSelection(&centered, &Editor::selectionChanged);
-        auto parentCentered = [&] {
-            // Compare continuous viewport coordinates, not two independently rounded integer points.
-            const QPointF midpoint(centeredView.viewport()->width() / 2.0, centeredView.viewport()->height() / 2.0);
-            return QLineF(centeredView.viewportTransform().map(topicRect(centered, QStringLiteral("Alpha")).center()),
-                          midpoint).length() <= 2.0;
-        };
-        auto childrenVisible = [&] {
-            for (const auto &topic : {QStringLiteral("Delta"), QStringLiteral("Second child"), QStringLiteral("Third child")})
-                CHECK(centeredView.viewport()->rect().adjusted(-1, -1, 1, 1).contains(
-                    centeredView.mapFromScene(topicRect(centered, topic)).boundingRect()));
-        };
-        CHECK(!parentCentered());
-        shortcut(centered, Qt::Key_Space);
-        CHECK(parentCentered());
-        childrenVisible();
-        CHECK(centeredView.transform() == zoom && centered.selectedNodeId() == QStringLiteral("a"));
-        CHECK(exported(centered) == expanded && centeredChanges.size() == 1 && centeredSelection.isEmpty());
-
-        CHECK(centered.selectNode(QStringLiteral("b")));
-        auto *scroll = centeredView.horizontalScrollBar();
-        scroll->setValue(scroll->maximum());
-        pump();
-        const QPointF beforeCollapse = centeredView.mapToScene(centeredView.viewport()->rect().center());
-        CHECK(QLineF(beforeCollapse, topicRect(centered, QStringLiteral("Alpha")).center()).length() > 2.0);
-        CHECK(centered.setExpanded(QStringLiteral("a"), false));
-        pump();
-        CHECK(QLineF(beforeCollapse, centeredView.mapToScene(centeredView.viewport()->rect().center())).length() < 2.0);
-        CHECK(exported(centered) == collapsed && centeredChanges.size() == 2 && centeredSelection.size() == 1);
-
-        const QRectF parent = topicRect(centered, QStringLiteral("Alpha"));
-        const QPoint circle = centeredView.mapFromScene(QPointF(parent.right() - 15, parent.center().y()));
-        CHECK(centeredView.viewport()->rect().contains(circle));
-        QTest::mouseClick(centeredView.viewport(), Qt::LeftButton, Qt::NoModifier, circle);
-        pump();
-        CHECK(parentCentered());
-        childrenVisible();
-        CHECK(centeredView.transform() == zoom && centered.selectedNodeId() == QStringLiteral("b"));
-        CHECK(exported(centered) == expanded && centeredChanges.size() == 3 && centeredSelection.size() == 1);
-    }
+    folding_positions();
 }
 
 static void graph_edits_scene() {
