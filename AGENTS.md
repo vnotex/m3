@@ -163,6 +163,21 @@ int main(int argc, char **argv) {
 }
 ```
 
+### Node-properties placement
+
+Each editor owns one node-properties panel. `EditorConfig::separateNodePropertiesPanel`
+is a construction-time host policy, default `false`: the embedded card starts collapsed and
+retains its toggle preference across selection and document changes. With `true`,
+`nodePropertiesPanel()` returns that same widget, initially hidden; hosts may reparent it into
+a dock and control its geometry/visibility. No canvas toggle or collapse shortcut is shown,
+and `collapseNodeProperties()` does nothing. Non-node selections clear and disable fields;
+editor enabled/read-only policy still gates edits outside the editor subtree.
+
+The editor destroys a surviving externally parented panel before its model/view. Hosts may
+destroy the panel first; the accessor then returns null rather than creating a replacement.
+Never create a second properties widget or share the panel between editors. VNote defaults
+to separated mode and exposes the preference in Settings, effective on newly opened maps.
+
 ### Document lifecycle and host policy
 - **New/Open/Close:** the constructor already creates a selected root. Use `newDocument(topic)` or `loadJson(bytes)` to replace it; failed imports preserve the current document and selection. In a full host, prompt Save/Discard/Cancel before replacing a dirty document or closing. Track the filename separately and update it only on successful load/save. Reuse `DemoWindow::mayReplace`, `openFile`, `saveFile`, and `closeEvent` in `examples/qt_demo_window.cpp` as the reference, not as library internals.
 - **Blank input:** `loadJson()` treats zero bytes or only JSON whitespace (space, tab, CR, LF) as `newDocument()`: a selected `root` / `Central topic`, centered at 100%, with fresh history and no pending draft. Host loads remain allowed in read-only mode. Nonblank input retains the existing import rules (including optional-field trees); invalid input is never replaced with a default map. The Qt-free C JSON parser remains strict about blank input.

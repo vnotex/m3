@@ -19,6 +19,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDockWidget>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDragLeaveEvent>
@@ -140,6 +141,14 @@ static void showEditor(Editor &editor, QSize size = QSize(1000, 700)) {
     pump();
     CHECK(graphics(editor).viewport()->width() > 0);
     CHECK(graphics(editor).viewport()->height() > 0);
+}
+static void expandProperties(Editor &editor) {
+    auto *toggle = editor.findChild<QToolButton *>(QStringLiteral("nodePropertiesToggle"));
+    CHECK(toggle && !editor.nodePropertiesPanel());
+    toggle->setChecked(true);
+    pump();
+    auto *scroll = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"))->findChild<QScrollArea *>();
+    CHECK(scroll && scroll->isVisible());
 }
 static QList<QGraphicsTextItem *> texts(Editor &editor, const QString &text) {
     QList<QGraphicsTextItem *> result;
@@ -2541,6 +2550,7 @@ static void hyperlinks_case() {
         CHECK(editor.loadJson(encoded(linked ? linkedInput : editorFixture())));
         CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
         showEditor(editor, QSize(1100, 900));
+        expandProperties(editor);
         assertFit(editor);
     };
     auto indicator = [](Editor &editor, const QString &topic) -> QGraphicsItem * {
@@ -2985,6 +2995,7 @@ static void emoji_category_popup_case() {
     CHECK(editor.loadJson(encoded(editorFixture())));
     showEditor(editor, QSize(1100, 900));
     CHECK(editor.selectNode(QStringLiteral("a")));
+    expandProperties(editor);
     auto *panel = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
     auto *icons = panel->findChild<QLineEdit *>(QStringLiteral("nodeIcons"));
     auto *url = panel->findChild<QLineEdit *>(QStringLiteral("nodeUrl"));
@@ -3007,6 +3018,7 @@ static void emoji_category_popup_case() {
     {
         Editor other;
         showEditor(other);
+        expandProperties(other);
         auto *otherIcons = other.findChild<QLineEdit *>(QStringLiteral("nodeIcons"));
         auto *otherPanel = other.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
         otherPanel->findChild<QScrollArea *>()->ensureWidgetVisible(otherIcons);
@@ -3208,6 +3220,7 @@ static void properties_visibility_case() {
     CHECK(editor.loadJson(encoded(editorFixture())));
     CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
     showEditor(editor, QSize(1100, 900));
+    expandProperties(editor);
     shortcut(editor, Qt::Key_0, Qt::ControlModifier);
     auto &view = graphics(editor);
     auto *panel = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
@@ -4340,9 +4353,253 @@ static void formatting_toolbar_case() {
     collapsed();
 }
 
+static void separated_properties_case() {
+    m3::qt::EditorConfig config;
+    config.separateNodePropertiesPanel = true;
+    const QString a = QStringLiteral("a"), b = QStringLiteral("b");
+    {
+        QMainWindow window;
+        auto *editor = new Editor(config, &window);
+        window.setCentralWidget(editor);
+        auto *panel = editor->nodePropertiesPanel();
+        CHECK(panel && panel == editor->nodePropertiesPanel() && panel->parentWidget() == editor);
+        CHECK(editor->findChildren<QWidget *>(QStringLiteral("nodePropertiesPanel")).size() == 1);
+        auto *dock = new QDockWidget(&window);
+        auto *tools = new QWidget(dock);
+        tools->setMinimumSize(390, 660);
+        dock->setWidget(tools);
+        window.addDockWidget(Qt::RightDockWidgetArea, dock);
+        panel->setParent(tools);
+        const QRect externalGeometry(17, 23, 330, 610);
+        panel->setGeometry(externalGeometry);
+        panel->show();
+        window.resize(1300, 900);
+        window.show();
+        CHECK(editor->loadJson(encoded(editorFixture())) && editor->selectNode(a));
+        showEditor(*editor);
+        auto &view = graphics(*editor);
+        auto *scroll = panel->findChild<QScrollArea *>();
+        auto *toggle = panel->findChild<QToolButton *>(QStringLiteral("nodePropertiesToggle"));
+        auto *tags = panel->findChild<QLineEdit *>(QStringLiteral("nodeTags"));
+        auto *icons = panel->findChild<QLineEdit *>(QStringLiteral("nodeIcons"));
+        auto *url = panel->findChild<QLineEdit *>(QStringLiteral("nodeUrl"));
+        auto *image = panel->findChild<QLineEdit *>(QStringLiteral("nodeImageUrl"));
+        auto *note = panel->findChild<QPlainTextEdit *>(QStringLiteral("nodeNote"));
+        auto *size = panel->findChild<QComboBox *>(QStringLiteral("nodeFontSize"));
+        auto *bold = panel->findChild<QAbstractButton *>(QStringLiteral("nodeBold"));
+        CHECK(scroll && toggle && tags && icons && url && image && note && size && bold);
+        CHECK(panel->isVisible() && scroll->isVisible() && !toggle->isVisible());
+        CHECK(!editor->findChild<QWidget *>(QStringLiteral("nodePropertiesPanel")));
+        auto retained = [&] {
+            CHECK(editor->nodePropertiesPanel() == panel && panel->parentWidget() == tools);
+            CHECK(panel->geometry() == externalGeometry && !toggle->isVisible());
+        };
+        auto fieldsMatch = [&] {
+            const Json node = record(exported(*editor), "nodes", editor->selectedNodeId());
+            auto joined = [&](const char *key) {
+                QStringList values;
+                for (const auto &value : node.at(key)) values.append(qs(value));
+                return values.join(QStringLiteral(", "));
+            };
+            CHECK(tags->text() == joined("tags") && icons->text() == joined("icons"));
+            CHECK(url->text() == qs(node.at("hyperLink")) && note->toPlainText() == qs(node.at("note")));
+            CHECK(image->text() == (node.at("image").is_object() ? qs(node.at("image").at("url")) : QString()));
+            CHECK(size->currentData().toDouble() == node.at("style").value("fontSize", 0.0));
+            CHECK(bold->isChecked() == (node.at("style").value("fontWeight", std::string("normal")) == "bold"));
+            retained();
+        };
+        fieldsMatch();
+        auto &toggleAction = editAction(*editor, "toggleProperties");
+        CHECK(!toggleAction.isEnabled() && toggleAction.shortcuts().isEmpty());
+        const Json baseline = exported(*editor);
+        const QTransform zoom = view.transform();
+        const QPointF center = view.mapToScene(view.viewport()->rect().center());
+        shortcut(*editor, Qt::Key_P);
+        toggleAction.trigger();
+        scroll->ensureWidgetVisible(tags);
+        tags->setFocus(); pump();
+        CHECK(tags->hasFocus());
+        QTest::keyClick(tags, Qt::Key_Escape);
+        editor->collapseNodeProperties();
+        CHECK(tags->hasFocus() && scroll->isVisible() && panel->isVisible());
+        CHECK(exported(*editor) == baseline && editor->selectedNodeId() == a);
+        CHECK(view.transform() == zoom && view.mapToScene(view.viewport()->rect().center()) == center);
+        retained();
+
+        trigger(*editor, "editTags");
+        CHECK(tags->hasFocus() && panel->isVisible());
+        CHECK(view.transform() == zoom && view.mapToScene(view.viewport()->rect().center()) == center);
+        // External controls commit to the same document/history and retain their identity.
+        QSignalSpy changed(editor, &Editor::documentChanged);
+        std::vector<Json> history{baseline};
+        Json expected = baseline;
+        auto expectedNode = [&]() -> Json & {
+            for (auto &node : expected.at("nodes")) if (node.at("id") == "a") return node;
+            throw std::runtime_error("Missing external properties node");
+        };
+        auto edited = [&] {
+            CHECK(exported(*editor) == expected && editor->selectedNodeId() == a);
+            CHECK(view.transform() == zoom && view.mapToScene(view.viewport()->rect().center()) == center);
+            history.push_back(expected);
+            CHECK(changed.size() == int(history.size()) - 1);
+            fieldsMatch();
+        };
+        tags->setText(QStringLiteral("external, tags"));
+        expectedNode()["tags"] = Json::array({"external", "tags"}); edited();
+        icons->setText(QStringLiteral("external-icon"));
+        expectedNode()["icons"] = Json::array({"external-icon"}); edited();
+        url->setText(QStringLiteral("https://example.org/external"));
+        expectedNode()["hyperLink"] = "https://example.org/external"; edited();
+        image->setText(QStringLiteral("memory:external"));
+        expectedNode()["image"] = Json{{"url", "memory:external"}, {"width", 0}, {"height", 0}}; edited();
+        scroll->ensureWidgetVisible(note);
+        note->setFocus(); pump();
+        QApplication::clipboard()->setText(QStringLiteral("External note\nSecond line"));
+        QTest::keyClick(note, Qt::Key_V, Qt::ControlModifier);
+        expectedNode()["note"] = "External note\nSecond line"; edited();
+        note->selectAll();
+        CHECK(editor->selectedText() == QStringLiteral("External note\nSecond line"));
+        size->setCurrentIndex(size->findData(24.0));
+        expectedNode()["style"]["fontSize"] = 24; edited();
+        bold->click();
+        expectedNode()["style"]["fontWeight"] = "bold"; edited();
+        for (int i = int(history.size()) - 2; i >= 0; --i) {
+            CHECK(editor->undo() && exported(*editor) == history[static_cast<size_t>(i)]);
+            fieldsMatch();
+        }
+        for (size_t i = 1; i < history.size(); ++i) {
+            CHECK(editor->redo() && exported(*editor) == history[i]);
+            fieldsMatch();
+        }
+        CHECK(editor->selectNode(b)); fieldsMatch();
+        CHECK(editor->selectNode(a)); fieldsMatch();
+        window.resize(1380, 940); editor->resize(700, 600); pump(); retained();
+
+        // Policy is based on the editor/model, not the borrowed QWidget parent.
+        auto rejectEdits = [&] {
+            const Json before = exported(*editor);
+            const auto count = changed.size();
+            tags->setText(QStringLiteral("Forbidden tags"));
+            icons->setText(QStringLiteral("Forbidden icons"));
+            url->setText(QStringLiteral("Forbidden URL"));
+            image->setText(QStringLiteral("Forbidden image"));
+            note->setPlainText(QStringLiteral("Forbidden note"));
+            size->setCurrentIndex(size->findData(32.0));
+            bold->setChecked(!bold->isChecked());
+            CHECK(exported(*editor) == before && changed.size() == count);
+            retained();
+        };
+        editor->setEnabled(false);
+        CHECK(tags->isReadOnly() && note->isReadOnly() && !bold->isEnabled() && !size->isEnabled());
+        rejectEdits(); fieldsMatch();
+        editor->setEnabled(true);
+        editor->setReadOnly(true);
+        CHECK(tags->isReadOnly() && note->isReadOnly() && !bold->isEnabled() && !size->isEnabled());
+        rejectEdits(); fieldsMatch();
+        editor->setReadOnly(false);
+        CHECK(!tags->isReadOnly() && !note->isReadOnly() && bold->isEnabled() && size->isEnabled());
+        shortcut(*editor, Qt::Key_Escape);
+        CHECK(editor->selectedNodeId().isEmpty() && panel->isVisible() && scroll->isVisible());
+        CHECK(tags->text().isEmpty() && note->toPlainText().isEmpty() && !tags->isEnabled() && !bold->isEnabled());
+        CHECK(icons->text().isEmpty() && url->text().isEmpty() && image->text().isEmpty());
+        CHECK(size->currentData().toDouble() == 0 && !bold->isChecked());
+        rejectEdits();
+        CHECK(tags->text().isEmpty() && note->toPlainText().isEmpty());
+        CHECK(editor->selectLink(QStringLiteral("l1")));
+        CHECK(panel->isVisible() && !tags->isEnabled()); rejectEdits();
+        CHECK(editor->selectNode(a));
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ShiftModifier, labelPoint(*editor, QStringLiteral("Beta")));
+        pump();
+        CHECK(editor->selectedNodeIds().size() == 2 && panel->isVisible() && !tags->isEnabled());
+        rejectEdits();
+        CHECK(editor->selectNode(a)); fieldsMatch();
+
+        // Neither presentation commands nor model refreshes override the host's hiding.
+        dock->hide();
+        CHECK(editor->selectNode(b));
+        CHECK(editor->updateNode(b, encoded(Json{{"note", "Changed while dock hidden"}})));
+        for (const char *name : {"textColor", "fillColor", "editTags", "editIcons", "editNote"}) trigger(*editor, name);
+        editor->collapseNodeProperties(); pump();
+        CHECK(dock->isHidden() && !panel->isVisible()); retained();
+        panel->hide(); dock->show();
+        CHECK(editor->selectNode(a));
+        CHECK(editor->loadJson(encoded(expected)) && editor->selectNode(a));
+        CHECK(panel->isHidden()); fieldsMatch();
+        for (const char *name : {"textColor", "fillColor", "editTags", "editIcons", "editNote"}) trigger(*editor, name);
+        CHECK(editor->newDocument() && panel->isHidden());
+        CHECK(editor->loadJson(encoded(expected)) && editor->selectNode(a) && panel->isHidden());
+        panel->show(); pump();
+        CHECK(scroll->isVisible() && tags->isEnabled()); fieldsMatch();
+    }
+    for (bool editorFirst : {false, true}) for (bool deferred : {false, true}) {
+        QWidget external;
+        QPointer<Editor> editor = new Editor(config);
+        QPointer<QWidget> panel = editor->nodePropertiesPanel();
+        panel->setParent(&external);
+        int destroyed = 0;
+        QObject::connect(panel, &QObject::destroyed, &external, [&] { ++destroyed; });
+        if (editorFirst) {
+            if (deferred) editor->deleteLater(); else delete editor.data();
+        } else {
+            if (deferred) panel->deleteLater(); else delete panel.data();
+        }
+        pump();
+        CHECK(!panel && destroyed == 1);
+        if (!editorFirst) {
+            CHECK(editor && !editor->nodePropertiesPanel());
+            for (const char *name : {"toggleBold", "toggleItalic", "resetStyle", "textColor", "fillColor",
+                                     "editTags", "editIcons", "editNote", "toggleProperties"})
+                editAction(*editor, name).trigger();
+            editor->collapseNodeProperties();
+            CHECK(editor->loadJson(encoded(editorFixture())) && editor->selectNode(a));
+            CHECK(editor->renameNode(a, QStringLiteral("Still editable")) && editor->undo() && editor->redo());
+            editor->setEnabled(false); editor->setEnabled(true);
+            editor->setReadOnly(true); editor->setReadOnly(false);
+            CHECK(!editor->nodePropertiesPanel());
+            delete editor.data();
+        }
+        CHECK(!editor && destroyed == 1);
+    }
+    // QObject's shared-parent teardown may encounter either the editor or its visual host first.
+    for (bool hostFirst : {false, true}) {
+        auto *parent = new QWidget;
+        QPointer<QWidget> external = hostFirst ? new QWidget(parent) : nullptr;
+        QPointer<Editor> editor = new Editor(config, parent);
+        if (!external) external = new QWidget(parent);
+        QPointer<QWidget> panel = editor->nodePropertiesPanel();
+        panel->setParent(external);
+        int destroyed = 0;
+        QObject::connect(panel, &QObject::destroyed, qApp, [&] { ++destroyed; });
+        delete parent; pump();
+        CHECK(!editor && !panel && !external && destroyed == 1);
+    }
+    // A property commit may synchronously close the editor or just its borrowed panel.
+    for (bool closeEditor : {false, true}) {
+        QWidget external;
+        QPointer<Editor> editor = new Editor(config);
+        QPointer<QWidget> panel = editor->nodePropertiesPanel();
+        panel->setParent(&external);
+        QPointer<QLineEdit> tags = panel->findChild<QLineEdit *>(QStringLiteral("nodeTags"));
+        CHECK(tags);
+        QObject::connect(editor, &Editor::documentChanged, &external, [&] {
+            if (closeEditor) delete editor.data(); else delete panel.data();
+        });
+        tags->setText(QStringLiteral("Close from property commit"));
+        CHECK(!panel && !tags);
+        if (closeEditor) CHECK(!editor);
+        else {
+            CHECK(editor && !editor->nodePropertiesPanel());
+            CHECK(record(exported(*editor), "nodes", QStringLiteral("root")).at("tags") ==
+                Json::array({"Close from property commit"}));
+            delete editor.data();
+        }
+    }
+}
+
 static void properties_case() {
     properties_visibility_case();
     emoji_category_popup_case();
+    separated_properties_case();
     {
         Editor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
@@ -4351,7 +4608,13 @@ static void properties_case() {
         auto *panel = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
         auto *scroll = panel->findChild<QScrollArea *>();
         auto *toggle = panel->findChild<QToolButton *>(QStringLiteral("nodePropertiesToggle"));
-        CHECK(scroll && toggle && scroll->isVisible());
+        CHECK(scroll && toggle && scroll->isHidden() && !toggle->isChecked());
+        CHECK(editor.nodePropertiesPanel() == nullptr && panel->isVisible());
+        CHECK(editor.selectNode(QStringLiteral("a")) && !toggle->isChecked());
+        CHECK(editor.selectLink(QStringLiteral("l1")) && panel->isHidden());
+        CHECK(editor.newDocument() && !toggle->isChecked());
+        CHECK(editor.loadJson(encoded(editorFixture())) && scroll->isHidden());
+        expandProperties(editor);
         const auto before = exported(editor);
         const auto selection = editor.selectedNodeId();
         const auto zoom = editor.zoomFactor();
@@ -4377,6 +4640,7 @@ static void properties_case() {
         Editor imageEditor;
         CHECK(imageEditor.loadJson(encoded(editorFixture())));
         showEditor(imageEditor, QSize(1100, 900));
+        expandProperties(imageEditor);
         auto *field = imageEditor.findChild<QLineEdit *>(QStringLiteral("nodeImageUrl"));
         auto *url = imageEditor.findChild<QLineEdit *>(QStringLiteral("nodeUrl"));
         auto *note = imageEditor.findChild<QPlainTextEdit *>(QStringLiteral("nodeNote"));
@@ -4436,6 +4700,7 @@ static void properties_case() {
     CHECK(editor.loadJson(encoded(input)));
     CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
     showEditor(editor, QSize(1100, 900));
+    expandProperties(editor);
     assertFit(editor);
     auto &view = graphics(editor);
     auto *panel = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
@@ -4855,6 +5120,7 @@ static void properties_case() {
         CHECK(colorsEditor.loadJson(encoded(colorsInput)));
         showEditor(colorsEditor, QSize(1100, 900));
         CHECK(colorsEditor.selectNode(QStringLiteral("a")));
+        expandProperties(colorsEditor);
         auto *colorsPanel = colorsEditor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
         CHECK(colorsPanel != nullptr);
         auto *colorsScroll = colorsPanel->findChild<QScrollArea *>();
@@ -4927,6 +5193,7 @@ static void properties_case() {
         showEditor(untagged, QSize(1100, 900));
         showEditor(tagged, QSize(1100, 900));
         CHECK(tagged.selectNode(QStringLiteral("r")));
+        expandProperties(tagged);
         auto *field = tagged.findChild<QLineEdit *>(QStringLiteral("nodeTags"));
         auto *tagPanel = tagged.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
         CHECK(field && tagPanel);
@@ -6492,6 +6759,7 @@ static void host_commit_case() {
         editor.clearSelection();
         CHECK(editor.selectedText().isEmpty());
         CHECK(editor.selectNode(a));
+        expandProperties(editor);
         auto *url = editor.findChild<QLineEdit *>(QStringLiteral("nodeUrl"));
         auto *note = editor.findChild<QPlainTextEdit *>(QStringLiteral("nodeNote"));
         auto *panel = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
@@ -6731,6 +6999,7 @@ static void read_only_case() {
                 item->cursor().shape() == Qt::OpenHandCursor));
     CHECK(editor.selectNode(root));
     CHECK(imageHandle(editor) == nullptr);
+    expandProperties(editor);
     for (const char *name : {"nodeTags", "nodeIcons", "nodeUrl", "nodeImageUrl"}) {
         auto *input = editor.findChild<QLineEdit *>(QString::fromLatin1(name));
         CHECK(input && (!input->isEnabled() || input->isReadOnly()));
@@ -7985,6 +8254,7 @@ static void node_shortcuts_case() {
         Editor editor;
         CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(QStringLiteral("a")));
         showEditor(editor);
+        expandProperties(editor);
         Json expected = exported(editor);
         auto &view = graphics(editor);
         const auto zoom = view.transform();
@@ -8044,6 +8314,7 @@ static void node_shortcuts_case() {
         config.shortcuts.zoomIn = {QKeySequence(Qt::Key_2)};
         Editor editor(config);
         showEditor(editor);
+        expandProperties(editor);
         shortcut(editor, Qt::Key_0, Qt::ControlModifier);
         const Json expected = exported(editor);
         auto &view = graphics(editor);
@@ -10564,6 +10835,7 @@ static void history_text_scope_case() {
         const Json baseline = exported(editor);
         CHECK(editor.renameNode(b, QStringLiteral("Independent command")));
         CHECK(editor.selectNode(a));
+        expandProperties(editor);
         const Json before = exported(editor);
         auto *panel = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
         CHECK(panel);

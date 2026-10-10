@@ -73,8 +73,8 @@ class QAction;
 // updateLink and the link-properties Directed checkbox retain this style preference.
 // Selecting a node or accepting an inline topic scrolls its full bounds into view
 // without changing zoom; oversized nodes can only be partially shown by scrolling.
-// Presenting expanded node properties (including for a different selected node)
-// also scrolls the node clear of the panel, preserving zoom and keyboard focus.
+// Presenting expanded embedded node properties (including for a different selected
+// node) also scrolls the node clear of the panel, preserving zoom and keyboard focus.
 // If it cannot fit, scrolling exposes the largest portion in a clear viewport region.
 // An already-presented panel does not constrain subsequent pan or property edits.
 // Startup centering and explicit fit/centering commands retain their camera placement.
@@ -83,7 +83,10 @@ class QAction;
 // Collapsing a selected descendant still selects/reveals its ancestor. Explicit
 // focus/fit commands remain available; expanded branches may extend beyond the viewport.
 // Topics/labels are plain Unicode text. Embedded NULs are rejected.
-// A single selected node has a floating properties card; other selections hide it.
+// A single selected node has a properties panel. By default it is an embedded card,
+// initially collapsed; other selections hide the card. With separateNodePropertiesPanel,
+// the host presents the same panel externally and controls its geometry and visibility.
+// The external body stays expanded, clearing/disabling its fields for other selections.
 // Appearance, tags, icons, URL, Image URL and note edits persist immediately without changing
 // selection or zoom. Blank Image URL hides the image while retaining its dimensions.
 // Images appear beneath tags, preserving decoded aspect ratio within stored bounds;
@@ -141,7 +144,9 @@ struct FindResult { int totalMatches = 0; int currentMatch = -1; };
 // E begins inline topic editing for nodes only; F2 and double-click edit node or
 // link topics inline. Link topics are literal text, without node hashtag parsing.
 // These letters remain ordinary input while typing, including in the inline draft.
-// P toggles the selected node's properties card, keeping focus on the canvas.
+// P toggles the selected node's embedded properties card, keeping focus on the canvas.
+// Separate panels have no collapse toggle or P/Escape collapse binding; property
+// commands never reopen a host-hidden panel or scroll the canvas clear of it.
 // With canvas focus, ? opens shortcut help for any selection. Escape or an outside
 // click dismisses it; Escape returns focus to the canvas without clearing selection.
 // acceptTopic applies only during
@@ -221,6 +226,10 @@ struct EditorConfig {
     // Enabled by default. Creation only: loading/moving nodes never recolors them.
     // The setting is copied, not persisted; each assigned branchColor is persisted.
     bool autoRandomBranchColor = true;
+    // Construction-time placement of the editor's sole node-properties panel.
+    // False embeds an initially collapsed card; true leaves presentation to the host.
+    // Not persisted in the document and not changeable on an existing editor.
+    bool separateNodePropertiesPanel = false;
 };
 class M3_QT_API MindMapEditor : public QWidget {
     Q_OBJECT
@@ -259,8 +268,14 @@ public:
     // Color choices close their menu; Icons saves each edit and stays open. Controls
     // close when their document/selection/policy or presenting window is invalidated.
     QAction *commandAction(const QString &name) const;
-    // Collapse the properties card and focus the canvas, including read-only or no selection.
-    // Idempotent; keeps document, selection and zoom. The user may expand it again.
+    // The sole panel, only in separated mode; otherwise null. Repeated calls return
+    // the same widget, initially hidden and parented to this editor, never a factory.
+    // Hosts may reparent/show/hide it. The editor deletes any surviving panel before
+    // tearing down its model, even while externally parented. Independent deletion
+    // by the host is supported: subsequent calls return null, with no replacement.
+    QWidget *nodePropertiesPanel() const;
+    // Collapse the embedded card and focus the canvas, including read-only or no selection.
+    // Idempotent; keeps document, selection and zoom. No effect in separated mode.
     void collapseNodeProperties();
     QString resourceBasePath() const;
     // Normalize as at construction and invalidate/re-request image resources.
@@ -355,8 +370,9 @@ public:
     // Full node selection in click order; empty when a link is selected.
     QStringList selectedNodeIds() const;
     QString selectedLinkId() const;
-    // Selection in the focused owned text input, otherwise selected node topics
-    // in selection order joined by LF, or the selected link topic.
+    // Selection in the focused owned text input (including an external properties
+    // panel), otherwise selected node topics in selection order joined by LF,
+    // or the selected link topic.
     QString selectedText() const;
     bool setLayoutDirection(LayoutDirection direction);
     LayoutDirection layoutDirection() const;

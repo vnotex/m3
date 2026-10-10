@@ -670,9 +670,13 @@
     <name>m3::qt::NodePropertiesPanel</name>
     <message>
         <location filename="../editor.cpp" line="-948"/>
-        <location line="+12"/>
-        <source>Node properties</source>
+        <source>Node Properties</source>
         <translation>节点属性</translation>
+    </message>
+    <message>
+        <location line="+12"/>
+        <source>Topic</source>
+        <translation>主题</translation>
     </message>
     <message>
         <location line="+35"/>

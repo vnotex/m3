@@ -400,10 +400,10 @@ QStringList commaValues(const QString &text) {
 class NodePropertiesPanel final : public QFrame {
     Q_DECLARE_TR_FUNCTIONS(m3::qt::NodePropertiesPanel)
 public:
-    NodePropertiesPanel(MindMapEditor *host, MindMapView *canvas, MindMapController *model)
-        : QFrame(host), view(canvas), controller(model) {
+    NodePropertiesPanel(MindMapEditor *host, MindMapView *canvas, MindMapController *model, bool separate)
+        : QFrame(host), editor(host), view(canvas), controller(model), separated(separate) {
         setObjectName(QStringLiteral("nodePropertiesPanel"));
-        setAccessibleName(tr("Node properties"));
+        setAccessibleName(tr("Node Properties"));
         static const QString panelStyleSheet = loadStyleSheet(QStringLiteral(":/m3/qt/node_properties.qss"));
         setStyleSheet(panelStyleSheet);
         auto *layout = new QVBoxLayout(this);
@@ -415,14 +415,15 @@ public:
         header->setContentsMargins(12, 8, 8, 9);
         header->setSpacing(2);
         auto *titleRow = new QHBoxLayout;
-        title = new QLabel(tr("Node properties"), heading);
+        title = new QLabel(tr("Topic"), heading);
         title->setObjectName(QStringLiteral("nodePropertiesTitle"));
         title->setTextFormat(Qt::PlainText);
         title->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         toggle = new QToolButton(heading);
         toggle->setObjectName(QStringLiteral("nodePropertiesToggle"));
         toggle->setCheckable(true);
-        toggle->setChecked(true);
+        toggle->setChecked(separated);
+        toggle->setVisible(!separated);
         toggle->setFixedSize(28, 28);
         toggle->setAutoRaise(true);
         toggle->setFocusPolicy(Qt::StrongFocus);
@@ -578,14 +579,17 @@ public:
         scroll->setWidget(body);
         layout->addWidget(scroll, 1);
         textColor->setChecked(true);
-        connect(toggle, &QToolButton::toggled, this, [this] {
-            pendingColorRow = 0;
-            reposition();
-            toggle->setFocus(Qt::OtherFocusReason);
-        });
-        auto *collapse = new QShortcut(QKeySequence(Qt::Key_Escape), this);
-        collapse->setContext(Qt::WidgetWithChildrenShortcut);
-        connect(collapse, &QShortcut::activated, this, [this] { this->collapse(); });
+        if (!separated) {
+            connect(toggle, &QToolButton::toggled, this, [this] {
+                const QPointer<NodePropertiesPanel> guard(this);
+                pendingColorRow = 0;
+                reposition();
+                if (guard) toggle->setFocus(Qt::OtherFocusReason);
+            });
+            auto *collapse = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+            collapse->setContext(Qt::WidgetWithChildrenShortcut);
+            connect(collapse, &QShortcut::activated, this, [this] { this->collapse(); });
+        }
         connect(fontSize, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this] {
             const double size = fontSize->currentData().toDouble();
             applyStyle({{QStringLiteral("fontSize"), size > 0 ? QJsonValue(size) : QJsonValue(QJsonValue::Null)}});
@@ -627,16 +631,21 @@ public:
         for (auto *button : {textColor, fillColor}) button->installEventFilter(this);
         for (auto *button : palette->findChildren<QToolButton *>()) button->installEventFilter(this);
         fontSize->view()->installEventFilter(this);
+        if (separated) installEventFilter(this);
         host->installEventFilter(this);
         view->installEventFilter(this);
         view->viewport()->installEventFilter(this);
         hide();
     }
     void collapse() {
+        if (separated) return;
+        const QPointer<NodePropertiesPanel> guard(this);
         toggle->setChecked(false);
-        if (view) view->setFocus(Qt::OtherFocusReason);
+        if (guard && view) view->setFocus(Qt::OtherFocusReason);
     }
-    void setReadOnly(bool value) {
+    void updateEditability() {
+        const bool value = !canEdit();
+        body->setEnabled(!boundId.isEmpty());
         if (value) {
             pendingColorRow = 0;
             fontSize->hidePopup();
@@ -650,7 +659,8 @@ public:
     }
     enum class Action { ToggleBold, ToggleItalic, ResetStyle, TextColor, FillColor, Tags, Icons, Note, ToggleProperties };
     void activate(Action action) {
-        if (controller->isReadOnly() && action != Action::ToggleProperties) return;
+        if (!editor || !controller || !editor->isEnabled() ||
+            (action == Action::ToggleProperties ? separated : controller->isReadOnly())) return;
         const QPointer<NodePropertiesPanel> guard(this);
         refresh();
         if (!guard || boundId.isEmpty()) return;
@@ -665,7 +675,7 @@ public:
         case Action::ResetStyle: reset->click(); return;
         case Action::ToggleProperties:
             toggle->click();
-            if (view) view->setFocus(Qt::OtherFocusReason);
+            if (guard && view) view->setFocus(Qt::OtherFocusReason);
             return;
         case Action::TextColor: target = textColor; break;
         case Action::FillColor: target = fillColor; break;
@@ -673,8 +683,12 @@ public:
         case Action::Icons: target = icons; break;
         case Action::Note: target = note; break;
         }
-        toggle->setChecked(true);
-        reposition();
+        if (!separated) {
+            toggle->setChecked(true);
+            if (!guard) return;
+            reposition();
+            if (!guard) return;
+        }
         layout()->activate();
         body->layout()->activate();
         if (scroll->layout()) scroll->layout()->activate();
@@ -700,9 +714,9 @@ protected:
             const int digit = key->key() - Qt::Key_0;
             if (modifiers != Qt::NoModifier || digit < 0 || digit > 9) {
                 pendingColorRow = 0;
-            } else if (watched == parentWidget() && event->type() == QEvent::KeyPress) {
-                // Only unhandled child keys reach the editor; shortcuts and inputs win.
-                if (controller->isReadOnly() || !isVisible() || !isEnabled() || !toggle->isChecked() || boundId.isEmpty()) {
+            } else if ((watched == editor || watched == this) && event->type() == QEvent::KeyPress) {
+                // Only unhandled child keys reach the editor/panel; shortcuts and inputs win.
+                if (!canEdit() || !isVisible() || !isEnabled() || (!separated && !toggle->isChecked())) {
                     pendingColorRow = 0;
                     return false;
                 }
@@ -744,8 +758,10 @@ protected:
         return QFrame::eventFilter(watched, event);
     }
 private:
+    QPointer<MindMapEditor> editor;
     QPointer<MindMapView> view;
-    MindMapController *controller;
+    QPointer<MindMapController> controller;
+    const bool separated;
     QWidget *heading, *body;
     QLabel *title, *subtitle;
     QScrollArea *scroll;
@@ -766,12 +782,16 @@ private:
     QString colorKey() const {
         return fillColor->isChecked() ? QStringLiteral("background") : QStringLiteral("color");
     }
+    bool canEdit() const {
+        return editor && controller && editor->isEnabled() && !controller->isReadOnly() &&
+            !boundId.isEmpty() && boundId == controller->selectedNodeId();
+    }
     void applyStyle(const QJsonObject &style) {
         apply({{QStringLiteral("style"), style}});
     }
     void apply(const QJsonObject &patch) {
-        if (refreshing || boundId.isEmpty()) return;
-        if (controller->isReadOnly()) { refresh(); return; }
+        if (refreshing) return;
+        if (!canEdit()) { refresh(); return; }
         const QString id = boundId;
         const QByteArray json = QJsonDocument(patch).toJson(QJsonDocument::Compact);
         const QPointer<NodePropertiesPanel> guard(this);
@@ -785,6 +805,7 @@ private:
         palette->setColor(color, fillColor->isChecked() ? tr("Use the default fill") : tr("Use the default text color"));
     }
     void refresh() {
+        if (!controller || !editor) return;
         const QPointer<NodePropertiesPanel> lifetime(this);
         const auto properties = controller->nodeProperties(controller->selectedNodeId());
         if (!lifetime) return;
@@ -834,20 +855,21 @@ private:
                 : tr("Default font style for this node"));
         }
         refreshColors();
+        updateEditability();
         reposition();
     }
     void reposition() {
-        if (repositioning) return;
+        if (separated || repositioning) return;
         const QScopedValueRollback<bool> guard(repositioning, true);
         const bool wasVisible = isVisible();
-        if (!view || boundId.isEmpty()) {
+        if (!view || !editor || !controller || boundId.isEmpty()) {
             presentedNodeId.clear();
             presentedExpanded = false;
             hide();
             return;
         }
-        const QRect viewport(view->viewport()->mapTo(parentWidget(), QPoint()), view->viewport()->size());
-        const QRect available = viewport.intersected(parentWidget()->rect()).adjusted(12, 12, -12, -12);
+        const QRect viewport(view->viewport()->mapTo(editor, QPoint()), view->viewport()->size());
+        const QRect available = viewport.intersected(editor->rect()).adjusted(12, 12, -12, -12);
         if (available.isEmpty()) {
             presentedNodeId.clear();
             presentedExpanded = false;
@@ -897,7 +919,7 @@ public:
     QAction *undoAction, *redoAction;
     QAction *boldAction = nullptr, *italicAction = nullptr;
     QList<QAction *> nodeNavigation;
-    NodePropertiesPanel *properties;
+    QPointer<NodePropertiesPanel> properties;
     QList<QAction *> nodeEditingActions;
     QList<QAction *> toolbarFormattingActions;
     FontSizeAction *fontSizeAction = nullptr;
@@ -1125,6 +1147,7 @@ public:
         };
         QString canvas, nodes;
         for (auto *action : view->actions()) {
+            if (config.separateNodePropertiesPanel && action == toggleProperties) continue;
             auto &rows = nodeEditingActions.contains(action) ? nodes : canvas;
             rows += row(action->text(), action->shortcuts());
         }
@@ -1149,7 +1172,8 @@ public:
         const QString left = section(tr("Canvas"), canvas) + section(tr("During drag or image resize"),
             row(tr("Cancel gesture"), {QKeySequence(Qt::Key_Escape)}));
         const QString right = section(tr("Selected node on canvas"), nodes) + section(tr("Inline topic"), inlineEdit)
-            + section(tr("Node properties"), row(tr("Collapse card"), {QKeySequence(Qt::Key_Escape)})
+            + section(tr("Node properties"), (config.separateNodePropertiesPanel ? QString() :
+                row(tr("Collapse card"), {QKeySequence(Qt::Key_Escape)}))
                 + QStringLiteral("<tr><td colspan=2>%1<br>%2<br>%3</td></tr>").arg(
                     tr("With properties expanded, outside inputs:").toHtmlEscaped(),
                     tr("Type row (1-4), then column (1-6).").toHtmlEscaped(),
@@ -1234,10 +1258,15 @@ public:
         addChild->setEnabled(writable && node); addLink->setEnabled(writable && node);
         addSibling->setEnabled(writable && node); addSiblingBefore->setEnabled(writable && node);
         for (auto *action : nodeNavigation) action->setEnabled(node);
-        for (auto *action : nodeEditingActions) action->setEnabled(node && (writable || action == toggleProperties));
+        for (auto *action : nodeEditingActions) {
+            const bool panelAvailable = properties || action->objectName() == QStringLiteral("editTopic");
+            action->setEnabled(node && panelAvailable && (writable || action == toggleProperties) &&
+                (action != toggleProperties || !config.separateNodePropertiesPanel));
+        }
         for (auto *action : toolbarFormattingActions) action->setEnabled(writable && node);
         if (!writable || !node) fontSizeAction->hidePopups();
-        properties->setReadOnly(!writable);
+        if (properties) properties->updateEditability();
+        if (!guard) return;
         copySelection->setEnabled(hasNodes || hasLink);
         rootSelection->setEnabled(!nodes.empty());
         clearSelectionAction->setEnabled(hasNodes || hasLink);
@@ -1445,17 +1474,19 @@ public:
         });
         clearSelectionAction = action("clearSelection", tr("Clear selection"), config.shortcuts.clearSelection, [this] { controller->clearSelection(); });
         layout->addWidget(view, 1); layout->addWidget(error);
-        properties = new NodePropertiesPanel(editor, view, controller);
+        properties = new NodePropertiesPanel(editor, view, controller, config.separateNodePropertiesPanel);
         nodeEditingActions = {
-            boldAction = action("toggleBold", tr("Toggle bold"), config.shortcuts.toggleBold, [this] { properties->activate(NodePropertiesPanel::Action::ToggleBold); }),
-            italicAction = action("toggleItalic", tr("Toggle italic"), config.shortcuts.toggleItalic, [this] { properties->activate(NodePropertiesPanel::Action::ToggleItalic); }),
-            action("resetStyle", tr("Reset style"), config.shortcuts.resetStyle, [this] { properties->activate(NodePropertiesPanel::Action::ResetStyle); }),
-            action("textColor", tr("Text color"), config.shortcuts.textColor, [this] { properties->activate(NodePropertiesPanel::Action::TextColor); }),
-            action("fillColor", tr("Fill color"), config.shortcuts.fillColor, [this] { properties->activate(NodePropertiesPanel::Action::FillColor); }),
-            action("editTags", tr("Edit tags"), config.shortcuts.editTags, [this] { properties->activate(NodePropertiesPanel::Action::Tags); }),
-            action("editIcons", tr("Edit icons"), config.shortcuts.editIcons, [this] { properties->activate(NodePropertiesPanel::Action::Icons); }),
-            action("editNote", tr("Edit note"), config.shortcuts.editNote, [this] { properties->activate(NodePropertiesPanel::Action::Note); }),
-            toggleProperties = action("toggleProperties", tr("Toggle properties panel"), config.shortcuts.toggleProperties, [this] { properties->activate(NodePropertiesPanel::Action::ToggleProperties); }),
+            boldAction = action("toggleBold", tr("Toggle bold"), config.shortcuts.toggleBold, [this] { if (properties) properties->activate(NodePropertiesPanel::Action::ToggleBold); }),
+            italicAction = action("toggleItalic", tr("Toggle italic"), config.shortcuts.toggleItalic, [this] { if (properties) properties->activate(NodePropertiesPanel::Action::ToggleItalic); }),
+            action("resetStyle", tr("Reset style"), config.shortcuts.resetStyle, [this] { if (properties) properties->activate(NodePropertiesPanel::Action::ResetStyle); }),
+            action("textColor", tr("Text color"), config.shortcuts.textColor, [this] { if (properties) properties->activate(NodePropertiesPanel::Action::TextColor); }),
+            action("fillColor", tr("Fill color"), config.shortcuts.fillColor, [this] { if (properties) properties->activate(NodePropertiesPanel::Action::FillColor); }),
+            action("editTags", tr("Edit tags"), config.shortcuts.editTags, [this] { if (properties) properties->activate(NodePropertiesPanel::Action::Tags); }),
+            action("editIcons", tr("Edit icons"), config.shortcuts.editIcons, [this] { if (properties) properties->activate(NodePropertiesPanel::Action::Icons); }),
+            action("editNote", tr("Edit note"), config.shortcuts.editNote, [this] { if (properties) properties->activate(NodePropertiesPanel::Action::Note); }),
+            toggleProperties = action("toggleProperties", tr("Toggle properties panel"),
+                config.separateNodePropertiesPanel ? QList<QKeySequence>{} : config.shortcuts.toggleProperties,
+                [this] { if (properties) properties->activate(NodePropertiesPanel::Action::ToggleProperties); }),
             action("editTopic", tr("Edit topic"), config.shortcuts.editTopic, [this] {
                 const QString id = controller->selectedNodeId();
                 if (!id.isEmpty()) view->beginTopicEdit(id, config.shortcuts.acceptTopic);
@@ -1635,13 +1666,18 @@ MindMapEditor::MindMapEditor(const EditorConfig &config, QWidget *parent)
 }
 MindMapEditor::~MindMapEditor() {
     d->invalidateFormatting();
+    // The host may have borrowed visual parenting; panel callbacks still use our model/view.
+    delete d->properties.data();
     // Disarm the input before QWidget teardown can send it a committing FocusOut.
     delete d->view;
 }
 QAction *MindMapEditor::commandAction(const QString &name) const {
     return name.isEmpty() ? nullptr : findChild<QAction *>(name, Qt::FindDirectChildrenOnly);
 }
-void MindMapEditor::collapseNodeProperties() { d->properties->collapse(); }
+QWidget *MindMapEditor::nodePropertiesPanel() const {
+    return d->config.separateNodePropertiesPanel ? d->properties.data() : nullptr;
+}
+void MindMapEditor::collapseNodeProperties() { if (d->properties) d->properties->collapse(); }
 void MindMapEditor::setStyle(const EditorConfig::Style &style) {
     d->config.style = style;
     d->view->setStyle(style);
@@ -1722,8 +1758,8 @@ QStringList MindMapEditor::selectedNodeIds() const { return d->controller->selec
 QString MindMapEditor::selectedLinkId() const { return d->controller->selectedLinkId(); }
 QString MindMapEditor::selectedText() const {
     QWidget *focus = QApplication::focusWidget();
-    if (focus && isAncestorOf(focus)) {
-        for (auto *input = focus; input && input != this; input = input->parentWidget()) {
+    if (focus && (isAncestorOf(focus) || (d->properties && d->properties->isAncestorOf(focus)))) {
+        for (auto *input = focus; input && input != this && input != d->properties; input = input->parentWidget()) {
             if (const auto *line = qobject_cast<QLineEdit *>(input)) return line->selectedText();
             if (const auto *plain = qobject_cast<QPlainTextEdit *>(input))
                 return plain->textCursor().selectedText().replace(QChar::ParagraphSeparator, QLatin1Char('\n'));

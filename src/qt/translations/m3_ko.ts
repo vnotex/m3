@@ -702,9 +702,13 @@
     </message>
     <message>
         <location line="+169"/>
-        <location line="+12"/>
-        <source>Node properties</source>
+        <source>Node Properties</source>
         <translation>노드 속성</translation>
+    </message>
+    <message>
+        <location line="+12"/>
+        <source>Topic</source>
+        <translation>주제</translation>
     </message>
     <message>
         <location line="+35"/>
