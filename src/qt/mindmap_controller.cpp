@@ -131,7 +131,8 @@ LinkPresentation linkPresentation(const Json &j) {
 }
 }
 MindMapController::MindMapController(MindMapView &v, const EditorConfig &config, QObject *parent)
-    : QObject(parent), undoLimit(size_t(std::max(0, config.undoLimit))), view(v),
+    : QObject(parent), undoLimit(size_t(std::max(0, config.undoLimit))),
+      initialVisibleLevels(std::max(0, config.initialVisibleLevels)), view(v),
       resourceBase(QDir::cleanPath(QDir::current().absoluteFilePath(config.resourceBasePath))),
       resolveRelativeUrls(config.resolveRelativeUrls), autoRandomBranchColor(config.autoRandomBranchColor) {}
 void MindMapController::setResourceBasePath(const QString &path) {
@@ -310,14 +311,14 @@ bool MindMapController::revealTarget(FindTarget target) {
                 if (!nodes.contains(target.id)) return fail(tr("Node not found"));
                 endpoints.append(target.id);
             }
-            auto expansions = temporaryExpanded;
+            auto collapsed = collapsedNodes;
             for (const auto &endpoint : endpoints) {
                 for (QString ancestor = parents.value(endpoint); !ancestor.isEmpty(); ancestor = parents.value(ancestor)) {
-                    if (!nodes.value(ancestor)->at("expanded").get<bool>()) expansions.insert(ancestor);
+                    collapsed.remove(ancestor);
                 }
             }
-            auto presentation = prepare(currentSnapshot, direction, expansions);
-            temporaryExpanded.swap(expansions);
+            auto presentation = prepare(currentSnapshot, direction, collapsed);
+            collapsedNodes.swap(collapsed);
             install(std::move(presentation), false);
             if (!guard || revision != documentRevision) return false;
         }
@@ -420,21 +421,21 @@ QString MindMapController::toMarkdown() {
 QString MindMapController::toHtml() {
     try {
         const auto document = currentSnapshot;
-        auto presentation = prepare(document, direction, temporaryExpanded);
+        auto presentation = prepare(document, direction, collapsedNodes);
         const auto image = view.renderImage(std::move(presentation));
         return encodeHtml(document, image);
     } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
 Presentation MindMapController::prepare(const QByteArray &json,
-                                       MindMapEditor::LayoutDirection requested, QSet<QString> &expansions,
-                                       bool useImageCache) {
+                                       MindMapEditor::LayoutDirection requested, QSet<QString> &collapsed,
+                                       bool useImageCache, int initialLevels) {
     const auto data = Json::parse(json.constData(), json.constData() + json.size());
     const auto &nodes = data.at("nodes");
     std::unordered_map<std::string, const Json *> index;
     index.reserve(nodes.size());
     for (const auto &n : nodes) index.emplace(n.at("id").get<std::string>(), &n);
-    for (auto it = expansions.begin(); it != expansions.end();) {
-        if (index.find(utf8(*it)) == index.end()) it = expansions.erase(it);
+    for (auto it = collapsed.begin(); it != collapsed.end();) {
+        if (index.find(utf8(*it)) == index.end()) it = collapsed.erase(it);
         else ++it;
     }
     Presentation result;
@@ -448,10 +449,11 @@ Presentation MindMapController::prepare(const QByteArray &json,
         const Json *record;
         QColor inheritedBranchColor;
         size_t parent, visibleParent;
+        int level;
         bool visible;
     };
     std::vector<Frame> pending{{index.at(data.at("rootId").get<std::string>()), {},
-                                M3_NO_PARENT, M3_NO_PARENT, true}};
+                                M3_NO_PARENT, M3_NO_PARENT, 1, true}};
     while (!pending.empty()) {
         const auto frame = pending.back();
         pending.pop_back();
@@ -475,7 +477,8 @@ Presentation MindMapController::prepare(const QByteArray &json,
             if (!value.trimmed().isEmpty()) node.tags.push_back({std::move(value), {}, {}});
         }
         node.root = record.at("id") == data.at("rootId");
-        node.expanded = record.at("expanded").get<bool>() || expansions.contains(node.id);
+        if (initialLevels > 0 && frame.level >= initialLevels) collapsed.insert(node.id);
+        node.expanded = !collapsed.contains(node.id);
         const auto &children = record.at("children");
         node.hasChildren = children.empty() == false;
         node.style = nodeStyle(record.at("style"));
@@ -486,7 +489,7 @@ Presentation MindMapController::prepare(const QByteArray &json,
         // Preorder follows declared children, not the flat JSON record order.
         for (auto it = children.rbegin(); it != children.rend(); ++it)
             pending.push_back({index.at(it->get<std::string>()), node.style.branchColor,
-                               position, result.nodes.size(), frame.visible && node.expanded});
+                               position, result.nodes.size(), frame.level + 1, frame.visible && node.expanded});
         if (frame.visible) {
             if (frame.visibleParent != M3_NO_PARENT)
                 result.treeEdges.push_back({result.nodes[frame.visibleParent].id, node.id});
@@ -558,8 +561,8 @@ void MindMapController::restoreSelection() {
 bool MindMapController::replace(Map candidate) {
     try {
         auto bytes = snapshot(candidate.get());
-        QSet<QString> expansions;
-        auto presentation = prepare(bytes, direction, expansions, false);
+        QSet<QString> collapsed;
+        auto presentation = prepare(bytes, direction, collapsed, false, initialVisibleLevels);
         const QString root = presentation.nodes.front().id;
         std::vector<HistoryState> baseline;
         baseline.push_back({bytes, {root}, {}});
@@ -569,7 +572,7 @@ bool MindMapController::replace(Map candidate) {
         currentSnapshot.swap(bytes);
         history.swap(baseline);
         historyCursor = 0;
-        temporaryExpanded.clear();
+        collapsedNodes.swap(collapsed);
         clearFind();
         ++documentRevision;
         imageResources.clear();
@@ -656,8 +659,7 @@ void MindMapController::setUndoLimit(int limit) {
 }
 template<typename Operation>
 bool MindMapController::transact(Operation &&operation,
-                                 const QString &preferredNode, const QString &preferredLink,
-                                 const QString &clearedExpansion) {
+                                 const QString &preferredNode, const QString &preferredLink) {
     if (!writable()) return false;
     try {
         M3Mindmap *raw = nullptr;
@@ -666,23 +668,7 @@ bool MindMapController::transact(Operation &&operation,
         requireStatus(parsed);
         requireStatus(operation(candidate.get()));
         auto bytes = snapshot(candidate.get());
-        auto expansions = temporaryExpanded;
-        const bool expansionChanged = expansions.remove(clearedExpansion);
-        if (bytes == currentSnapshot) {
-            if (!expansionChanged) { success(); return true; }
-            // Explicitly collapsing a temporarily revealed node can be a
-            // persistent no-op, but must still close its presentation branch.
-            auto presentation = prepare(currentSnapshot, direction, expansions);
-            const QPointer<MindMapController> guard(this);
-            const auto revision = documentRevision;
-            temporaryExpanded.swap(expansions);
-            install(std::move(presentation), false);
-            if (!guard || revision != documentRevision) return true;
-            if (visibleNodes.contains(preferredNode)) selection({preferredNode}, {});
-            else restoreSelection();
-            if (guard && revision == documentRevision) success();
-            return true;
-        }
+        if (bytes == currentSnapshot) { success(); return true; }
         HistoryState next{bytes, selectedNodes, selectedLink};
         const size_t required = historyCursor + 2;
         if (required > history.capacity())
@@ -691,7 +677,6 @@ bool MindMapController::transact(Operation &&operation,
         // redo; a failed command must retain every prior state and selection.
         model.swap(candidate);
         currentSnapshot.swap(bytes);
-        temporaryExpanded.swap(expansions);
         history.resize(historyCursor + 1);
         history.push_back(std::move(next));
         ++historyCursor;
@@ -713,7 +698,7 @@ bool MindMapController::finishChange(std::optional<Presentation> prepared, bool 
         success();
         if (!guard) return true;
         if (revision == documentRevision) {
-            auto presentation = prepared ? std::move(*prepared) : prepare(currentSnapshot, direction, temporaryExpanded);
+            auto presentation = prepared ? std::move(*prepared) : prepare(currentSnapshot, direction, collapsedNodes);
             const QString root = presentation.nodes.front().id;
             install(std::move(presentation), resetCamera);
             if (!guard) return true;
@@ -752,12 +737,12 @@ bool MindMapController::restoreHistory(size_t cursor) {
         const auto parsed = m3_mindmap_from_json(target.json.constData(), &raw);
         Map candidate(raw, m3_mindmap_destroy);
         requireStatus(parsed);
-        auto expansions = temporaryExpanded;
-        auto presentation = prepare(target.json, direction, expansions);
+        auto collapsed = collapsedNodes;
+        auto presentation = prepare(target.json, direction, collapsed);
         model.swap(candidate);
         currentSnapshot = target.json;
         historyCursor = cursor;
-        temporaryExpanded.swap(expansions);
+        collapsedNodes.swap(collapsed);
         ++documentRevision;
         return finishChange(std::move(presentation), false, true);
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
@@ -887,7 +872,7 @@ bool MindMapController::updateNodeProperties(const QString &id, const QByteArray
         const auto serialized = update.dump();
         return transact([&](M3Mindmap *candidate) {
             return m3_mindmap_update_node(candidate, id.toUtf8().constData(), serialized.c_str());
-        }, {}, {}, update.contains("expanded") ? id : QString());
+        });
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 bool MindMapController::removeNode(const QString &id) {
@@ -952,23 +937,33 @@ bool MindMapController::moveNode(const QString &id, const QString &parent, int i
     });
 }
 bool MindMapController::setExpanded(const QString &id, bool expanded) {
-    if (!writable()) return false;
     if (!strings({id})) return false;
-    QString fallback;
     const QPointer<MindMapController> guard(this);
-    if (!expanded && selectedNodes.size() == 1) {
-        const auto nodes = choices();
-        if (!guard) return false;
-        QHash<QString, QString> parents;
-        for (const auto &n : nodes) parents.insert(n.id, n.parent);
-        for (QString current = selectedNodeId(); !current.isEmpty(); current = parents.value(current))
-            if (current == id) { fallback = id; break; }
-    }
+    const auto revision = documentRevision;
     try {
-        const auto patch = Json{{"expanded", expanded}}.dump();
-        return transact([&](M3Mindmap *candidate) {
-            return m3_mindmap_update_node(candidate, id.toUtf8().constData(), patch.c_str());
-        }, fallback, {}, id);
+        const auto nodes = choices();
+        if (!guard || revision != documentRevision) return false;
+        const auto node = std::find_if(nodes.begin(), nodes.end(), [&](const NodeChoice &n) { return n.id == id; });
+        if (node == nodes.end()) return fail(tr("Node not found"));
+        if (node->expanded == expanded) { success(); return true; }
+        QString fallback;
+        if (!expanded && selectedNodes.size() == 1) {
+            QHash<QString, QString> parents;
+            for (const auto &n : nodes) parents.insert(n.id, n.parent);
+            for (QString current = selectedNodeId(); !current.isEmpty(); current = parents.value(current))
+                if (current == id) { fallback = id; break; }
+        }
+        auto collapsed = collapsedNodes;
+        if (expanded) collapsed.remove(id);
+        else collapsed.insert(id);
+        auto presentation = prepare(currentSnapshot, direction, collapsed);
+        collapsedNodes.swap(collapsed);
+        install(std::move(presentation), false);
+        if (!guard || revision != documentRevision) return true;
+        if (visibleNodes.contains(fallback)) selection({fallback}, {});
+        else restoreSelection();
+        if (guard && revision == documentRevision) success();
+        return true;
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 QString MindMapController::addLink(const QString &source, const QString &target, bool directed, const QString &topic) {
@@ -1057,7 +1052,7 @@ bool MindMapController::removeLink(const QString &id) {
 bool MindMapController::setLayoutDirection(MindMapEditor::LayoutDirection requested) {
     const QPointer<MindMapController> guard(this);
     try {
-        auto presentation = prepare(currentSnapshot, requested, temporaryExpanded);
+        auto presentation = prepare(currentSnapshot, requested, collapsedNodes);
         install(std::move(presentation), false);
         if (!guard) return true;
         const bool changed = direction != requested;
@@ -1085,7 +1080,7 @@ std::vector<NodeChoice> MindMapController::choices() {
             NodeChoice choice;
             choice.id = string(n.at("id")); choice.topic = string(n.at("topic"));
             choice.parent = parents.value(choice.id);
-            choice.expanded = n.at("expanded").get<bool>() || temporaryExpanded.contains(choice.id);
+            choice.expanded = !collapsedNodes.contains(choice.id);
             for (const auto &c : n.at("children")) choice.children.append(string(c));
             result.push_back(std::move(choice));
         }
@@ -1127,7 +1122,7 @@ void MindMapController::refreshAppearance() {
     if (!model) return;
     const QPointer<MindMapController> guard(this);
     try {
-        install(prepare(currentSnapshot, direction, temporaryExpanded), false);
+        install(prepare(currentSnapshot, direction, collapsedNodes), false);
         if (!guard) return;
         restoreSelection();
     } catch (const std::exception &e) {

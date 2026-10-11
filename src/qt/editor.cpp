@@ -1274,7 +1274,7 @@ public:
         editLink->setEnabled(writable && hasLink);
         deleteSelection->setEnabled(writable && (deletableNodes || hasLink));
         move->setEnabled(movable);
-        toggleExpanded->setEnabled(writable && node && !node->children.isEmpty());
+        toggleExpanded->setEnabled(host->isEnabled() && node && !node->children.isEmpty());
         toggleExpanded->setText(node && !node->expanded ? tr("Expand") : tr("Collapse"));
         const auto *parent = node ? choice(nodes, node->parent) : nullptr;
         const auto index = parent ? parent->children.indexOf(node->id) : -1;

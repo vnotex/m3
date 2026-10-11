@@ -216,7 +216,7 @@ class NodeItem final : public QGraphicsItem {
 public:
     QString id, hyperlink;
     bool expanded, hasChildren;
-    bool dropTarget = false, readOnly = false;
+    bool dropTarget = false;
     QRectF rect;
     std::vector<QRectF> tagRectangles;
     QPalette colors;
@@ -282,7 +282,7 @@ public:
         p->setBrush(colors.color(QPalette::Base));
         for (const auto &rectangle : tagRectangles)
             p->drawRoundedRect(rectangle.adjusted(0.5, 0.5, -0.5, -0.5), tagCornerRadius, tagCornerRadius);
-        if (hasChildren && !readOnly) {
+        if (hasChildren) {
             const QPointF center = affordance().center();
             p->setPen(QPen(colors.color(QPalette::ButtonText), 1));
             p->setBrush(colors.color(QPalette::Base));
@@ -1419,7 +1419,6 @@ void MindMapView::setSelection(const QStringList &nodes, const QString &link) {
     for (auto *item : scene()->items()) {
         if (auto *n = dynamic_cast<NodeItem *>(item)) {
             const bool selected = selectedNodes.contains(n->id);
-            n->readOnly = readOnly;
             n->setSelected(selected);
             n->update();
             // itemChange enables image handles for every selected item; groups cannot resize.
@@ -1672,7 +1671,7 @@ bool MindMapView::pick(QMouseEvent *event, bool activate) {
         if (auto *node = dynamic_cast<NodeItem *>(item)) {
             id = node->id;
             expanded = !node->expanded;
-            const bool toggle = !readOnly && node->hasChildren && node->affordance().contains(node->mapFromScene(mapToScene(event->pos())));
+            const bool toggle = node->hasChildren && node->affordance().contains(node->mapFromScene(mapToScene(event->pos())));
             target = toggle && !activate ? Target::Expansion : Target::Node;
         } else if (auto *link = dynamic_cast<LinkItem *>(item)) {
             id = link->id;

@@ -14,20 +14,24 @@ static void roundtrip() {
     auto copy = load(j);
     CHECK(document(copy) == j);
     auto input = fixture();
+    for (auto &n : input["nodes"]) n["expanded"] = n["id"] != "r";
     auto rich = load(input);
     auto exported = document(rich);
     CHECK(exported["nodes"][0]["id"] == "r");
     CHECK(exported["nodes"][1]["id"] == "a");
     CHECK(exported["nodes"][2]["id"] == "d");
+    for (const auto &n : exported["nodes"]) CHECK(!n.contains("expanded"));
     for (const auto &n : input["nodes"]) {
         auto actual = node(rich, n["id"].get<std::string>().c_str());
-        for (auto it = n.begin(); it != n.end(); ++it) CHECK(actual[it.key()] == it.value());
+        CHECK(!actual.contains("expanded"));
+        for (auto it = n.begin(); it != n.end(); ++it)
+            if (it.key() != "expanded") CHECK(actual[it.key()] == it.value());
     }
     for (const auto &l : input["crossLinks"]) {
         auto actual = link(rich, l["id"].get<std::string>().c_str());
         for (auto it = l.begin(); it != l.end(); ++it) CHECK(actual[it.key()] == it.value());
     }
-    CHECK(node(rich, "c") == Json::parse(R"({"id":"c","topic":"","note":"","hyperLink":"","style":{},"expanded":true,"tags":[],"icons":[],"image":null,"children":[]})"));
+    CHECK(node(rich, "c") == Json::parse(R"({"id":"c","topic":"","note":"","hyperLink":"","style":{},"tags":[],"icons":[],"image":null,"children":[]})"));
     CHECK(exported["crossLinks"][0]["id"] == "l1");
     auto rich_copy = load(exported);
     CHECK(document(rich_copy) == exported);
@@ -414,7 +418,7 @@ static void mind_elixir() {
     auto copy = load(exported);
     CHECK(document(copy) == exported);
 
-    const auto rich_input = Json::parse(R"({"nodeData":{"id":"r","topic":"根 🌍","root":[],"direction":{},
+    const auto rich_input = Json::parse(R"({"nodeData":{"id":"r","topic":"根 🌍","expanded":true,"root":[],"direction":{},
       "children":[{"id":"a","topic":"Café 世界","memo":"Mémo 絵 🌍","expanded":false,
         "tags":["x","y","x"],"icons":["star","flag","star"],"hyperLink":"opaque:世界",
         "style":{"nested":{"list":[1,true,"é",{"direction":7}]}},
@@ -436,7 +440,7 @@ static void mind_elixir() {
     CHECK(node(rich, "r")["topic"] == "根 🌍");
     CHECK(node(rich, "r")["children"] == Json({"a","c"}));
     CHECK(node(rich, "a") == Json::parse(R"({"id":"a","topic":"Café 世界","note":"Mémo 絵 🌍",
-      "expanded":false,"tags":["x","y","x"],"icons":["star","flag","star"],"hyperLink":"opaque:世界",
+      "tags":["x","y","x"],"icons":["star","flag","star"],"hyperLink":"opaque:世界",
       "style":{"nested":{"list":[1,true,"é",{"direction":7}]}},"image":null,"children":["b"]})"));
     CHECK(node(rich, "b")["note"] == "" && node(rich, "b")["image"].is_null());
     CHECK(node(rich, "b")["children"] == Json::array());
@@ -446,7 +450,7 @@ static void mind_elixir() {
     CHECK(link(rich, "r") == Json::parse(R"({"id":"r","source":"r","target":"r","directed":true,"topic":"","icon":"","style":{}})"));
     for (const auto *key : {"nodeData", "linkData", "direction", "metadata", "extension"}) CHECK(!rich_doc.contains(key));
     for (const auto &n : rich_doc["nodes"])
-        for (const auto *key : {"memo", "root", "direction", "parent", "metadata"}) CHECK(!n.contains(key));
+        for (const auto *key : {"expanded", "memo", "root", "direction", "parent", "metadata"}) CHECK(!n.contains(key));
     auto rich_copy = load(rich_doc);
     CHECK(document(rich_copy) == rich_doc);
     for (const auto *record : {R"({"id":"new","memo":"foreign"})", R"({"id":"new","direction":0})"}) {
@@ -460,7 +464,7 @@ static void mind_elixir() {
 
     auto minimal = load(Json::parse(R"({"nodeData":{"id":"r","topic":""}})"));
     CHECK(document(minimal) == Json::parse(R"({"schemaVersion":1,"rootId":"r","nodes":[
-      {"id":"r","topic":"","note":"","hyperLink":"","expanded":true,"style":{},"tags":[],"icons":[],"image":null,"children":[]}],"crossLinks":[]})"));
+      {"id":"r","topic":"","note":"","hyperLink":"","style":{},"tags":[],"icons":[],"image":null,"children":[]}],"crossLinks":[]})"));
     constexpr size_t count = 4096;
     std::string deep = "{\"nodeData\":";
     for (size_t i = 0; i < count; ++i) {
@@ -555,7 +559,7 @@ static void simple_tree() {
     CHECK(blank["nodes"].size() == 1 && blank["nodes"][0]["topic"] == "");
     CHECK(blank["nodes"][0]["children"] == Json::array());
 
-    const auto tree = Json::parse(R"({"children":[{},
+    const auto tree = Json::parse(R"({"expanded":true,"children":[{},
       {"topic":"Repeated 世界","expanded":false,"children":[{"topic":"Repeated 世界"}]},
       {"id":"m3-auto-1","topic":"Last"}],"extension":{"ignored":true}})");
     for (const auto &input : {tree, Json{{"nodeData", tree}}}) {
@@ -563,10 +567,10 @@ static void simple_tree() {
         const auto exported = document(map);
         CHECK(exported["rootId"] == "m3-auto-2");
         CHECK(exported["nodes"].size() == 5);
+        for (const auto &n : exported["nodes"]) CHECK(!n.contains("expanded"));
         CHECK(node(map, "m3-auto-2")["children"] == Json({"m3-auto-3", "m3-auto-4", "m3-auto-1"}));
         CHECK(node(map, "m3-auto-2")["topic"] == "" && node(map, "m3-auto-3")["topic"] == "");
         CHECK(node(map, "m3-auto-4")["children"] == Json({"m3-auto-5"}));
-        CHECK(node(map, "m3-auto-4")["expanded"] == false);
         CHECK(node(map, "m3-auto-5")["topic"] == "Repeated 世界");
         CHECK(exported["nodes"][2]["id"] == "m3-auto-4");
         CHECK(exported["nodes"][3]["id"] == "m3-auto-5" && exported["nodes"][4]["id"] == "m3-auto-1");
@@ -598,7 +602,7 @@ static void simple_tree() {
     CHECK(node(linked, "b")["note"] == "Memo");
 
     for (const auto *invalid : {
-        "null", "[]", "42", R"({"id":""})", R"({"id":null})", R"({"topic":1})",
+        "null", "[]", "42", R"({"id":""})", R"({"id":null})", R"({"topic":1})", R"({"expanded":0})",
         R"({"children":null})", R"({"children":["leaf"]})", R"({"children":[{},null]})",
         R"({"children":[{"id":"x"},{"children":[{"id":"x"}]}]})",
         R"({"image":{"width":-1}})", R"({"image":{"url":null}})",
@@ -665,7 +669,6 @@ static void edits() {
     ok(m3_mindmap_update_node(map.get(), "r", patch.dump().c_str()));
     auto after = node(map,"r");
     for (auto it = patch.begin(); it != patch.end(); ++it) CHECK(after[it.key()] == it.value());
-    CHECK(after["expanded"] == root_before["expanded"]);
     CHECK(after["children"] == root_before["children"]);
     CHECK(after["style"] == Json({{"only",2}}));
     ok(m3_mindmap_update_node(map.get(), "r", R"({"image":null})"));
@@ -699,12 +702,14 @@ static void atomicity() {
     fail(m3_mindmap_insert_node(map.get(),"r",0,R"({"id":"a"})"), M3_ERR_ALREADY_EXISTS);
     fail(m3_mindmap_insert_node(map.get(),"r",5,R"({"id":"x"})"), M3_ERR_INVALID_ARGUMENT);
     fail(m3_mindmap_insert_node(map.get(),"r",0,R"({"id":"x","children":["d"]})"), M3_ERR_SCHEMA);
+    fail(m3_mindmap_insert_node(map.get(),"r",0,R"({"id":"legacy","expanded":"false"})"), M3_ERR_SCHEMA);
     fail(m3_mindmap_move_node(map.get(),"a","r",3), M3_ERR_INVALID_ARGUMENT);
     fail(m3_mindmap_move_node(map.get(),"a","b",1), M3_ERR_INVALID_ARGUMENT);
     fail(m3_mindmap_update_node(map.get(),"a",R"({"id":"new"})"), M3_ERR_SCHEMA);
     fail(m3_mindmap_update_node(map.get(),"a",R"({"topic":"changed","children":[]})"), M3_ERR_SCHEMA);
     fail(m3_mindmap_update_node(map.get(),"a",R"({"topic":"changed","tags":null})"), M3_ERR_SCHEMA);
-    fail(m3_mindmap_update_node(map.get(),"a",R"({"topic":"changed","expanded":1})"), M3_ERR_SCHEMA);
+    fail(m3_mindmap_update_node(map.get(),"a",R"({"expanded":false})"), M3_ERR_SCHEMA);
+    fail(m3_mindmap_update_node(map.get(),"a",R"({"topic":"changed","expanded":true})"), M3_ERR_SCHEMA);
     fail(m3_mindmap_update_link(map.get(),"l1",R"({"topic":"changed","target":"missing"})"), M3_ERR_NOT_FOUND);
     fail(m3_mindmap_update_link(map.get(),"l1",R"({"topic":"changed","directed":1})"), M3_ERR_SCHEMA);
     fail(m3_mindmap_update_link(map.get(),"l1",R"({"topic":"changed","id":"new"})"), M3_ERR_SCHEMA);
@@ -722,6 +727,15 @@ static void atomicity() {
     fail(m3_mindmap_get_node_json(map.get(),"absent",&out), M3_ERR_NOT_FOUND); CHECK(out == nullptr);
     out = reinterpret_cast<char *>(1);
     fail(m3_mindmap_get_link_json(map.get(),"absent",&out), M3_ERR_NOT_FOUND); CHECK(out == nullptr);
+    ok(m3_mindmap_insert_node(map.get(), "r", M3_APPEND,
+        R"({"id":"legacy","topic":"Kept","expanded":false,"tags":["one","one"],"style":{"x":1}})"));
+    const auto inserted = Json::parse(R"({"id":"legacy","topic":"Kept","note":"","hyperLink":"",
+        "style":{"x":1},"tags":["one","one"],"icons":[],"image":null,"children":[]})");
+    CHECK(node(map, "legacy") == inserted);
+    auto expected = baseline;
+    expected["nodes"][0]["children"].push_back("legacy");
+    expected["nodes"].push_back(inserted);
+    CHECK(document(map) == expected);
 }
 static void links() {
     auto map = load(fixture());

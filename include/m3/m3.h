@@ -23,7 +23,10 @@ typedef struct M3Mindmap M3Mindmap;
  * is reachable from the root by ordered children IDs, with exactly one parent
  * per non-root node. Empty documents, duplicate IDs/children and cycles fail.
  * Node fields: required nonempty id; topic/hyperLink/note default to "";
- * style to {}; expanded to true; tags/icons/children to []; image to null.
+ * style to {}; tags/icons/children to []; image to null.
+ * Expansion is editor-local view state, not node data. Legacy expanded fields
+ * in complete node records (imports and leaf insertion) must be boolean and
+ * are discarded; JSON output never includes expanded.
  * tags/icons retain string order and duplicates. image is null or an object
  * with required url string and finite nonnegative width/height numbers. Zero
  * image dimensions mean unspecified metadata, not measured layout dimensions.
@@ -33,7 +36,7 @@ typedef struct M3Mindmap M3Mindmap;
  * Endpoint order is preserved even for undirected links.
  * Styles permit arbitrary nested JSON; other native records reject unknown keys.
  * Decoded NUL characters in keys/values and invalid UTF-8 are not representable.
- * JSON export includes all fields, nodes in root-first child preorder, links in
+ * JSON export includes all semantic fields, nodes in root-first child preorder, links in
  * ID byte order. Whitespace, object-key order and numeric spelling are not stable.
  * Geometry never changes the persisted semantic document.
  *
@@ -60,9 +63,9 @@ M3_API M3Status m3_mindmap_create(const char *root_id, const char *topic, M3Mind
  * version marker is available). Mixing nodeData
  * with schemaVersion/rootId/nodes/crossLinks is rejected; invalid foreign input
  * never falls back to native decoding. Nested node fields are optional as above;
- * ordered children and supplied IDs are preserved, including collapsed
- * descendants. topic/hyperLink/expanded/style/tags/icons map to native fields;
- * the memo extension maps to note. Optional ID-keyed linkData requires matching
+ * all ordered children and supplied IDs are preserved. topic/hyperLink/style/
+ * tags/icons map to native fields; expanded is validated and discarded as above.
+ * The memo extension maps to note. Optional ID-keyed linkData requires matching
  * record IDs and existing from/to endpoints; label maps to topic, directed is
  * true, and icon/style use native defaults. Unmapped foreign fields are ignored,
  * including direction/root/parent, note/image, link delta1/delta2 and extensions;
@@ -76,19 +79,19 @@ M3_API M3Status m3_mindmap_to_json(const M3Mindmap *map, char **out_json);
  * The root is level 1; every descendant is included without a depth limit.
  * Leaves have children: []. Construction and serialization are iterative.
  * Preserves literal topics (including empty strings) and stored child order,
- * including collapsed descendants. Omits all other attributes,
- * cross-links and geometry; visibility does not affect the outline.
+ * including all descendants. Omits all other attributes,
+ * cross-links and geometry; editor visibility does not affect the outline.
  * The document is unchanged. Both arguments are required; a non-null output
  * slot is set to NULL even on failure. The independent UTF-8 snapshot survives
  * edits/destruction and must be released with m3_string_free. */
 M3_API M3Status m3_mindmap_get_outline_json(const M3Mindmap *map, char **out_json);
 /* Markdown text projection, not a round-trip format. Visits every node in stored
- * child order, including collapsed descendants: depths 0-5 use headings H1-H6,
+ * child order, including all descendants: depths 0-5 use headings H1-H6,
  * deeper nodes use nested lists. Stable ID-derived HTML anchors identify nodes.
  * Includes topics, notes, URLs, ordered tags/icons (including empty/duplicate
  * entries), image URLs/embeddings/dimensions, and ID-sorted cross-links with
- * endpoint topics, direction, IDs, labels and icons. Omits styles, expansion
- * state, layout and geometry. Empty topics display (untitled).
+ * endpoint topics, direction, IDs, labels and icons. Omits styles, layout and
+ * geometry. Empty topics display (untitled).
  * Stored Markdown/HTML is escaped as literal text; line breaks become <br>.
  * URL destinations are escaped, not resolved, fetched or scheme-validated.
  * UTF-8 without BOM, structural LF newlines and exactly one final LF; even a
@@ -98,9 +101,11 @@ M3_API M3Status m3_mindmap_get_outline_json(const M3Mindmap *map, char **out_jso
 M3_API M3Status m3_mindmap_to_markdown(const M3Mindmap *map, char **out_markdown);
 M3_API void m3_mindmap_destroy(M3Mindmap *map);
 M3_API M3Status m3_mindmap_get_node_json(const M3Mindmap *map, const char *node_id, char **out_json);
-/* Insert one leaf at [0, child_count] or M3_APPEND. */
+/* Insert one leaf at [0, child_count] or M3_APPEND. A legacy boolean expanded
+ * field is accepted and discarded, as with complete node imports. */
 M3_API M3Status m3_mindmap_insert_node(M3Mindmap *map, const char *parent_id, size_t index, const char *node_json);
-/* Top-level replacement patch; id/children forbidden. Only image accepts null. */
+/* Top-level replacement patch; id/children/expanded forbidden (SCHEMA).
+ * Only image accepts null. Rejected patches leave every field unchanged. */
 M3_API M3Status m3_mindmap_update_node(M3Mindmap *map, const char *node_id, const char *patch_json);
 /* For same-parent reorder, index is interpreted AFTER removal. Root moves and
  * moves into one's own subtree are invalid operations. */
@@ -113,10 +118,9 @@ M3_API M3Status m3_mindmap_add_link(M3Mindmap *map, const char *link_json);
 M3_API M3Status m3_mindmap_update_link(M3Mindmap *map, const char *link_id, const char *patch_json);
 M3_API M3Status m3_mindmap_remove_link(M3Mindmap *map, const char *link_id);
 typedef struct M3NodeSize { const char *id; double width, height; } M3NodeSize;
-/* One measurement per visible node is required. Valid hidden measurements are
- * accepted; duplicates are invalid and unknown IDs return NOT_FOUND. Collapsed
- * nodes remain visible; their descendants and incident links are omitted only
- * from this result. Returns nodes/treeEdges/crossLinks/bounds, not routed paths. */
+/* One valid measurement per model node is required. Duplicates are invalid and
+ * unknown IDs return NOT_FOUND. Returns the complete tree and all cross-links as
+ * nodes/treeEdges/crossLinks/bounds, not routed paths; editor folding has no effect. */
 M3_API M3Status m3_mindmap_layout_json(const M3Mindmap *map, const M3NodeSize *sizes,
     size_t size_count, const M3LayoutOptions *options, char **out_layout_json);
 #ifdef __cplusplus

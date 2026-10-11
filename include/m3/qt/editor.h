@@ -29,7 +29,9 @@ class QAction;
 // layout picker. Hosts (including the demo) own toolbar presentation.
 // New editors contain the selected root "root" / "Central topic". New/load
 // replace it atomically, select and center the new root at 100%; failed imports retain
-// the document and selection. Import accepts native JSON, optional-field nested
+// the document, selection, camera and folds. Successful New/Open initializes local
+// folding from EditorConfig::initialVisibleLevels, ignoring legacy expansion values.
+// Import accepts native JSON, optional-field nested
 // trees, and Mind Elixir. toJson is a copied native JSON snapshot, including
 // opaque metadata, or empty on error. toMarkdown is a separate copied text
 // projection of the committed model, empty on error; it never changes the
@@ -47,7 +49,7 @@ class QAction;
 // subtrees once, including overlaps, in one document change and confirmation.
 // A selection containing the root cannot be deleted. After group deletion, select
 // the visible parent of the first selected subtree not covered by another selection.
-// Selection, layout direction, zoom/pan and fit never change persisted JSON.
+// Selection, folding, layout direction, zoom/pan and fit never change persisted JSON.
 // Shift+vertical wheel scrolls horizontally; with normal left-to-right controls,
 // down/negative deltas move the viewport right and up/positive deltas move it left.
 // Ctrl+wheel (including Ctrl+Shift) zooms at the pointer. Unmodified and native
@@ -78,7 +80,8 @@ class QAction;
 // If it cannot fit, scrolling exposes the largest portion in a clear viewport region.
 // An already-presented panel does not constrain subsequent pan or property edits.
 // Startup centering and explicit fit/centering commands retain their camera placement.
-// Folding hides/shows descendants without rebalancing branches or compacting rows;
+// Folding is editor-local view state, not a semantic edit or undo command.
+// It hides/shows descendants without rebalancing branches or compacting rows;
 // hidden nodes retain layout space, so visible node positions and the camera stay put.
 // Collapsing a selected descendant still selects/reveals its ancestor. Explicit
 // focus/fit commands remain available; expanded branches may extend beyond the viewport.
@@ -210,6 +213,9 @@ struct EditorConfig {
     // Maximum completed document commands; 0 is unlimited. Full native snapshots
     // retain embedded images/opaque data, so this bounds commands, not bytes.
     int undoLimit = 100;
+    // Root is level 1; positive values limit initially visible levels, nonpositive
+    // means unlimited. Copied at construction; applied on successful New/Open only.
+    int initialVisibleLevels = 3;
     // UI policy only: the removeNode() API never prompts.
     bool confirmSubtreeDeletion = true;
     // Filesystem directory for relative image/link references; empty captures cwd.
@@ -292,6 +298,7 @@ public:
     // Clears cached success/failure/pending responses without changing the base,
     // document, selection, zoom or inline draft; requests visible images again.
     void reloadImages();
+    // Successful New/Open resets local folding to initialVisibleLevels.
     bool newDocument(const QString &topic = QStringLiteral("Central topic"));
     // Empty or JSON-whitespace-only bytes create the default root, as newDocument().
     // Other input follows the normal import rules; failure preserves the current map.
@@ -307,7 +314,7 @@ public:
     bool commitActiveEdit(bool keepEditing = false);
     bool hasPendingEdit() const;
     // Cancels drafts/gestures and gates all semantic commands, not the widget.
-    // Selection, copying, navigation and camera controls remain available.
+    // Selection, copying, folding, navigation and camera controls remain available.
     // Host-controlled newDocument/loadJson are permitted in read-only mode.
     void setReadOnly(bool readOnly);
     bool isReadOnly() const;
@@ -316,7 +323,9 @@ public:
     // Accept a changed inline draft first, then traverse one document command.
     // A rejected draft/restoration leaves the cursor unchanged. Read-only or no
     // available command returns false. Text-input shortcuts keep local history.
-    // Selection is restored; camera/resources are not history. Save retains it;
+    // Selection is restored; camera/resources/folding are not history. Surviving IDs
+    // keep local folds; removed IDs are pruned and reintroduced IDs start expanded.
+    // Save retains history;
     // successful newDocument/loadJson starts a fresh baseline.
     bool undo();
     bool redo();
@@ -335,10 +344,13 @@ public:
     QByteArray nodeJson(const QString &id) const;
     // Validated native node patch. A style object merges members, null members
     // remove keys; unrelated/opaque style data survives. Unchanged patches emit
-    // no documentChanged. Read-only or invalid patches return false.
+    // no documentChanged. Read-only or invalid patches return false. Expansion
+    // patches are rejected; use setExpanded() for editor-local folding.
     bool updateNode(const QString &id, const QByteArray &patch);
     bool removeNode(const QString &id);
     bool moveNode(const QString &id, const QString &parentId, int index = -1);
+    // View-only, including read-only editors: no JSON/history/semantic signals.
+    // Idempotent; missing IDs fail without changing folds or selection.
     bool setExpanded(const QString &id, bool expanded);
     QString addLink(const QString &sourceId, const QString &targetId, bool directed, const QString &topic = {});
     bool updateLink(const QString &id, const QString &sourceId, const QString &targetId, bool directed, const QString &topic);
@@ -346,10 +358,9 @@ public:
     // Complete node preorder, including collapsed descendants; root level is 1.
     // Empty output reports an error for a live document.
     QVector<OutlineEntry> outline() const;
-    // Select and scroll at the current zoom, temporarily revealing collapsed
-    // ancestors without changing persisted expansion, document history or JSON.
-    // Explicit expansion commands consume that node's temporary override, even
-    // for persisted no-ops. Edits retain existing IDs; New/Open clears overrides.
+    // Select and scroll at the current zoom, opening collapsed ancestors without
+    // changing document history or JSON. Revealed ancestors stay open until folded
+    // explicitly or New/Open resets them; edits retain folds for surviving IDs.
     // Available read-only; invalid IDs leave the selection unchanged.
     bool revealNode(const QString &id);
     // One match per node/link topic: node preorder, then links in ID order.
@@ -360,7 +371,7 @@ public:
     // Empty input clears Find; no match leaves selection/camera unchanged.
     FindResult findText(const QString &text, Qt::CaseSensitivity sensitivity,
                         bool backward = false, bool incremental = false);
-    // Clear Find state without changing selection, camera or temporary reveals.
+    // Clear Find state without changing selection, camera or local folding.
     void clearFind();
     bool selectNode(const QString &id);
     bool selectLink(const QString &id);
@@ -396,7 +407,7 @@ signals:
     // View-only scale or Fit/manual-mode changes, including new/load reset and deferred fit.
     // Mode transitions emit even at the same scale; pan never emits.
     void zoomChanged(qreal factor, bool fit);
-    // Committed semantic changes only, never draft typing or camera/selection.
+    // Committed semantic changes only, never draft typing or camera/selection/folding.
     void documentChanged();
     // View-only: emitted after a successful actual layout change, including API calls.
     void layoutDirectionChanged(m3::qt::MindMapEditor::LayoutDirection direction);

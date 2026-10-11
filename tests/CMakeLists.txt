@@ -18,7 +18,7 @@ target_link_libraries(m3_test_layout PRIVATE m3::core)
 target_include_directories(m3_test_layout SYSTEM PRIVATE ../third_party)
 set_target_properties(m3_test_layout PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
 m3_target_defaults(m3_test_layout)
-foreach(case geometry collapse invalid deep)
+foreach(case geometry legacy_expansion invalid deep)
     add_test(NAME m3_layout_${case} COMMAND m3_test_layout ${case})
 endforeach()
 

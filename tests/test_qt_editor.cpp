@@ -760,7 +760,6 @@ static void html_case() {
         Json input = editorFixture();
         setTopic(input, "r", root);
         for (auto &node : input.at("nodes")) {
-            if (node.at("id") == "a") node["expanded"] = false;
             if (node.at("id") == "r") {
                 node["tags"] = Json::array({"x", "", "x"});
                 node["icons"] = Json::array({"star", "", "star"});
@@ -772,6 +771,7 @@ static void html_case() {
             if (link.at("id") == "l4") { link["source"] = "a"; link["target"] = "b"; link["topic"] = "Parallel"; }
         }
         CHECK(editor.loadJson(encoded(input)));
+        CHECK(editor.setExpanded(QStringLiteral("a"), false));
         showEditor(editor, QSize(500, 400));
         editor.clearSelection();
         QTest::mouseMove(graphics(editor).viewport(), QPoint(1, 1));
@@ -856,7 +856,9 @@ static void html_case() {
 }
 
 static void html_edges_case() {
-    Editor editor;
+    m3::qt::EditorConfig config;
+    config.initialVisibleLevels = 0;
+    Editor editor(config);
     htmlAppearance(editor);
     CHECK(editor.loadJson(encoded(editorFixture())));
     showEditor(editor);
@@ -878,23 +880,23 @@ static void html_edges_case() {
         else CHECK(alpha.top() > root.bottom() && alpha.left() > root.left());
         previous = image;
     }
-    auto chain = [](int count, bool collapsed) {
+    auto chain = [](int count) {
         Json result{{"schemaVersion", 1}, {"rootId", "n0"}, {"nodes", Json::array()}};
         for (int i = 0; i < count; ++i) {
             Json node{{"id", "n" + std::to_string(i)}, {"topic", "Node " + std::to_string(i)}};
             if (i + 1 < count) node["children"] = Json::array({"n" + std::to_string(i + 1)});
-            if (i == 0 && collapsed) node["expanded"] = false;
             result["nodes"].push_back(std::move(node));
         }
         return result;
     };
-    CHECK(editor.loadJson(encoded(chain(1024, true))));
+    CHECK(editor.loadJson(encoded(chain(1024))));
+    CHECK(editor.setExpanded(QStringLiteral("n0"), false));
     const HtmlPage deep(editor.toHtml());
     const auto ids = deep.articleIds();
     CHECK(ids.size() == 1024 && ids.back() == QStringLiteral("m3-node-6e31303233"));
     CHECK(texts(editor, QStringLiteral("Node 1023")).isEmpty());
     CHECK(deep.values(QStringLiteral("h3")).contains(QStringLiteral("Node 1023")));
-    CHECK(editor.loadJson(encoded(chain(400, false))));
+    CHECK(editor.loadJson(encoded(chain(400))));
     CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Outline));
     const QRectF source = graphics(editor).scene()->itemsBoundingRect().adjusted(-32, -32, 32, 32);
     CHECK(source.height() > 16384);
@@ -915,7 +917,7 @@ static void html_edges_case() {
         QStringLiteral("https://example.com/?a=1&b=%22safe%22"), QStringLiteral("HTTP://example.com/path"),
         QStringLiteral("mailto:user@example.com?subject=Hi&body=World")};
     Json unsafe{{"schemaVersion", 1}, {"rootId", "root"}, {"nodes", Json::array()}, {"crossLinks", Json::array()}};
-    Json root{{"id", "root"}, {"topic", ""}, {"expanded", false}, {"children", Json::array()},
+    Json root{{"id", "root"}, {"topic", ""}, {"children", Json::array()},
               {"note", utf8(literal)}, {"tags", Json::array({"<b>tag</b>", "", "<b>tag</b>"})}};
     for (qsizetype i = 0; i < urls.size(); ++i) {
         const auto id = QString::fromUtf8("世界-") + QString::number(i);
@@ -927,6 +929,7 @@ static void html_edges_case() {
     unsafe["crossLinks"].push_back({{"id", "quoted\"<id>"}, {"source", "世界-0"}, {"target", "世界-1"},
                                   {"directed", true}, {"topic", utf8(literal)}, {"icon", "<svg onload='x'>"}});
     CHECK(editor.loadJson(encoded(unsafe)));
+    CHECK(editor.setExpanded(QStringLiteral("root"), false));
     const HtmlPage safe(editor.toHtml());
     CHECK(safe.values(QStringLiteral("title")) == QStringList{QStringLiteral("(untitled)")});
     CHECK(safe.values(QStringLiteral("h3")).count(QStringLiteral("Duplicate")) == urls.size());
@@ -968,8 +971,8 @@ static void markdown_case() {
         Editor editor;
         Json input = editorFixture();
         setTopic(input, "r", QString::fromUtf8("Literal *世界* <br>"));
-        for (auto &entry : input.at("nodes")) if (entry.at("id") == "a") entry["expanded"] = false;
         CHECK(editor.loadJson(encoded(input)));
+        CHECK(editor.setExpanded(QStringLiteral("a"), false));
         showEditor(editor);
         QSignalSpy changed(&editor, &Editor::documentChanged);
         QSignalSpy selected(&editor, &Editor::selectionChanged);
@@ -1016,7 +1019,95 @@ static void markdown_case() {
     CHECK(!retained.contains(QStringLiteral("Accepted")));
 }
 
+static Json fiveLevelFixture() {
+    return Json::parse(R"({"schemaVersion":1,"rootId":"r","nodes":[
+        {"id":"h","topic":"Level 4","children":["i"]},
+        {"id":"r","topic":"Level 1","children":["c"]},
+        {"id":"i","topic":"Level 5","note":"Retained hidden note",
+         "image":{"url":"memory:deep","width":40,"height":20}},
+        {"id":"g","topic":"Level 3","children":["h"]},
+        {"id":"c","topic":"Level 2","children":["g"]}],
+        "crossLinks":[{"id":"deep-link","source":"r","target":"i","topic":"Deep endpoint","directed":false}]})");
+}
+static void visibleLevels(Editor &editor, int levels) {
+    for (int level = 1; level <= 5; ++level)
+        CHECK(texts(editor, QStringLiteral("Level %1").arg(level)).isEmpty() == (level > levels));
+    CHECK(texts(editor, QStringLiteral("Deep endpoint")).isEmpty() == (levels < 5));
+}
+
 static void document_case() {
+    {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(fiveLevelFixture())));
+        showEditor(editor);
+        visibleLevels(editor, 3);
+        const QByteArray baseline = editor.toJson();
+        const auto outline = editor.outline();
+        const QStringList ids{QStringLiteral("r"), QStringLiteral("c"), QStringLiteral("g"),
+                              QStringLiteral("h"), QStringLiteral("i")};
+        CHECK(outline.size() == ids.size());
+        for (int i = 0; i < ids.size(); ++i) {
+            CHECK(outline[i].id == ids[i] && outline[i].level == i + 1);
+            CHECK(outline[i].topic == QStringLiteral("Level %1").arg(i + 1));
+        }
+        CHECK(editor.renameNode(QStringLiteral("r"), QStringLiteral("Renamed root")));
+        CHECK(editor.renameNode(QStringLiteral("r"), QStringLiteral("Future root")));
+        CHECK(editor.undo() && editor.canUndo() && editor.canRedo());
+        const QByteArray current = editor.toJson();
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        QSignalSpy undo(&editor, &Editor::undoAvailable), redo(&editor, &Editor::redoAvailable);
+        CHECK(editor.setExpanded(QStringLiteral("g"), true));
+        CHECK(!texts(editor, QStringLiteral("Level 4")).isEmpty());
+        CHECK(texts(editor, QStringLiteral("Level 5")).isEmpty());
+        CHECK(editor.setExpanded(QStringLiteral("h"), true));
+        CHECK(!texts(editor, QStringLiteral("Level 5")).isEmpty());
+        CHECK(!texts(editor, QStringLiteral("Deep endpoint")).isEmpty());
+        CHECK(editor.toJson() == current && changed.isEmpty() && undo.isEmpty() && redo.isEmpty());
+        CHECK(editor.canUndo() && editor.canRedo());
+        CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Outline));
+        editor.setStyle({QString(), 17});
+        editor.reloadImages();
+        pump();
+        CHECK(!texts(editor, QStringLiteral("Level 5")).isEmpty());
+        CHECK(editor.toJson() == current && changed.isEmpty() && undo.isEmpty() && redo.isEmpty());
+        CHECK(editor.redo() && !texts(editor, QStringLiteral("Level 5")).isEmpty());
+        CHECK(editor.undo() && editor.toJson() == current);
+        CHECK(!texts(editor, QStringLiteral("Level 5")).isEmpty());
+        CHECK(editor.selectNode(QStringLiteral("i")));
+        editor.zoom(1.25);
+        const QTransform zoom = graphics(editor).transform();
+        const QPointF camera = graphics(editor).mapToScene(graphics(editor).viewport()->rect().center());
+        rejectUnchanged(editor, [&] { return editor.loadJson(QByteArray("{invalid")); });
+        CHECK(editor.selectedNodeId() == QStringLiteral("i"));
+        CHECK(!texts(editor, QStringLiteral("Level 5")).isEmpty());
+        CHECK(graphics(editor).transform() == zoom);
+        CHECK(QLineF(camera, graphics(editor).mapToScene(graphics(editor).viewport()->rect().center())).length() <= 1.0);
+        CHECK(editor.loadJson(baseline));
+        visibleLevels(editor, 3);
+        CHECK(!editor.canUndo() && !editor.canRedo());
+        CHECK(editor.revealNode(QStringLiteral("i")));
+        visibleLevels(editor, 5);
+        CHECK(editor.toJson() == baseline);
+        CHECK(editor.setExpanded(QStringLiteral("i"), true));
+        const QString child = editor.addNode(QStringLiteral("i"), QStringLiteral("New level 6"));
+        CHECK(!child.isEmpty());
+        const QString grandchild = editor.addNode(child, QStringLiteral("New level 7"));
+        CHECK(!grandchild.isEmpty() && !texts(editor, QStringLiteral("New level 7")).isEmpty());
+        CHECK(editor.moveNode(QStringLiteral("h"), QStringLiteral("r")));
+        CHECK(!texts(editor, QStringLiteral("New level 7")).isEmpty());
+        CHECK(editor.undo() && !texts(editor, QStringLiteral("New level 7")).isEmpty());
+        CHECK(editor.loadJson(baseline));
+        visibleLevels(editor, 3);
+        // New and whitespace Open discard folds even if the replacement reuses the root ID.
+        for (bool blank : {false, true}) {
+            CHECK(editor.newDocument(QStringLiteral("Replacement")));
+            CHECK(editor.setExpanded(QStringLiteral("root"), false));
+            if (blank) CHECK(editor.loadJson(QByteArray(" \t\r\n")));
+            else CHECK(editor.newDocument(QStringLiteral("Replacement")));
+            const QString replacementChild = editor.addNode(QStringLiteral("root"), QStringLiteral("New visible child"));
+            CHECK(!replacementChild.isEmpty() && !texts(editor, QStringLiteral("New visible child")).isEmpty());
+        }
+    }
     {
         Editor edgeToEdge;
         // Host themes may style all scroll areas, independently of QFrame::NoFrame.
@@ -1234,7 +1325,9 @@ static void document_case() {
         const auto camera = view.transform();
         const auto center = view.mapToScene(view.viewport()->rect().center());
         CHECK(!embedded.loadJson(QByteArray("{")));
-        CHECK(view.transform() == camera && view.mapToScene(view.viewport()->rect().center()) == center);
+        CHECK(view.transform() == camera);
+        // Showing diagnostics resizes the viewport; integer scrollbars can round by one pixel.
+        CHECK(QLineF(view.mapFromScene(center), view.viewport()->rect().center()).length() <= 1.0);
         CHECK(embedded.newDocument());
         pump();
         CHECK(embedded.zoomFactor() == 1.0 && !embedded.isZoomFit());
@@ -1307,41 +1400,42 @@ static void collapse_case() {
     const Json original = exported(editor);
     QSignalSpy changed(&editor, &Editor::documentChanged);
     QSignalSpy selected(&editor, &Editor::selectionChanged);
+    QSignalSpy undo(&editor, &Editor::undoAvailable), redo(&editor, &Editor::redoAvailable);
+    const QByteArray bytes = editor.toJson();
     CHECK(editor.selectNode(QStringLiteral("d")));
     CHECK(editor.setExpanded(QStringLiteral("a"), false));
-    CHECK(changed.size() == 1 && selected.size() == 2);
+    CHECK(changed.isEmpty() && selected.size() == 2);
     CHECK(editor.selectedNodeId() == QStringLiteral("a") && editor.selectedLinkId().isEmpty());
     CHECK(selected.back().at(0).toString() == QStringLiteral("a"));
-    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == false);
     CHECK(record(exported(editor), "nodes", QStringLiteral("d")) == record(original, "nodes", QStringLiteral("d")));
     CHECK(exported(editor).at("crossLinks") == original.at("crossLinks"));
     rejectUnchanged(editor, [&] { return editor.selectNode(QStringLiteral("d")); });
     rejectUnchanged(editor, [&] { return editor.selectLink(QStringLiteral("l2")); });
     CHECK(editor.setExpanded(QStringLiteral("a"), true));
-    CHECK(changed.size() == 2 && selected.size() == 2);
-    CHECK(exported(editor) == original);
+    CHECK(changed.isEmpty() && selected.size() == 2);
+    CHECK(exported(editor) == original && !editor.canUndo() && !editor.canRedo());
     CHECK(editor.selectLink(QStringLiteral("l2")));
     CHECK(editor.setExpanded(QStringLiteral("a"), false));
-    CHECK(changed.size() == 3);
+    CHECK(changed.isEmpty());
     CHECK(editor.selectedNodeId().isEmpty() && editor.selectedLinkId().isEmpty());
+    CHECK(editor.toJson() == bytes && undo.isEmpty() && redo.isEmpty());
     CHECK(editor.selectNode(QStringLiteral("a")));
     CHECK(editor.moveNode(QStringLiteral("b"), QStringLiteral("a")));
-    CHECK(changed.size() == 4);
+    CHECK(changed.size() == 1);
     rejectUnchanged(editor, [&] { return editor.selectNode(QStringLiteral("b")); });
     const QString hidden = editor.addNode(QStringLiteral("a"), QStringLiteral("Hidden insertion"));
-    CHECK(!hidden.isEmpty() && changed.size() == 5);
+    CHECK(!hidden.isEmpty() && changed.size() == 2);
     CHECK(editor.selectedNodeId() == QStringLiteral("a"));
     CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("children") == Json({"d", "b", utf8(hidden)}));
-    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == false);
     rejectUnchanged(editor, [&] { return editor.selectNode(hidden); });
     CHECK(editor.setExpanded(QStringLiteral("a"), true));
-    CHECK(changed.size() == 6);
+    CHECK(changed.size() == 2);
     CHECK(editor.selectNode(hidden));
     CHECK(editor.selectNode(QStringLiteral("b")));
     CHECK(editor.selectLink(QStringLiteral("l2")));
     CHECK(editor.selectNode(QStringLiteral("d")));
     CHECK(editor.setExpanded(QStringLiteral("r"), false));
-    CHECK(changed.size() == 7);
+    CHECK(changed.size() == 2);
     CHECK(editor.selectedNodeId() == QStringLiteral("r"));
     for (const QString &id : {QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c"), QStringLiteral("d"), hidden})
         rejectUnchanged(editor, [&] { return editor.selectNode(id); });
@@ -1353,8 +1447,33 @@ static void collapse_case() {
     CHECK(hasRecord(exported(editor), "nodes", hidden));
     CHECK(exported(editor).at("crossLinks") == original.at("crossLinks"));
     CHECK(editor.setExpanded(QStringLiteral("r"), true));
-    CHECK(changed.size() == 8 && editor.selectNode(hidden));
+    CHECK(changed.size() == 2 && editor.selectNode(hidden));
     rejectUnchanged(editor, [&] { return editor.setExpanded(QStringLiteral("absent"), false); });
+    {
+        Editor cursor;
+        CHECK(cursor.loadJson(encoded(editorFixture())));
+        CHECK(cursor.renameNode(QStringLiteral("r"), QStringLiteral("Current")));
+        CHECK(cursor.renameNode(QStringLiteral("r"), QStringLiteral("Future")));
+        const QByteArray future = cursor.toJson();
+        CHECK(cursor.undo() && cursor.canUndo() && cursor.canRedo());
+        const QByteArray current = cursor.toJson();
+        QSignalSpy cursorChanged(&cursor, &Editor::documentChanged);
+        QSignalSpy cursorUndo(&cursor, &Editor::undoAvailable), cursorRedo(&cursor, &Editor::redoAvailable);
+        CHECK(cursor.selectNode(QStringLiteral("d")));
+        CHECK(cursor.setExpanded(QStringLiteral("a"), false));
+        CHECK(cursor.selectedNodeId() == QStringLiteral("a"));
+        CHECK(texts(cursor, QStringLiteral("Delta")).isEmpty());
+        CHECK(cursor.setExpanded(QStringLiteral("a"), false));
+        rejectUnchanged(cursor, [&] { return cursor.setExpanded(QStringLiteral("missing"), true); });
+        CHECK(cursor.toJson() == current && cursorChanged.isEmpty() && cursorUndo.isEmpty() && cursorRedo.isEmpty());
+        CHECK(cursor.canUndo() && cursor.canRedo());
+        CHECK(cursor.redo() && cursor.toJson() == future);
+        CHECK(texts(cursor, QStringLiteral("Delta")).isEmpty());
+        CHECK(cursor.undo() && cursor.toJson() == current);
+        CHECK(texts(cursor, QStringLiteral("Delta")).isEmpty());
+        CHECK(cursor.setExpanded(QStringLiteral("a"), true));
+        CHECK(!texts(cursor, QStringLiteral("Delta")).isEmpty());
+    }
 }
 
 static void graph_edits_case() {
@@ -1411,21 +1530,21 @@ static void graph_edits_case() {
     CHECK(record(exported(editor), "crossLinks", QStringLiteral("l1")) == expected);
     CHECK(editor.selectLink(QStringLiteral("l2")));
     CHECK(editor.setExpanded(QStringLiteral("a"), false));
-    CHECK(changed.size() == 6);
+    CHECK(changed.size() == 5);
     CHECK(editor.selectedLinkId().isEmpty() && editor.selectedNodeId().isEmpty());
     CHECK(hasRecord(exported(editor), "crossLinks", QStringLiteral("l2")));
     rejectUnchanged(editor, [&] { return editor.selectLink(QStringLiteral("l2")); });
     CHECK(editor.setExpanded(QStringLiteral("a"), true));
     CHECK(editor.selectLink(QStringLiteral("l2")));
     CHECK(editor.updateLink(QStringLiteral("l2"), QStringLiteral("c"), QStringLiteral("d"), true, QString()));
-    CHECK(changed.size() == 8);
+    CHECK(changed.size() == 6);
     Json expectedOther = record(original, "crossLinks", QStringLiteral("l2"));
     expectedOther["source"] = "c";
     expectedOther["target"] = "d";
     expectedOther["directed"] = true;
     expectedOther["topic"] = "";
     CHECK(record(exported(editor), "crossLinks", QStringLiteral("l2")) == expectedOther);
-    CHECK(editor.removeLink(QStringLiteral("l2")) && changed.size() == 9);
+    CHECK(editor.removeLink(QStringLiteral("l2")) && changed.size() == 7);
     CHECK(editor.selectedLinkId().isEmpty());
 }
 
@@ -1821,10 +1940,10 @@ static void images_case() {
         Json input = imageDocument();
         for (auto &node : input.at("nodes")) if (node.at("id") == "d")
             node["image"] = Json{{"url", "memory:hidden"}, {"width", 0}, {"height", 0}};
-        for (auto &node : input.at("nodes")) if (node.at("id") == "a") node["expanded"] = false;
         QSignalSpy requests(&editor, &Editor::imageRequested);
         serve(editor);
         CHECK(editor.loadJson(encoded(input)));
+        CHECK(editor.setExpanded(QStringLiteral("a"), false));
         showEditor(editor);
         CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, url); }, 5000));
         CHECK(requests.size() == 1);
@@ -2661,7 +2780,6 @@ static void hyperlinks_case() {
         const QPoint expansion = view.mapFromScene(QPointF(nodeRect.right() - 15, nodeRect.center().y()));
         QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, expansion);
         pump();
-        CHECK(!record(exported(editor), "nodes", a).at("expanded").get<bool>());
         CHECK(texts(editor, QStringLiteral("Delta")).isEmpty() && indicator(editor, alpha) != nullptr);
         CHECK(activated.size() == 2 && activeTopicInput(editor) == nullptr);
     }
@@ -3378,6 +3496,7 @@ static void branch_color_case() {
         {"id":"cross","source":"a2","target":"b","directed":false,"topic":"Cross"}]})");
     m3::qt::EditorConfig config;
     config.autoRandomBranchColor = false;
+    config.initialVisibleLevels = 0;
     Editor editor(config);
     htmlAppearance(editor);
     CHECK(editor.loadJson(encoded(input)));
@@ -3658,8 +3777,9 @@ static void auto_branch_color_case() {
         if (button->property("color").isValid()) palette.append(button->property("color").toString());
     CHECK(palette.size() == 23);
     const Json empty = Json::parse(R"({"schemaVersion":1,"rootId":"home","nodes":[
-        {"id":"home","topic":"Home","expanded":false}],"crossLinks":[]})");
+        {"id":"home","topic":"Home"}],"crossLinks":[]})");
     CHECK(editor.loadJson(encoded(empty)));
+    CHECK(editor.setExpanded(QStringLiteral("home"), false));
     auto color = [&](const QString &id) {
         return qs(record(exported(editor), "nodes", id).at("style").at("branchColor"));
     };
@@ -3711,6 +3831,7 @@ static void auto_branch_color_case() {
     imported["nodes"][1]["children"] = {"nested"};
     imported["nodes"].push_back({{"id", "nested"}, {"topic", "Nested"}, {"style", {{"branchColor", "#3498db"}}}});
     CHECK(editor.loadJson(encoded(imported)) && exported(editor) == nativeDocument(imported));
+    CHECK(editor.setExpanded(QStringLiteral("home"), false));
     const QString blue = editor.addNode("home", "Forced blue");
     CHECK(!blue.isEmpty() && color(blue) == "#3498db");
     CHECK(editor.setExpanded("home", true));
@@ -4111,7 +4232,13 @@ static void formatting_toolbar_case() {
         }
         if (action->menu()) { action->menu()->popup(closingToolbar->mapToGlobal(QPoint(0, closingToolbar->height()))); pump(); }
         Json observed;
-        QObject::connect(closing.data(), &Editor::documentChanged, qApp, [&] { observed = exported(*closing); delete closing.data(); });
+        QObject::connect(closing.data(), &Editor::documentChanged, qApp, [&] {
+            observed = exported(*closing);
+            // QLineEdit::setText still uses its line control after textChanged.
+            // Hosts must defer deletion while that Qt input operation is active.
+            if (operation == 3) closing->deleteLater();
+            else delete closing.data();
+        });
         if (operation == 0 || operation == 4) action->trigger();
         else if (operation == 1) {
             auto *combo = closingToolbar->findChild<QComboBox *>(QStringLiteral("toolbarFontSize"));
@@ -4123,6 +4250,7 @@ static void formatting_toolbar_case() {
         else {
             auto *input = action->menu()->findChild<QLineEdit *>(QStringLiteral("toolbarNodeIcons"));
             CHECK(input != nullptr); input->setText(grin);
+            pump();
         }
         CHECK(closing.isNull() && action.isNull());
         const auto &observedNode = record(observed, "nodes", a);
@@ -5477,7 +5605,7 @@ static Json outlineFixture() {
     Json input{{"schemaVersion", 1}, {"rootId", "root-z"}, {"nodes", Json::array({
         {{"id", "root-z"}, {"topic", "Duplicate"}, {"children", {"chain-1", "sibling-a", "other-parent"}}},
         {{"id", "other-leaf"}, {"topic", "Other hidden"}},
-        {{"id", "other-parent"}, {"topic", "Other collapsed"}, {"expanded", false}, {"children", {"other-leaf"}}},
+        {{"id", "other-parent"}, {"topic", "Other collapsed"}, {"children", {"other-leaf"}}},
         {{"id", "sibling-a"}, {"topic", "Duplicate"}}
     })}, {"crossLinks", Json::array()}};
     // Storage order deliberately differs from tree preorder; the last node is level 10.
@@ -5485,7 +5613,6 @@ static Json outlineFixture() {
         Json entry{{"id", "chain-" + std::to_string(i)},
                    {"topic", i == 9 ? utf8(QString::fromUtf8("Deep target 世界")) : "Duplicate"}};
         if (i < 9) entry["children"] = {"chain-" + std::to_string(i + 1)};
-        if (i == 2 || i == 5) entry["expanded"] = false;
         input["nodes"].push_back(std::move(entry));
     }
     return input;
@@ -5497,6 +5624,7 @@ static void outline_navigation_case() {
     const Json input = outlineFixture();
     Editor editor;
     CHECK(editor.loadJson(encoded(input)));
+    CHECK(editor.setExpanded(QStringLiteral("other-parent"), false));
     CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
     showEditor(editor);
     editor.resetZoom();
@@ -5549,8 +5677,6 @@ static void outline_navigation_case() {
     CHECK(!texts(editor, deepTopic).isEmpty());
     CHECK(view.viewport()->rect().adjusted(-1, -1, 1, 1).contains(
         view.mapFromScene(topicRect(editor, deepTopic)).boundingRect()));
-    CHECK(record(exported(editor), "nodes", outer).at("expanded") == false);
-    CHECK(record(exported(editor), "nodes", QStringLiteral("chain-5")).at("expanded") == false);
     checkOutline();
     // Equal topics are not identities: root, a deep ancestor and a sibling all remain distinct.
     reveal(QStringLiteral("chain-8"));
@@ -5576,7 +5702,7 @@ static void outline_navigation_case() {
     rejectedReveal(QStringLiteral("CHAIN-9"));
     navigationOnly();
 
-    // An explicit collapse removes the temporary expansion even when persisted false is a no-op.
+    // Explicit folding and reveal share the same local state and retain the semantic cursor.
     CHECK(editor.setExpanded(outer, false));
     pump();
     CHECK(texts(editor, deepTopic).isEmpty());
@@ -5590,13 +5716,15 @@ static void outline_navigation_case() {
     CHECK(editor.undo() && exported(editor) == current);
     changed.clear(); undo.clear(); redo.clear();
 
-    // Persisting expansion also consumes its override; Undo must not leave the ancestor revealed.
+    CHECK(texts(editor, deepTopic).isEmpty());
+    // Revealed surviving IDs stay open through semantic Undo/Redo as well.
     reveal(deep);
     CHECK(editor.setExpanded(outer, true));
-    CHECK(record(exported(editor), "nodes", outer).at("expanded") == true);
+    navigationOnly();
+    CHECK(editor.redo() && exported(editor) == future);
     CHECK(!texts(editor, deepTopic).isEmpty());
     CHECK(editor.undo() && exported(editor) == current);
-    CHECK(texts(editor, deepTopic).isEmpty() && view.transform() == zoom);
+    CHECK(!texts(editor, deepTopic).isEmpty() && view.transform() == zoom);
 
     editor.setReadOnly(true);
     changed.clear();
@@ -5612,7 +5740,9 @@ static void outline_navigation_case() {
     editor.setReadOnly(false);
     CHECK(editor.canUndo() && editor.canRedo());
 
-    // Prune deleted override IDs: restoring the subtree through Undo must not resurrect them.
+    // Removed IDs lose their local folds; surviving ancestor folds remain through Undo.
+    CHECK(editor.setExpanded(outer, false));
+    CHECK(editor.setExpanded(QStringLiteral("chain-1"), false));
     CHECK(editor.selectNode(root));
     CHECK(editor.removeNode(outer));
     const auto pruned = editor.outline();
@@ -5624,11 +5754,13 @@ static void outline_navigation_case() {
     CHECK(editor.undo() && exported(editor) == current);
     CHECK(texts(editor, deepTopic).isEmpty());
     checkOutline();
+    CHECK(editor.setExpanded(QStringLiteral("chain-1"), true));
+    CHECK(!texts(editor, deepTopic).isEmpty());
     CHECK(editor.revealNode(deep) && !texts(editor, deepTopic).isEmpty());
 
-    // Loading the same IDs clears presentation overrides, not just absent IDs.
+    // Reload reinitializes configured depth, not prior ad hoc folds.
     CHECK(editor.loadJson(encoded(current)));
-    CHECK(texts(editor, deepTopic).isEmpty() && texts(editor, QStringLiteral("Other hidden")).isEmpty());
+    CHECK(texts(editor, deepTopic).isEmpty() && !texts(editor, QStringLiteral("Other hidden")).isEmpty());
     CHECK(!editor.canUndo() && !editor.canRedo());
     checkOutline();
     CHECK(editor.newDocument(QStringLiteral("Replacement")));
@@ -5684,6 +5816,7 @@ static void find_case() {
     {
         Editor editor;
         CHECK(editor.loadJson(encoded(input)));
+        CHECK(editor.setExpanded(QStringLiteral("other-parent"), false));
         CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
         showEditor(editor);
         editor.resetZoom(); editor.zoom(1.25);
@@ -5702,7 +5835,8 @@ static void find_case() {
             view.mapFromScene(textItem(editor, QStringLiteral("Needle endpoints"))->sceneBoundingRect()).boundingRect()));
         CHECK(exported(editor) == original && changed.isEmpty() && view.transform() == zoom);
         CHECK(!editor.canUndo() && !editor.canRedo() && undo.isEmpty() && redo.isEmpty());
-        CHECK(editor.loadJson(encoded(input))); // Search the nodes from collapsed presentation again.
+        CHECK(editor.loadJson(encoded(input)));
+        CHECK(editor.setExpanded(QStringLiteral("other-parent"), false)); // Search the nodes from collapsed presentation again.
         editor.resetZoom(); editor.zoom(1.25);
         changed.clear();
         const QStringList sensitive{QStringLiteral("root-z"), QStringLiteral("chain-4"),
@@ -5737,6 +5871,7 @@ static void find_case() {
     {
         Editor editor;
         CHECK(editor.loadJson(encoded(input)));
+        CHECK(editor.setExpanded(QStringLiteral("other-parent"), false));
         showEditor(editor);
         editor.resetZoom(); editor.zoom(1.2);
         auto &view = graphics(editor);
@@ -5800,6 +5935,7 @@ static void find_case() {
     {
         Editor editor;
         CHECK(editor.loadJson(encoded(input)));
+        CHECK(editor.setExpanded(QStringLiteral("other-parent"), false));
         showEditor(editor);
         auto noMatch = [&](const QString &text) {
             const Json before = exported(editor);
@@ -6901,6 +7037,25 @@ static void host_commit_case() {
 }
 
 static void read_only_case() {
+    {
+        Editor editor;
+        CHECK(editor.loadJson(encoded(fiveLevelFixture())));
+        showEditor(editor);
+        editor.setReadOnly(true);
+        const QByteArray before = editor.toJson();
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        QSignalSpy undo(&editor, &Editor::undoAvailable), redo(&editor, &Editor::redoAvailable);
+        visibleLevels(editor, 3);
+        CHECK(editor.selectNode(QStringLiteral("g")));
+        shortcut(editor, Qt::Key_Space);
+        visibleLevels(editor, 4);
+        CHECK(editor.selectNode(QStringLiteral("h")));
+        CHECK(editAction(editor, "toggleExpanded").isEnabled());
+        trigger(editor, "toggleExpanded");
+        visibleLevels(editor, 5);
+        CHECK(editor.toJson() == before && changed.isEmpty() && undo.isEmpty() && redo.isEmpty());
+        rejectUnchanged(editor, [&] { return editor.renameNode(QStringLiteral("g"), QStringLiteral("Forbidden")); });
+    }
     const QString a = QStringLiteral("a"), b = QStringLiteral("b"), d = QStringLiteral("d"), root = QStringLiteral("r");
     m3::qt::EditorConfig config;
     config.confirmSubtreeDeletion = false;
@@ -6942,21 +7097,30 @@ static void read_only_case() {
     refused([&] { return editor.updateNode(a, encoded(Json{{"style", {{"color", "#123456"}}}})); });
     refused([&] { return editor.removeNode(a); });
     refused([&] { return editor.moveNode(d, b); });
-    refused([&] { return editor.setExpanded(a, false); });
     refused([&] { return !editor.addLink(a, b, false, QStringLiteral("Forbidden link")).isEmpty(); });
     refused([&] { return editor.updateLink(QStringLiteral("l1"), a, d, false, QStringLiteral("Forbidden update")); });
     refused([&] { return editor.removeLink(QStringLiteral("l1")); });
     CHECK(Json::parse(editor.nodeJson(a).constData()) == record(before, "nodes", a));
+    QSignalSpy undo(&editor, &Editor::undoAvailable), redo(&editor, &Editor::redoAvailable);
+    CHECK(editor.setExpanded(a, false));
+    CHECK(texts(editor, QStringLiteral("Delta")).isEmpty());
+    CHECK(editAction(editor, "toggleExpanded").isEnabled());
+    shortcut(editor, Qt::Key_Space);
+    CHECK(!texts(editor, QStringLiteral("Delta")).isEmpty());
+    trigger(editor, "toggleExpanded");
+    CHECK(texts(editor, QStringLiteral("Delta")).isEmpty());
+    CHECK(editor.setExpanded(a, true));
+    CHECK(exported(editor) == before && changed.isEmpty() && undo.isEmpty() && redo.isEmpty());
 
     dialogs({}, [&] {
         for (const char *name : {"addChild", "addSibling", "addSiblingBefore", "editSelection", "deleteSelection",
-                                 "editTopic", "moveNode", "moveUp", "moveDown", "toggleExpanded", "addLink", "editLink",
+                                 "editTopic", "moveNode", "moveUp", "moveDown", "addLink", "editLink",
                                  "toggleBold", "toggleItalic", "resetStyle", "textColor", "fillColor", "editTags", "editIcons", "editNote"}) {
             auto &action = editAction(editor, name);
             CHECK(!action.isEnabled());
             action.trigger();
         }
-        for (Qt::Key key : {Qt::Key_Tab, Qt::Key_Insert, Qt::Key_Return, Qt::Key_Delete, Qt::Key_Space,
+        for (Qt::Key key : {Qt::Key_Tab, Qt::Key_Insert, Qt::Key_Return, Qt::Key_Delete,
                            Qt::Key_F2, Qt::Key_E, Qt::Key_B, Qt::Key_I, Qt::Key_R}) shortcut(editor, key);
         for (Qt::Key key : {Qt::Key_M, Qt::Key_L, Qt::Key_Up, Qt::Key_Down}) shortcut(editor, key, Qt::ControlModifier);
     });
@@ -6981,7 +7145,10 @@ static void read_only_case() {
     const QPoint expansion = view.mapFromScene(QPointF(parent.right() - 15, parent.center().y()));
     QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, expansion);
     pump();
-    CHECK(record(exported(editor), "nodes", a).at("expanded") == true);
+    CHECK(texts(editor, QStringLiteral("Delta")).isEmpty());
+    CHECK(exported(editor) == before && changed.isEmpty() && undo.isEmpty() && redo.isEmpty());
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, expansion);
+    pump();
     CHECK(!texts(editor, QStringLiteral("Delta")).isEmpty());
     const QPoint from = labelPoint(editor, QStringLiteral("Delta"));
     const QPoint to = labelPoint(editor, QStringLiteral("Beta"));
@@ -7190,13 +7357,13 @@ static void inline_edit_case() {
         const QPoint circle = graphics(editor).mapFromScene(QPointF(parent.right() - 15, parent.center().y()));
         QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, circle);
         pump();
-        CHECK(!record(exported(editor), "nodes", QStringLiteral("a")).at("expanded").get<bool>());
-        CHECK(activeTopicInput(editor) == nullptr && changed.size() == 2);
+        CHECK(texts(editor, QStringLiteral("Delta")).isEmpty());
+        CHECK(activeTopicInput(editor) == nullptr && changed.size() == 1);
         CHECK(editor.selectNode(QStringLiteral("a")));
         const Json unchanged = exported(editor);
         shortcut(editor, Qt::Key_F2);
         topicKey(editor, Qt::Key_Return, Qt::ControlModifier);
-        CHECK(exported(editor) == unchanged && changed.size() == 2);
+        CHECK(exported(editor) == unchanged && changed.size() == 1);
     }
     {
         Editor editor;
@@ -7227,7 +7394,7 @@ static void inline_edit_case() {
         topicInput(editor).setPlainText(QStringLiteral("Before programmatic action"));
         trigger(editor, "toggleExpanded");
         CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "Before programmatic action");
-        CHECK(!record(exported(editor), "nodes", QStringLiteral("a")).at("expanded").get<bool>() && changed.size() == 3);
+        CHECK(texts(editor, QStringLiteral("Delta")).isEmpty() && changed.size() == 2);
         shortcut(editor, Qt::Key_Home);
         CHECK(editor.selectedNodeId() == QStringLiteral("r"));
     }
@@ -7252,7 +7419,7 @@ static void inline_edit_case() {
         topicKey(editor, Qt::Key_Return, Qt::AltModifier);
         CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == "Second acceptance binding" && changed.size() == 2);
         shortcut(editor, Qt::Key_Space);
-        CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded").get<bool>() && changed.size() == 2);
+        CHECK(!texts(editor, QStringLiteral("Delta")).isEmpty() && changed.size() == 2);
         shortcut(editor, Qt::Key_H, Qt::AltModifier);
         CHECK(editor.selectedNodeId() == QStringLiteral("r"));
         CHECK(editor.selectNode(QStringLiteral("a")));
@@ -7350,7 +7517,7 @@ static void inline_edit_case() {
         topicInput(editor).setPlainText(QStringLiteral("Cancel when hidden by collapse"));
         CHECK(editor.setExpanded(QStringLiteral("a"), false));
         pump();
-        CHECK(activeTopicInput(editor) == nullptr && changed.size() == 1);
+        CHECK(activeTopicInput(editor) == nullptr && changed.isEmpty());
         CHECK(record(exported(editor), "nodes", QStringLiteral("d")).at("topic") == "Delta");
     }
     {
@@ -7707,6 +7874,60 @@ static void shortcut_help_case() {
 }
 
 static void configuration_case() {
+    for (int levels : {1, 2, 4, 10, 0, -1}) {
+        m3::qt::EditorConfig config;
+        config.initialVisibleLevels = levels;
+        Editor editor(config);
+        config.initialVisibleLevels = 1; // Construction copies policy; later host changes are irrelevant.
+        CHECK(editor.loadJson(encoded(fiveLevelFixture())));
+        showEditor(editor);
+        visibleLevels(editor, levels <= 0 ? 5 : std::min(levels, 5));
+        CHECK(exported(editor) == nativeDocument(fiveLevelFixture()));
+    }
+    // Legacy folding is accepted on complete records but never overrides editor policy.
+    for (bool legacy : {false, true}) {
+        Json native = fiveLevelFixture();
+        for (auto &node : native["nodes"]) node["expanded"] = node.at("id") == "r" ? legacy : !legacy;
+        Json tree;
+        for (const char *id : {"i", "h", "g", "c", "r"}) {
+            Json parent = record(native, "nodes", QString::fromLatin1(id));
+            parent.erase("children");
+            if (!tree.is_null()) parent["children"] = Json::array({tree});
+            tree = std::move(parent);
+        }
+        Json mindElixir{{"nodeData", tree}};
+        for (Json *node = &mindElixir["nodeData"]; node;) {
+            if (node->contains("note")) {
+                (*node)["memo"] = (*node)["note"];
+                node->erase("note");
+            }
+            node = node->contains("children") ? &(*node)["children"][0] : nullptr;
+        }
+        for (const Json &input : {native, tree, mindElixir}) {
+            Editor editor;
+            CHECK(editor.loadJson(encoded(input)));
+            showEditor(editor);
+            for (int level = 1; level <= 5; ++level)
+                CHECK(texts(editor, QStringLiteral("Level %1").arg(level)).isEmpty() == (level > 3));
+            const Json saved = exported(editor);
+            CHECK(saved.at("nodes").size() == 5 && editor.outline().size() == 5);
+            for (const auto &node : saved.at("nodes")) CHECK(!node.contains("expanded"));
+            CHECK(record(saved, "nodes", QStringLiteral("g")).at("children") == Json({"h"}));
+            CHECK(record(saved, "nodes", QStringLiteral("i")).at("note") == "Retained hidden note");
+            rejectUnchanged(editor, [&] { return editor.updateNode(QStringLiteral("g"), encoded(Json{{"expanded", true}})); });
+            rejectUnchanged(editor, [&] { return editor.updateNode(QStringLiteral("g"), encoded(Json{{"topic", "Rejected"}, {"expanded", false}})); });
+            CHECK(editor.setExpanded(QStringLiteral("g"), true));
+            CHECK(!texts(editor, QStringLiteral("Level 4")).isEmpty());
+            CHECK(texts(editor, QStringLiteral("Level 5")).isEmpty());
+            Json invalid = input;
+            if (invalid.contains("nodes")) invalid["nodes"][0]["expanded"] = "false";
+            else if (invalid.contains("nodeData")) invalid["nodeData"]["expanded"] = "false";
+            else invalid["expanded"] = "false";
+            rejectUnchanged(editor, [&] { return editor.loadJson(encoded(invalid)); });
+            CHECK(!texts(editor, QStringLiteral("Level 4")).isEmpty());
+            CHECK(texts(editor, QStringLiteral("Level 5")).isEmpty());
+        }
+    }
     const Json styledDocument = Json::parse(R"({"schemaVersion":1,"rootId":"r","nodes":[
         {"id":"r","topic":"Configured root\nSecond line","children":["a","b"],"tags":["style-tag"],"icons":["ABC"]},
         {"id":"a","topic":"Inherited text\nSecond line"},
@@ -8028,19 +8249,19 @@ static void configuration_case() {
     CHECK(exported(editor) == renamed && changed.size() == 5);
     CHECK(editor.selectNode(QStringLiteral("a")));
     shortcut(editor, Qt::Key_Space);
-    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == true);
+    CHECK(!texts(editor, QStringLiteral("Delta")).isEmpty());
     CHECK(changed.size() == 5);
     trigger(editor, "toggleExpanded");
-    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == false);
-    CHECK(changed.size() == 6);
+    CHECK(texts(editor, QStringLiteral("Delta")).isEmpty());
+    CHECK(changed.size() == 5);
     CHECK(editor.selectNode(child));
     dialogs({}, [&] { shortcut(editor, Qt::Key_D, Qt::ControlModifier); });
     CHECK(!hasRecord(exported(editor), "nodes", child) && !hasRecord(exported(editor), "nodes", grandchild));
-    CHECK(editor.selectedNodeId() == QStringLiteral("r") && changed.size() == 7);
+    CHECK(editor.selectedNodeId() == QStringLiteral("r") && changed.size() == 6);
     // Deletion confirmation policy never permits removing the root.
     const Json retained = exported(editor);
     dialogs({}, [&] { shortcut(editor, Qt::Key_D, Qt::ControlModifier); });
-    CHECK(exported(editor) == retained && changed.size() == 7);
+    CHECK(exported(editor) == retained && changed.size() == 6);
     Editor independent;
     CHECK(independent.loadJson(encoded(editorFixture())));
     showEditor(independent);
@@ -8050,7 +8271,7 @@ static void configuration_case() {
     topicInput(independent).setPlainText(QStringLiteral("Default binding"));
     topicKey(independent, Qt::Key_Return);
     CHECK(record(exported(independent), "nodes", independent.selectedNodeId()).at("topic") == "Default binding");
-    CHECK(exported(editor) == retained && changed.size() == 7);
+    CHECK(exported(editor) == retained && changed.size() == 6);
 }
 
 static void node_shortcuts_case() {
@@ -8759,22 +8980,22 @@ static void shortcuts_case() {
     shortcut(editor, Qt::Key_Right);
     CHECK(editor.selectedNodeId() == QStringLiteral("a"));
     shortcut(editor, Qt::Key_Space);
-    CHECK(changed.size() == 9);
+    CHECK(changed.size() == 8);
     shortcut(editor, Qt::Key_Right);
     CHECK(editor.selectedNodeId() == QStringLiteral("a") && editor.lastError().isEmpty());
     shortcut(editor, Qt::Key_Space);
-    CHECK(exported(editor) == inserted && changed.size() == 10);
+    CHECK(exported(editor) == inserted && changed.size() == 8);
     CHECK(editor.selectLink(QStringLiteral("l1")));
     shortcut(editor, Qt::Key_Home);
     CHECK(editor.selectedNodeId() == QStringLiteral("r") && editor.selectedLinkId().isEmpty());
     shortcut(editor, Qt::Key_Escape);
     CHECK(editor.selectedNodeId().isEmpty() && editor.selectedLinkId().isEmpty());
     dialogs({}, [&] { shortcut(editor, Qt::Key_Return); shortcut(editor, Qt::Key_Tab); });
-    CHECK(exported(editor) == inserted && changed.size() == 10);
+    CHECK(exported(editor) == inserted && changed.size() == 8);
     CHECK(editor.selectNode(QStringLiteral("a")));
     CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
     CHECK(editor.layoutDirection() == Editor::LayoutDirection::Right);
-    CHECK(editor.selectedNodeId() == QStringLiteral("a") && changed.size() == 10);
+    CHECK(editor.selectedNodeId() == QStringLiteral("a") && changed.size() == 8);
     auto &view = graphics(editor);
     shortcut(editor, Qt::Key_0, Qt::ControlModifier);
     CHECK(std::abs(view.transform().m11() - 1.0) < 1e-6);
@@ -8782,7 +9003,7 @@ static void shortcuts_case() {
     CHECK(std::abs(view.transform().m11() - 1.2) < 1e-6);
     shortcut(editor, Qt::Key_Minus, Qt::ControlModifier);
     CHECK(std::abs(view.transform().m11() - 1.0) < 1e-6);
-    CHECK(exported(editor) == inserted && changed.size() == 10);
+    CHECK(exported(editor) == inserted && changed.size() == 8);
 }
 
 static void controls_case() {
@@ -8884,7 +9105,6 @@ static void controls_case() {
 
     CHECK(editor.selectNode(QStringLiteral("a")));
     shortcut(editor, Qt::Key_Space);
-    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == false);
     CHECK(texts(editor, QStringLiteral("Double click topic")).isEmpty());
     CHECK(texts(editor, QStringLiteral("Delta")).isEmpty());
     const auto foldedNodes = checkOutline({{rootTopic, 0}, {QStringLiteral("Alpha"), 1},
@@ -8892,11 +9112,10 @@ static void controls_case() {
     CHECK(foldedNodes == std::vector<QRectF>({expandedNodes[0], expandedNodes[1], expandedNodes[4], expandedNodes[5]}));
     CHECK(editor.selectedNodeId() == QStringLiteral("a"));
     shortcut(editor, Qt::Key_Space);
-    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == true);
     CHECK(!texts(editor, QStringLiteral("Double click topic")).isEmpty());
     CHECK(checkOutline(expandedRows) == expandedNodes);
     CHECK(editor.selectedNodeId() == QStringLiteral("a"));
-    CHECK(changed.size() == 6);
+    CHECK(changed.size() == 4);
 
     CHECK(editor.selectNode(QStringLiteral("d")));
     dialogs({[&](QDialog *dialog) {
@@ -8911,7 +9130,7 @@ static void controls_case() {
     }}, [&] { shortcut(editor, Qt::Key_M, Qt::ControlModifier); });
     CHECK(record(exported(editor), "nodes", QStringLiteral("b")).at("children") == Json({"d"}));
     CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("children") == Json({utf8(added)}));
-    CHECK(editor.selectedNodeId() == QStringLiteral("d") && changed.size() == 7);
+    CHECK(editor.selectedNodeId() == QStringLiteral("d") && changed.size() == 5);
     CHECK(editor.selectNode(QStringLiteral("c")));
     dialogs({[&](QDialog *dialog) {
         auto *parent = dialog->findChild<QComboBox *>(QStringLiteral("newParent"));
@@ -8952,7 +9171,7 @@ static void controls_case() {
     CHECK(exported(editor) == beforeMoveCancel && changed.size() == moveCount);
 
     shortcut(editor, Qt::Key_Space); // Keep a hidden endpoint in the picker.
-    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("expanded") == false);
+    CHECK(texts(editor, QStringLiteral("Double click topic")).isEmpty());
     CHECK(editor.selectNode(QStringLiteral("b")));
     const Json beforeLink = exported(editor);
     dialogs({[&](QDialog *dialog) {
@@ -9040,23 +9259,21 @@ static void controls_case() {
     QSignalSpy collapsedChanges(&collapsed, &Editor::documentChanged);
     shortcut(collapsed, Qt::Key_Insert);
     const QString newChild = collapsed.selectedNodeId();
-    CHECK(record(exported(collapsed), "nodes", newChild).at("topic") == "" && collapsedChanges.size() == 2);
+    CHECK(record(exported(collapsed), "nodes", newChild).at("topic") == "" && collapsedChanges.size() == 1);
     topicInput(collapsed).setPlainText(QStringLiteral("Added while collapsed"));
     topicKey(collapsed, Qt::Key_Return);
     const Json collapsedDoc = exported(collapsed);
     CHECK(record(collapsedDoc, "nodes", QStringLiteral("a")).at("children").back() == utf8(newChild));
     CHECK(record(collapsedDoc, "nodes", newChild).at("topic") == "Added while collapsed");
-    CHECK(record(collapsedDoc, "nodes", QStringLiteral("a")).at("expanded") == true);
-    CHECK(collapsed.selectedNodeId() == newChild && collapsedChanges.size() == 3);
+    CHECK(collapsed.selectedNodeId() == newChild && collapsedChanges.size() == 2);
     CHECK(!texts(collapsed, QStringLiteral("Added while collapsed")).isEmpty());
     const QRectF affordance = topicRect(collapsed, QStringLiteral("Alpha"));
     for (qreal x : {affordance.right() - 9, affordance.left() + 9}) {
-        if (!record(exported(collapsed), "nodes", QStringLiteral("a")).at("expanded").get<bool>()) break;
+        if (texts(collapsed, QStringLiteral("Added while collapsed")).isEmpty()) break;
         const QPoint point = graphics(collapsed).mapFromScene(QPointF(x, affordance.center().y()));
         QTest::mouseClick(graphics(collapsed).viewport(), Qt::LeftButton, Qt::NoModifier, point);
         pump();
     }
-    CHECK(record(exported(collapsed), "nodes", QStringLiteral("a")).at("expanded") == false);
     CHECK(texts(collapsed, QStringLiteral("Added while collapsed")).isEmpty());
     rejectUnchanged(collapsed, [&] { return collapsed.removeNode(QStringLiteral("r")); });
     const QString shownError = collapsed.lastError();
@@ -9644,8 +9861,6 @@ static void demo_files_case() {
     CHECK(window.windowTitle().contains(QStringLiteral("Untitled")));
     CHECK(!texts(editor, QString::fromUtf8("Planning 世界")).isEmpty());
     CHECK(!texts(editor, QStringLiteral("Review")).isEmpty());
-    CHECK(QRectF(graphics(editor).viewport()->rect()).adjusted(-3, -3, 3, 3)
-              .contains(graphics(editor).mapFromScene(renderedBounds(editor)).boundingRect()));
     CHECK(window.openFile(inputPath));
     CHECK(sameFile(window.currentFilePath(), inputPath));
     CHECK(exported(editor) == fixtureDoc && !window.isWindowModified());
@@ -9833,18 +10048,18 @@ static Json foldingFixture() {
         "schemaVersion":1,"rootId":"53f7ebf31cde25df",
         "crossLinks":[{"directed":false,"icon":"","id":"5203211b-f5a3-4dc5-b0cf-2207db4c4555","source":"54c54ce77c9fb334","style":{},"target":"53f7ebf31cde25df","topic":"Very good"}],
         "nodes":[
-            {"children":["53f7ee14ad5cfe73","53f814646ada783d","54d500c5bf4fb1b3","0907a3dc-10ba-4c96-9faa-d426bd57915d"],"expanded":true,"hyperLink":"","icons":[],"id":"53f7ebf31cde25df","image":null,"note":"","style":{"background":"#8e44ad","color":"#e74c3c","fontStyle":"italic","fontWeight":"bold"},"tags":[],"topic":"VNote"},
-            {"children":[],"expanded":true,"hyperLink":"","icons":[],"id":"53f7ee14ad5cfe73","image":null,"note":"","style":{},"tags":[],"topic":"haha"},
-            {"children":["54c54ce77c9fb334","57fe23a342aa9934","059e9ab4-a2fc-4f5d-a153-418057246bc4"],"expanded":true,"hyperLink":"","icons":["\ud83d\ude03"],"id":"53f814646ada783d","image":null,"note":"","style":{"background":"#95a5a6","color":"#16a085"},"tags":[],"topic":"haha"},
-            {"children":[],"expanded":true,"hyperLink":"","icons":[],"id":"54c54ce77c9fb334","image":null,"note":"","style":{"background":"#2ecc71","color":"#2980b9"},"tags":[],"topic":"haha"},
-            {"children":["57fe23f7c15f111a","57fe25185cc996fe"],"expanded":true,"hyperLink":"","icons":[],"id":"57fe23a342aa9934","image":null,"note":"","style":{"color":"#f39c12"},"tags":[],"topic":"new node"},
-            {"children":[],"expanded":true,"hyperLink":"https://bing.com","icons":[],"id":"57fe23f7c15f111a","image":null,"note":"Very interesting question here is about the samkkdjfkdljfkjdf","style":{},"tags":[],"topic":"haha"},
-            {"children":["57fe25b07a7a6eef","57fe263af1d4a0ce"],"expanded":true,"hyperLink":"","icons":[],"id":"57fe25185cc996fe","image":null,"note":"","style":{},"tags":[],"topic":"new node"},
-            {"children":[],"expanded":true,"hyperLink":"","icons":[],"id":"57fe25b07a7a6eef","image":null,"note":"","style":{},"tags":[],"topic":"new node"},
-            {"children":[],"expanded":true,"hyperLink":"","icons":[],"id":"57fe263af1d4a0ce","image":null,"note":"","style":{},"tags":[],"topic":"new node"},
-            {"children":[],"expanded":true,"hyperLink":"","icons":[],"id":"059e9ab4-a2fc-4f5d-a153-418057246bc4","image":null,"note":"","style":{},"tags":[],"topic":"It is very simple question"},
-            {"children":[],"expanded":true,"hyperLink":"","icons":["\ud83d\ude06","\ud83d\ude02"],"id":"54d500c5bf4fb1b3","image":null,"note":"","style":{"fontStyle":"normal","fontWeight":"normal"},"tags":[],"topic":"a very simple question"},
-            {"children":[],"expanded":true,"hyperLink":"","icons":[],"id":"0907a3dc-10ba-4c96-9faa-d426bd57915d","image":null,"note":"","style":{"branchColor":"#e74c3c"},"tags":[],"topic":""}
+            {"children":["53f7ee14ad5cfe73","53f814646ada783d","54d500c5bf4fb1b3","0907a3dc-10ba-4c96-9faa-d426bd57915d"],"hyperLink":"","icons":[],"id":"53f7ebf31cde25df","image":null,"note":"","style":{"background":"#8e44ad","color":"#e74c3c","fontStyle":"italic","fontWeight":"bold"},"tags":[],"topic":"VNote"},
+            {"children":[],"hyperLink":"","icons":[],"id":"53f7ee14ad5cfe73","image":null,"note":"","style":{},"tags":[],"topic":"haha"},
+            {"children":["54c54ce77c9fb334","57fe23a342aa9934","059e9ab4-a2fc-4f5d-a153-418057246bc4"],"hyperLink":"","icons":["\ud83d\ude03"],"id":"53f814646ada783d","image":null,"note":"","style":{"background":"#95a5a6","color":"#16a085"},"tags":[],"topic":"haha"},
+            {"children":[],"hyperLink":"","icons":[],"id":"54c54ce77c9fb334","image":null,"note":"","style":{"background":"#2ecc71","color":"#2980b9"},"tags":[],"topic":"haha"},
+            {"children":["57fe23f7c15f111a","57fe25185cc996fe"],"hyperLink":"","icons":[],"id":"57fe23a342aa9934","image":null,"note":"","style":{"color":"#f39c12"},"tags":[],"topic":"new node"},
+            {"children":[],"hyperLink":"https://bing.com","icons":[],"id":"57fe23f7c15f111a","image":null,"note":"Very interesting question here is about the samkkdjfkdljfkjdf","style":{},"tags":[],"topic":"haha"},
+            {"children":["57fe25b07a7a6eef","57fe263af1d4a0ce"],"hyperLink":"","icons":[],"id":"57fe25185cc996fe","image":null,"note":"","style":{},"tags":[],"topic":"new node"},
+            {"children":[],"hyperLink":"","icons":[],"id":"57fe25b07a7a6eef","image":null,"note":"","style":{},"tags":[],"topic":"new node"},
+            {"children":[],"hyperLink":"","icons":[],"id":"57fe263af1d4a0ce","image":null,"note":"","style":{},"tags":[],"topic":"new node"},
+            {"children":[],"hyperLink":"","icons":[],"id":"059e9ab4-a2fc-4f5d-a153-418057246bc4","image":null,"note":"","style":{},"tags":[],"topic":"It is very simple question"},
+            {"children":[],"hyperLink":"","icons":["\ud83d\ude06","\ud83d\ude02"],"id":"54d500c5bf4fb1b3","image":null,"note":"","style":{"fontStyle":"normal","fontWeight":"normal"},"tags":[],"topic":"a very simple question"},
+            {"children":[],"hyperLink":"","icons":[],"id":"0907a3dc-10ba-4c96-9faa-d426bd57915d","image":null,"note":"","style":{"branchColor":"#e74c3c"},"tags":[],"topic":""}
         ]
     })json");
 }
@@ -9856,7 +10071,9 @@ static void folding_positions() {
     const Json input = foldingFixture();
     for (auto direction : {Editor::LayoutDirection::Balanced, Editor::LayoutDirection::Right,
                            Editor::LayoutDirection::Left, Editor::LayoutDirection::Outline}) {
-        Editor editor;
+        m3::qt::EditorConfig config;
+        config.initialVisibleLevels = 0;
+        Editor editor(config);
         CHECK(editor.loadJson(encoded(input)));
         CHECK(editor.setLayoutDirection(direction));
         showEditor(editor, QSize(1101, 901));
@@ -9905,16 +10122,22 @@ static void folding_positions() {
             stable(true);
             CHECK(exported(editor) == original);
         }
-        CHECK(editor.undo()); // Undo the final root expansion.
+        CHECK(!editor.canUndo() && !editor.canRedo());
+        CHECK(editor.updateNode(root, encoded(Json{{"note", "Semantic history"}})));
+        CHECK(editor.setExpanded(branch, false));
         stable(false);
+        CHECK(editor.undo() && exported(editor) == original);
+        stable(false);
+        CHECK(texts(editor, QStringLiteral("It is very simple question")).isEmpty());
         CHECK(editor.redo());
+        stable(false);
+        CHECK(editor.setExpanded(branch, true));
         stable(true);
 
-        // Loading the same folded document reserves the same hidden geometry.
-        Json folded = input;
-        for (auto &node : folded["nodes"]) if (qs(node["id"]) == branch) node["expanded"] = false;
-        Editor reopened;
-        CHECK(reopened.loadJson(encoded(folded)));
+        // Reopening and explicitly folding reserves the same hidden geometry.
+        Editor reopened(config);
+        CHECK(reopened.loadJson(encoded(input)));
+        CHECK(reopened.setExpanded(branch, false));
         CHECK(reopened.setLayoutDirection(direction));
         showEditor(reopened);
         CHECK(topicRect(reopened, branchIcon) == topicRect(editor, branchIcon));
@@ -9937,10 +10160,10 @@ static void folding_positions() {
     CHECK(view.viewport()->rect().contains(circle));
     QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, circle);
     pump();
-    CHECK(!record(exported(editor), "nodes", branch).at("expanded").get<bool>());
+    CHECK(texts(editor, QStringLiteral("It is very simple question")).isEmpty());
     CHECK(QLineF(view.viewportTransform().map(topicRect(editor, branchIcon).center()), before).length() <= 1.0);
     shortcut(editor, Qt::Key_Space);
-    CHECK(record(exported(editor), "nodes", branch).at("expanded").get<bool>());
+    CHECK(!texts(editor, QStringLiteral("It is very simple question")).isEmpty());
     CHECK(QLineF(view.viewportTransform().map(topicRect(editor, branchIcon).center()), before).length() <= 1.0);
     CHECK(std::abs(editor.zoomFactor() - 1.375) < 1e-6);
 }
@@ -10309,15 +10532,17 @@ static void history_commands_case() {
         CHECK(node.at("image").at("url") == utf8(embedded));
     });
     CHECK(editor.selectNode(d));
-    roundTrip([&] {
+    {
+        const QByteArray before = editor.toJson();
+        const auto count = changed.size();
+        QSignalSpy undo(&editor, &Editor::undoAvailable), redo(&editor, &Editor::redoAvailable);
         CHECK(editor.setExpanded(a, false));
-        CHECK(editor.selectedNodeId() == a);
-        CHECK(record(exported(editor), "nodes", a).at("expanded") == false);
-    });
-    roundTrip([&] {
+        CHECK(editor.selectedNodeId() == a && texts(editor, QStringLiteral("Delta")).isEmpty());
         shortcut(editor, Qt::Key_Space);
-        CHECK(record(exported(editor), "nodes", a).at("expanded") == true);
-    });
+        CHECK(!texts(editor, QStringLiteral("Delta")).isEmpty());
+        CHECK(editor.toJson() == before && changed.size() == count);
+        CHECK(editor.canUndo() && !editor.canRedo() && undo.isEmpty() && redo.isEmpty());
+    }
     QString createdLink;
     roundTrip([&] {
         createdLink = editor.addLink(a, b, false, QStringLiteral("Created link"));
@@ -10523,7 +10748,11 @@ static void history_availability_case() {
     CHECK(editor.renameNode(a, QStringLiteral("First revision")));
     CHECK(editor.updateNode(a, encoded(Json{{"topic", "First revision"}, {"style", Json::object()}})));
     CHECK(editor.moveNode(QStringLiteral("c"), root, 2));
+    CHECK(editor.setExpanded(a, false));
+    CHECK(texts(editor, QStringLiteral("Delta")).isEmpty());
+    availability(true, true, {true}, {true});
     CHECK(editor.setExpanded(a, true));
+    CHECK(!texts(editor, QStringLiteral("Delta")).isEmpty());
     CHECK(editor.updateLink(QStringLiteral("l1"), a, b, true, QStringLiteral("Related")));
     CHECK(!editor.moveNode(a, QStringLiteral("d")));
     CHECK(!editor.updateNode(a, QByteArray("{bad")));

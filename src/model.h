@@ -16,7 +16,6 @@ struct Image { std::string url; double width = 0, height = 0; };
 struct Attributes {
     std::string topic, hyperlink, note;
     Json style = Json::object();
-    bool expanded = true;
     std::vector<std::string> tags, icons;
     std::optional<Image> image;
 };
@@ -46,7 +45,7 @@ void remove_link(Model &m, const std::string &id);
 bool valid_utf8(const char *text) noexcept;
 const Node &get_node(const Model &model, const std::string &id);
 const Link &get_link(const Model &model, const std::string &id);
-std::vector<const Node *> preorder(const Model &model, bool visible = false);
+std::vector<const Node *> preorder(const Model &model);
 std::vector<const Link *> sorted_links(const Model &model);
 }
 #endif

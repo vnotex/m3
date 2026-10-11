@@ -32,16 +32,15 @@ const Link &get_link(const Model &m, const std::string &id) {
     require(it != m.links.end(), M3_ERR_NOT_FOUND, "Link not found");
     return it->second;
 }
-std::vector<const Node *> preorder(const Model &m, bool visible) {
+std::vector<const Node *> preorder(const Model &m) {
     std::vector<const Node *> result, pending{&get_node(m, m.root)};
-    if (!visible) result.reserve(m.nodes.size());
+    result.reserve(m.nodes.size());
     while (!pending.empty()) {
         const auto *node = pending.back();
         pending.pop_back();
         result.push_back(node);
-        if (!visible || node->attrs.expanded)
-            for (auto it = node->children.rbegin(); it != node->children.rend(); ++it)
-                pending.push_back(&get_node(m, *it));
+        for (auto it = node->children.rbegin(); it != node->children.rend(); ++it)
+            pending.push_back(&get_node(m, *it));
     }
     return result;
 }

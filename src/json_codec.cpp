@@ -37,7 +37,7 @@ namespace {
 void apply_shared_attributes(Attributes &a, const Json &j) {
     if (j.contains("topic")) a.topic = j["topic"].get<std::string>();
     if (j.contains("hyperLink")) a.hyperlink = j["hyperLink"].get<std::string>();
-    if (j.contains("expanded")) a.expanded = j["expanded"].get<bool>();
+    if (j.contains("expanded")) schema(j["expanded"].is_boolean());
     if (j.contains("style")) { schema(j["style"].is_object()); a.style = j["style"]; }
     if (j.contains("tags")) a.tags = j["tags"].get<std::vector<std::string>>();
     if (j.contains("icons")) a.icons = j["icons"].get<std::vector<std::string>>();
@@ -162,7 +162,7 @@ Link decode_link(const Json &j) {
     return l;
 }
 Attributes patch_attributes(const Attributes &original, const Json &patch) {
-    keys(patch, {"topic", "note", "hyperLink", "expanded", "style", "tags", "icons", "image"});
+    keys(patch, {"topic", "note", "hyperLink", "style", "tags", "icons", "image"});
     Attributes result = original;
     apply_attributes(result, patch);
     return result;
@@ -220,7 +220,7 @@ Json encode_node(const Node &n) {
     const auto &a = n.attrs;
     Json image = nullptr;
     if (a.image) image = {{"url", a.image->url}, {"width", a.image->width}, {"height", a.image->height}};
-    return {{"id", n.id}, {"topic", a.topic}, {"style", a.style}, {"expanded", a.expanded},
+    return {{"id", n.id}, {"topic", a.topic}, {"style", a.style},
         {"tags", a.tags}, {"icons", a.icons}, {"hyperLink", a.hyperlink}, {"image", image},
         {"note", a.note}, {"children", n.children}};
 }

@@ -90,6 +90,7 @@ private:
     std::vector<HistoryState> history;
     size_t historyCursor = 0;
     size_t undoLimit;
+    const int initialVisibleLevels;
     quint64 documentRevision = 0;
     bool undoWasAvailable = false, redoWasAvailable = false, restoringHistory = false;
     void notifyHistoryAvailability();
@@ -113,7 +114,7 @@ private:
     void scheduleImageRequests();
     void scheduleImageRefresh();
     QSet<QString> visibleNodes, visibleLinks;
-    QSet<QString> temporaryExpanded;
+    QSet<QString> collapsedNodes;
     struct FindTarget { QString id; bool link = false; };
     QString findQuery;
     Qt::CaseSensitivity findSensitivity = Qt::CaseSensitive;
@@ -129,14 +130,13 @@ private:
     void success();
     QByteArray snapshot(const M3Mindmap *map);
     Presentation prepare(const QByteArray &json,
-                         MindMapEditor::LayoutDirection requested, QSet<QString> &expansions,
-                         bool useImageCache = true);
+                         MindMapEditor::LayoutDirection requested, QSet<QString> &collapsed,
+                         bool useImageCache = true, int initialLevels = 0);
     void install(Presentation presentation, bool resetCamera);
     bool replace(Map candidate);
     template<typename Operation>
     bool transact(Operation &&operation,
-                  const QString &preferredNode = {}, const QString &preferredLink = {},
-                  const QString &clearedExpansion = {});
+                  const QString &preferredNode = {}, const QString &preferredLink = {});
     bool finishChange(std::optional<Presentation> prepared = {}, bool resetCamera = false, bool restoring = false,
                       const QString &preferredNode = {}, const QString &preferredLink = {});
     void selection(QStringList nodes, QString link, bool ensureVisible = true);

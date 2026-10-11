@@ -131,12 +131,12 @@ Json layout_model(const Model &m, const M3NodeSize *sizes, size_t count, const M
         const auto &n = get_node(m, id);
         valid(measurements.emplace(&n, &sizes[i]).second);
     }
-    const auto visible = preorder(m, true);
+    const auto nodes = preorder(m);
     std::unordered_map<std::string_view, size_t> indexes;
-    indexes.reserve(visible.size());
+    indexes.reserve(nodes.size());
     std::vector<M3LayoutNode> input;
-    input.reserve(visible.size());
-    for (const auto *n : visible) {
+    input.reserve(nodes.size());
+    for (const auto *n : nodes) {
         auto measured = measurements.find(n);
         valid(measured != measurements.end());
         const auto *size = measured->second;
@@ -148,17 +148,16 @@ Json layout_model(const Model &m, const M3NodeSize *sizes, size_t count, const M
     auto rectangle = [](const M3Rect &r) -> Json {
         return {{"x",r.x},{"y",r.y},{"width",r.width},{"height",r.height}};
     };
-    Json nodes = Json::array(), edges = Json::array(), links = Json::array();
-    for (size_t i = 0; i < visible.size(); ++i) {
-        const auto *n = visible[i];
+    Json records = Json::array(), edges = Json::array(), links = Json::array();
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        const auto *n = nodes[i];
         auto record = rectangle(geometry.rects[i]);
         record["id"] = n->id;
-        nodes.push_back(std::move(record));
+        records.push_back(std::move(record));
         if (!n->parent.empty()) edges.push_back({{"source",n->parent},{"target",n->id}});
     }
-    for (const auto *l : sorted_links(m))
-        if (indexes.count(l->source) && indexes.count(l->target)) links.push_back(encode_link(*l));
-    return {{"nodes",std::move(nodes)},{"treeEdges",std::move(edges)},
+    for (const auto *l : sorted_links(m)) links.push_back(encode_link(*l));
+    return {{"nodes",std::move(records)},{"treeEdges",std::move(edges)},
         {"crossLinks",std::move(links)},{"bounds",rectangle(geometry.bounds)}};
 }
 }
