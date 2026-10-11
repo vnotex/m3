@@ -291,6 +291,14 @@
         <translation>다시 실행</translation>
     </message>
     <message>
+        <source>Add Orphan Node</source>
+        <translation>독립 노드 추가</translation>
+    </message>
+    <message>
+        <source>Detach Subtree</source>
+        <translation>하위 트리 분리</translation>
+    </message>
+    <message>
         <location line="+1"/>
         <source>Add Child</source>
         <translation>하위 노드 추가</translation>

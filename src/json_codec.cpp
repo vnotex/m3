@@ -176,13 +176,13 @@ Link patch_link(const Link &original, const Json &patch) {
 Model decode_document(const Json &j) {
     if (j.is_object() && j.contains("nodeData")) {
         schema(!j.contains("schemaVersion") && !j.contains("rootId") &&
-            !j.contains("nodes") && !j.contains("crossLinks"));
+            !j.contains("nodes") && !j.contains("crossLinks") && !j.contains("orphanIds"));
         return decode_mind_elixir(j);
     }
     if (j.is_object() && !j.contains("schemaVersion") && !j.contains("rootId") &&
-        !j.contains("nodes") && !j.contains("crossLinks") && !j.contains("linkData"))
+        !j.contains("nodes") && !j.contains("crossLinks") && !j.contains("orphanIds") && !j.contains("linkData"))
         return decode_tree(j, false);
-    keys(j, {"schemaVersion", "rootId", "nodes", "crossLinks"});
+    keys(j, {"schemaVersion", "rootId", "orphanIds", "nodes", "crossLinks"});
     schema(j.at("schemaVersion").is_number_integer() && j["schemaVersion"] == 1);
     Model m;
     m.root = identifier(j.at("rootId"));
@@ -194,16 +194,21 @@ Model decode_document(const Json &j) {
         schema(m.nodes.emplace(std::move(id), std::move(n)).second);
     }
     schema(m.nodes.count(m.root) == 1);
+    m.orphans = j.value("orphanIds", std::vector<std::string>{});
+    std::unordered_set<std::string_view> orphan_ids;
+    orphan_ids.reserve(m.orphans.size());
+    for (const auto &id : m.orphans)
+        schema(id != m.root && m.nodes.count(id) && orphan_ids.insert(id).second);
     for (auto &entry : m.nodes) for (const auto &id : entry.second.children) {
         auto child = m.nodes.find(id);
         schema(child != m.nodes.end());
-        schema(id != m.root && id != entry.first && child->second.parent.empty());
+        schema(id != m.root && !orphan_ids.count(id) && id != entry.first && child->second.parent.empty());
         child->second.parent = entry.first;
     }
     for (const auto &entry : m.nodes)
-        schema(entry.first == m.root || !entry.second.parent.empty());
-    // Parent uniqueness prevents any reachable cycle. Disconnected cycles are
-    // rejected by the root traversal's count, without recursion.
+        schema(entry.first == m.root || orphan_ids.count(entry.first) || !entry.second.parent.empty());
+    // Parent uniqueness and parentless roots prevent reachable cycles.
+    // Disconnected cycles are rejected by the forest traversal's count.
     schema(preorder(m).size() == m.nodes.size());
     if (j.contains("crossLinks")) {
         schema(j["crossLinks"].is_array());
@@ -230,8 +235,7 @@ Json encode_link(const Link &l) {
 }
 std::string encode_outline(const Model &m) {
     struct Frame { const Node *node; size_t nextChild = 0; };
-    const auto &root = get_node(m, m.root);
-    std::vector<Frame> pending{{&root}};
+    std::vector<Frame> pending;
     std::string result;
     const auto enter = [&](const Node &node) {
         // Only scalar strings use the JSON serializer: its container traversal recurses.
@@ -241,18 +245,31 @@ std::string encode_outline(const Model &m) {
         result += Json(node.attrs.topic).dump();
         result += ",\"children\":[";
     };
-    enter(root);
-    while (!pending.empty()) {
-        auto &frame = pending.back();
-        if (frame.nextChild == frame.node->children.size()) {
-            result += "]}";
-            pending.pop_back();
-            continue;
+    const auto append_tree = [&](const Node &root) {
+        enter(root);
+        pending.push_back({&root});
+        while (!pending.empty()) {
+            auto &frame = pending.back();
+            if (frame.nextChild == frame.node->children.size()) {
+                result += "]}";
+                pending.pop_back();
+                continue;
+            }
+            if (frame.nextChild != 0) result += ',';
+            const auto &child = get_node(m, frame.node->children[frame.nextChild++]);
+            enter(child);
+            pending.push_back({&child});
         }
-        if (frame.nextChild != 0) result += ',';
-        const auto &child = get_node(m, frame.node->children[frame.nextChild++]);
-        enter(child);
-        pending.push_back({&child});
+    };
+    append_tree(get_node(m, m.root));
+    if (!m.orphans.empty()) {
+        result.pop_back(); // Extend the main root object, not its children.
+        result += ",\"orphans\":[";
+        for (size_t i = 0; i < m.orphans.size(); ++i) {
+            if (i != 0) result += ',';
+            append_tree(get_node(m, m.orphans[i]));
+        }
+        result += "]}";
     }
     return result;
 }
@@ -260,6 +277,8 @@ Json encode_document(const Model &m) {
     Json nodes = Json::array(), links = Json::array();
     for (const auto *n : preorder(m)) nodes.push_back(encode_node(*n));
     for (const auto *l : sorted_links(m)) links.push_back(encode_link(*l));
-    return {{"schemaVersion", 1}, {"rootId", m.root}, {"nodes", std::move(nodes)}, {"crossLinks", std::move(links)}};
+    Json result = {{"schemaVersion", 1}, {"rootId", m.root}, {"nodes", std::move(nodes)}, {"crossLinks", std::move(links)}};
+    if (!m.orphans.empty()) result["orphanIds"] = m.orphans;
+    return result;
 }
 }

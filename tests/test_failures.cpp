@@ -106,6 +106,26 @@ static void outputs() {
     }, m3_string_free);
     CHECK(document(map) == baseline);
 
+    auto forest_input = baseline;
+    forest_input["nodes"][0]["children"] = {"b", "c"};
+    forest_input["orphanIds"] = {"a"};
+    auto forest = load(forest_input);
+    const auto forest_baseline = document(forest);
+    const auto forest_encoded = forest_baseline.dump();
+    output_failures<M3Mindmap>("forest import", [&](M3Mindmap **out) {
+        return m3_mindmap_from_json(forest_encoded.c_str(),out);
+    }, m3_mindmap_destroy);
+    output_failures<char>("forest snapshot", [&](char **out) {
+        return m3_mindmap_to_json(forest.get(),out);
+    }, m3_string_free);
+    output_failures<char>("forest outline", [&](char **out) {
+        return m3_mindmap_get_outline_json(forest.get(),out);
+    }, m3_string_free);
+    output_failures<char>("forest Markdown", [&](char **out) {
+        return m3_mindmap_to_markdown(forest.get(),out);
+    }, m3_string_free, true);
+    CHECK(document(forest) == forest_baseline);
+
     M3Mindmap *out = reinterpret_cast<M3Mindmap *>(1);
     FailAllocations exhausted(0, true);
     const auto status = m3_mindmap_create("r","Root",&out);
@@ -190,6 +210,35 @@ static void mutations() {
     mutation_failures("insert",input,[](M3Mindmap *m) {
         return m3_mindmap_insert_node(m,"r",1,R"({"id":"new","topic":"Inserted"})");
     });
+    mutation_failures("first orphan insert",input,[](M3Mindmap *m) {
+        return m3_mindmap_insert_node(m,"",0,R"({"id":"new","topic":"Orphan"})");
+    });
+    mutation_failures("detach into empty orphan list",input,[&](M3Mindmap *m) {
+        return m3_mindmap_move_node(m,long_id.c_str(),"",0);
+    },true);
+    const std::string long_orphan(96,'o');
+    auto forest = input;
+    forest["nodes"][0]["children"] = {"b", "c"};
+    forest["orphanIds"] = {long_id, long_orphan};
+    forest["nodes"].push_back({{"id", long_orphan}});
+    mutation_failures("orphan insert",forest,[](M3Mindmap *m) {
+        return m3_mindmap_insert_node(m,"",1,R"({"id":"new","topic":"Orphan"})");
+    });
+    mutation_failures("detach into existing orphan list",forest,[](M3Mindmap *m) {
+        return m3_mindmap_move_node(m,"b","",1);
+    },true);
+    mutation_failures("reattach orphan to main tree",forest,[&](M3Mindmap *m) {
+        return m3_mindmap_move_node(m,long_id.c_str(),"r",1);
+    },true);
+    mutation_failures("reattach orphan to another orphan",forest,[&](M3Mindmap *m) {
+        return m3_mindmap_move_node(m,long_id.c_str(),long_orphan.c_str(),0);
+    },true);
+    mutation_failures("orphan reorder",forest,[&](M3Mindmap *m) {
+        return m3_mindmap_move_node(m,long_id.c_str(),"",1);
+    },true);
+    mutation_failures("orphan subtree removal",forest,[&](M3Mindmap *m) {
+        return m3_mindmap_remove_subtree(m,long_id.c_str());
+    },true);
     mutation_failures("node update",input,[](M3Mindmap *m) {
         return m3_mindmap_update_node(m,"r",R"({"topic":"Updated","tags":["replacement"],"style":{"nested":[1,2]}})");
     });

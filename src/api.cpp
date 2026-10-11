@@ -72,13 +72,13 @@ M3Status m3_mindmap_get_link_json(const M3Mindmap *map, const char *id, char **o
     return boundary([&] { argument(map && out_json); id_argument(id); *out_json = snapshot(m3::encode_link(m3::get_link(map->model, id))); });
 }
 M3Status m3_mindmap_insert_node(M3Mindmap *map, const char *parent, size_t index, const char *json) {
-    return boundary([&] { argument(map && json); id_argument(parent); m3::insert_node(map->model, parent, index, m3::decode_node(m3::parse(json))); });
+    return boundary([&] { argument(map && json && m3::valid_utf8(parent)); m3::insert_node(map->model, parent, index, m3::decode_node(m3::parse(json))); });
 }
 M3Status m3_mindmap_update_node(M3Mindmap *map, const char *id, const char *json) {
     return boundary([&] { argument(map && json); id_argument(id); m3::update_node(map->model, id, m3::parse(json)); });
 }
 M3Status m3_mindmap_move_node(M3Mindmap *map, const char *id, const char *parent, size_t index) {
-    return boundary([&] { argument(map); id_argument(id); id_argument(parent); m3::move_node(map->model, id, parent, index); });
+    return boundary([&] { argument(map && m3::valid_utf8(parent)); id_argument(id); m3::move_node(map->model, id, parent, index); });
 }
 M3Status m3_mindmap_remove_subtree(M3Mindmap *map, const char *id) {
     return boundary([&] { argument(map); id_argument(id); m3::remove_subtree(map->model, id); });

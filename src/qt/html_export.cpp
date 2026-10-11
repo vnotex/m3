@@ -107,7 +107,14 @@ QString encodeHtml(const QByteArray &document, const QImage &mapImage) {
            "<p>Static snapshot of the visible map. Switch to articles to read all nodes, including collapsed descendants.</p>\n"
            "</section>\n<section id=\"articles\" hidden=\"hidden\">\n<h2>Articles</h2>\n<ul>\n");
     struct Frame { const Json *node; bool close; };
-    std::vector<Frame> pending{{&root, false}};
+    std::vector<Frame> pending;
+    const auto orphans = data.find("orphanIds");
+    if (orphans != data.end()) {
+        pending.reserve(orphans->size() + 1);
+        for (auto it = orphans->rbegin(); it != orphans->rend(); ++it)
+            pending.push_back({index.at(it->get<std::string>()), false});
+    }
+    pending.push_back({&root, false});
     while (!pending.empty()) {
         const auto frame = pending.back();
         pending.pop_back();

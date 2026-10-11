@@ -269,7 +269,12 @@ QVector<OutlineEntry> MindMapController::outline() {
         if (!text || !*text) throw std::runtime_error("The document outline is empty");
         const auto data = Json::parse(text.get());
         struct Frame { const Json *node; int level; };
-        std::vector<Frame> pending{{&data, 1}};
+        std::vector<Frame> pending;
+        if (const auto orphans = data.find("orphans"); orphans != data.end()) {
+            for (auto it = orphans->rbegin(); it != orphans->rend(); ++it)
+                pending.push_back({&*it, 1});
+        }
+        pending.push_back({&data, 1});
         QVector<OutlineEntry> result;
         while (!pending.empty()) {
             const auto frame = pending.back();
@@ -452,8 +457,14 @@ Presentation MindMapController::prepare(const QByteArray &json,
         int level;
         bool visible;
     };
-    std::vector<Frame> pending{{index.at(data.at("rootId").get<std::string>()), {},
-                                M3_NO_PARENT, M3_NO_PARENT, 1, true}};
+    std::vector<Frame> pending;
+    if (const auto orphans = data.find("orphanIds"); orphans != data.end()) {
+        for (auto it = orphans->rbegin(); it != orphans->rend(); ++it)
+            pending.push_back({index.at(it->get<std::string>()), {},
+                               M3_NO_PARENT, M3_NO_PARENT, 1, true});
+    }
+    pending.push_back({index.at(data.at("rootId").get<std::string>()), {},
+                       M3_NO_PARENT, M3_NO_PARENT, 1, true});
     while (!pending.empty()) {
         const auto frame = pending.back();
         pending.pop_back();
@@ -477,6 +488,7 @@ Presentation MindMapController::prepare(const QByteArray &json,
             if (!value.trimmed().isEmpty()) node.tags.push_back({std::move(value), {}, {}});
         }
         node.root = record.at("id") == data.at("rootId");
+        node.treeRoot = frame.parent == M3_NO_PARENT;
         if (initialLevels > 0 && frame.level >= initialLevels) collapsed.insert(node.id);
         node.expanded = !collapsed.contains(node.id);
         const auto &children = record.at("children");
@@ -769,7 +781,11 @@ QString MindMapController::addNode(const QString &parent, const QString &topic, 
         if (autoRandomBranchColor) {
             const auto &bytes = currentSnapshot;
             const auto data = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
-            if (data.at("rootId") == utf8(parent)) {
+            const auto parentId = utf8(parent);
+            const auto orphans = data.find("orphanIds");
+            const bool treeRoot = data.at("rootId") == parentId ||
+                (orphans != data.end() && std::find(orphans->begin(), orphans->end(), parentId) != orphans->end());
+            if (treeRoot) {
                 static const auto palette = [] {
                     std::array<QColor, std::size(nodeColors)> colors;
                     for (size_t i = 0; i < colors.size(); ++i)
@@ -778,7 +794,8 @@ QString MindMapController::addNode(const QString &parent, const QString &topic, 
                 }();
                 std::array<bool, std::size(nodeColors)> used{};
                 const auto &nodes = data.at("nodes");
-                const auto &root = nodes.front();
+                const auto &root = *std::find_if(nodes.begin(), nodes.end(),
+                    [&parentId](const Json &node) { return node.at("id") == parentId; });
                 const QColor rootColor = nodeStyle(root.at("style")).branchColor;
                 const auto &children = root.at("children");
                 auto child = children.begin();
@@ -902,7 +919,7 @@ bool MindMapController::removeSelectedNodes() {
         const auto data = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
         const QString root = string(data.at("rootId"));
         QHash<QString, QString> parents;
-        parents.insert(root, {});
+        for (const auto &node : data.at("nodes")) parents.insert(string(node.at("id")), {});
         for (const auto &node : data.at("nodes"))
             for (const auto &child : node.at("children")) parents.insert(string(child), string(node.at("id")));
         QSet<QString> selected;
@@ -1080,6 +1097,7 @@ std::vector<NodeChoice> MindMapController::choices() {
             NodeChoice choice;
             choice.id = string(n.at("id")); choice.topic = string(n.at("topic"));
             choice.parent = parents.value(choice.id);
+            choice.root = n.at("id") == data.at("rootId");
             choice.expanded = !collapsedNodes.contains(choice.id);
             for (const auto &c : n.at("children")) choice.children.append(string(c));
             result.push_back(std::move(choice));
@@ -1104,6 +1122,10 @@ NodeProperties MindMapController::nodeProperties(const QString &id) {
             for (const auto &tag : record.at("tags")) result.tags.append(string(tag));
             for (const auto &icon : record.at("icons")) result.icons.append(string(icon));
             result.root = record.at("id") == data.at("rootId");
+            const auto orphans = data.find("orphanIds");
+            result.treeRoot = result.root ||
+                (orphans != data.end() &&
+                 std::find(orphans->begin(), orphans->end(), key) != orphans->end());
             result.style = nodeStyle(record.at("style"));
             return result;
         }

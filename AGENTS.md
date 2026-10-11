@@ -4,10 +4,34 @@
 `m3` ("Mind Map in Markdown") is a C++17 mind-map library with a public C API and an optional Qt Widgets editor/demo. Native JSON is the persistence format; Markdown, outline JSON and Qt HTML exports are projections, not full-fidelity round-trip formats.
 
 ## Architecture & Data Flow
-- `m3core` / `m3::core`: `src/api.cpp` wraps the semantic model, JSON/Markdown codecs and layout engine behind the C ABI. The model owns an ordered rooted tree plus cross-links; it has no Qt dependency.
+- `m3core` / `m3::core`: `src/api.cpp` wraps the semantic model, JSON/Markdown codecs and layout engine behind the C ABI. The model owns an ordered forest (main tree plus orphan trees) and cross-links; it has no Qt dependency.
 - `m3qt` / `m3::qt_editor`: `MindMapEditor` is a QWidget/PImpl facade. `MindMapController` owns the core handle, snapshots committed JSON, measures the full tree through `MindMapView`, requests core layout, then installs a `Presentation` in the graphics view.
 - Persist node data, ordered children, cross-links and styles; keep folding, selection, layout direction, geometry, zoom and pan outside persisted JSON. Legacy complete-node `expanded` values are boolean-validated and discarded (native, simple-tree, MindElixir and full-node insertion); node patches reject that key atomically. Schema version remains 1 and all descendants are retained.
 - File handling and toolbar presentation belong to the host/demo. The reusable editor contains no toolbar rows or layout picker; its canvas, properties card, context menus and shortcuts remain native. `examples/qt_demo_window.cpp` owns the demo rows. URL activation emits `nodeLinkActivated`; hosts decide whether to open it. Do not put file/network policy in the reusable editor.
+
+## Orphan Trees
+
+- `rootId` remains the protected main root. Native schemaVersion 1 optionally stores ordered
+  `orphanIds`, omitted when empty; each ID starts an independent tree. Every node must belong to
+  exactly one declared tree. Unlisted disconnected nodes, duplicate ownership and cycles remain
+  invalid; `orphanIds` is a reserved native marker, never a simple-tree fallback field.
+- Empty, non-null parent IDs in C insert/move (empty QString in Qt addNode/moveNode) target the
+  orphan-root list. Indexes follow child-list rules, including after-removal reordering. Moving
+  an orphan under a node reattaches its entire tree. Only the main root is immovable/undeletable.
+- Canvas **Add Orphan Node** creates an independent root and begins topic editing. **Detach
+  Subtree** makes an attached non-main node an orphan. **Move** and node-to-node dragging reattach
+  orphan roots; empty-space drops do not detach. Enter on any tree root adds a child. Home still
+  focuses the main root. Removing a selected orphan root leaves no selected ancestor.
+- Keep main-root protection (`root`) separate from tree-root appearance (`treeRoot`) in Qt
+  presentation/properties. Each tree has its own initial fold depth and branch-color inheritance;
+  automatic branch colors apply to children of any tree root. Moving under a collapsed parent
+  preserves that fold and hides the moved subtree, as with ordinary reparenting.
+- Traversal/export order is main tree then orphan trees in stored order. Markdown/HTML include
+  each at root level. Outline JSON retains its main nested node and adds optional `orphans`
+  containing nested trees; Qt outline entries restart at level 1. All projections retain descendants.
+- `m3_layout_tree` accepts roots in input order, lays out each tree independently, then stacks
+  component bounds vertically with `vertical_gap` separation. The first root stays at the origin;
+  root centers share X=0. Folding retains full-tree geometry; placement is not persisted.
 
 ## Key Directories
 - `include/m3/`: installed C contracts; `include/m3/qt/` is the optional Qt C++ surface.
@@ -194,7 +218,7 @@ teardown; do not defer the property commit itself.
 - **Commands and selection:** use `addNode`, `renameNode`, `moveNode`, `setExpanded`, `addLink`, etc. rather than editing controller/model internals. Hosts can present the existing editor-owned `commandAction(name)` in their own toolbar/menu; the public header lists stable names. Do not delete/reparent these borrowed actions or change their shortcut/enablement policy. Follow `layoutDirectionChanged` to synchronize host layout controls, blocking combo signals on both updates and failure resets. Keep returned IDs opaque and case-sensitive; do not assume an imported root is named `root`. Use `selectedNodeIds()` for groups: both arguments of `selectionChanged` and `selectedNodeId()` can be empty for a multi-selection. Disable single-node actions unless exactly one node is selected.
 - **Configuration and resource bases:** `EditorConfig` is copied at construction. Replace/clear shortcut lists to rebind/disable keys without removing commands. Set `resourceBasePath` before creating the widget; an empty value captures the working directory. The base is fixed for the editor's lifetime: Open, Save As and `reloadImages()` do not rebase relative image/link references. Choose a stable workspace base or recreate the editor for a different document base; saving elsewhere does not rewrite stored paths.
 - **Live editor preferences:** `EditorConfig::style.fontFamily` is a comma-separated fallback list; the first installed family wins, ignoring case and foundry suffixes. Empty/unavailable families inherit the host. `fontPointSize` is 0 (inherit) or 1–256 **points**, independently of family; per-node `style.fontSize` remains **pixels**. `setStyle()` remeasures the existing scene without document edits, fitting, or ending node/link inline drafts; explicit defaults survive host font/palette changes. Properties controls retain interface typography.
-- **Live behavior:** `setUndoLimit()` bounds retained commands (0 or negative means unlimited); lowering it prunes oldest undo and then farthest redo snapshots without removing the current snapshot or touching drafts. Increasing it cannot restore discarded history. `setConfirmSubtreeDeletion()` affects UI deletion only. `setAutoRandomBranchColor()` affects future direct-root-child creation, never existing colors. Shortcuts and relative-URL resolution remain construction-time policy.
+- **Live behavior:** `setUndoLimit()` bounds retained commands (0 or negative means unlimited); lowering it prunes oldest undo and then farthest redo snapshots without removing the current snapshot or touching drafts. Increasing it cannot restore discarded history. `setConfirmSubtreeDeletion()` affects UI deletion only. `setAutoRandomBranchColor()` affects future direct children of any tree root, never existing colors. Shortcuts and relative-URL resolution remain construction-time policy.
 - **URL activation and hooks:** connect `nodeLinkActivated(nodeId, url)` to the host's validated opening policy. Relative references arrive as absolute file URLs; do not blindly open arbitrary schemes or paths from imported documents. Override the synchronous `resolveDroppedFileUrl` to customize dropped-file storage (empty skips), or `onAddUrl`/`onAddImage` for app-owned pickers. These are subclass hooks, not signals or asynchronous callbacks.
 - **Images:** the example intentionally supplies no image I/O, so image nodes keep placeholders. Connect `imageRequested(url, requestId)` before loading (or call `reloadImages()` after connecting). The host fetches/decodes and calls `provideImage(url, requestId, pixels)` on the GUI thread with the original URL/ID; null `QImage` means unavailable. Stale/duplicate responses are ignored. Use QObject contexts/`QPointer` for asynchronous lifetime safety and enforce scheme, path, size and network limits in the host. `examples/qt_demo_window.cpp` illustrates one loader; Qt Network is demo/host policy, not an editor dependency.
 

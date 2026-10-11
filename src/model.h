@@ -32,6 +32,7 @@ struct Link {
 };
 struct Model {
     std::string root;
+    std::vector<std::string> orphans;
     std::unordered_map<std::string, Node> nodes;
     std::unordered_map<std::string, Link> links;
 };

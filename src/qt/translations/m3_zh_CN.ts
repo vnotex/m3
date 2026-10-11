@@ -291,6 +291,14 @@
         <translation>重做</translation>
     </message>
     <message>
+        <source>Add Orphan Node</source>
+        <translation>添加孤立节点</translation>
+    </message>
+    <message>
+        <source>Detach Subtree</source>
+        <translation>分离子树</translation>
+    </message>
+    <message>
         <location line="+1"/>
         <source>Add Child</source>
         <translation>添加子节点</translation>

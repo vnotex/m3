@@ -93,6 +93,75 @@ static void geometry() {
 
 }
 
+static void orphans() {
+    // Interleave components and place descendants before their roots.
+    const M3LayoutNode forest[] = {
+        {3,40,10},{4,60,20},{4,80,30},{6,60,20},{M3_NO_PARENT,100,40},{4,50,10},
+        {M3_NO_PARENT,100,40},{6,80,30},{M3_NO_PARENT,30,120},{1,40,10},{6,50,10}
+    };
+    const size_t main_indexes[] = {4,1,9,2,5}, orphan_indexes[] = {6,3,0,7,10};
+    const M3NodeSize sizes[] = {
+        {"t",40,10},{"a",60,20},{"b",80,30},{"p",60,20},{"r",100,40},{"c",50,10},
+        {"o",100,40},{"q",80,30},{"z",30,120},{"d",40,10},{"s",50,10}
+    };
+    const size_t preorder[] = {4,1,9,2,5,6,3,0,7,10,8};
+    auto input = fixture();
+    input["orphanIds"] = {"o","z"};
+    input["nodes"].push_back({{"id","z"}});
+    input["nodes"].push_back({{"id","t"}});
+    input["nodes"].push_back({{"id","q"}});
+    input["nodes"].push_back({{"id","o"},{"children",{"p","q","s"}}});
+    input["nodes"].push_back({{"id","s"}});
+    input["nodes"].push_back({{"id","p"},{"children",{"t"}}});
+    input["crossLinks"].push_back({{"id","forest"},{"source","d"},{"target","t"},{"directed",false}});
+    auto map = load(input);
+    const auto semantic = document(map);
+    for (auto direction : {M3_LAYOUT_BALANCED,M3_LAYOUT_RIGHT,M3_LAYOUT_LEFT,M3_LAYOUT_OUTLINE}) {
+        for (double gap : {0.0,20.0}) {
+            const M3LayoutOptions opts{direction,40,gap};
+            auto single = calculate(base_nodes,5,opts);
+            auto result = calculate(forest,11,opts);
+            CHECK(result->node_count == 11);
+            const double offset = single->bounds.height + gap;
+            for (size_t i = 0; i < 5; ++i) {
+                const auto &r = single->rects[i];
+                rect(result->rects[main_indexes[i]],r);
+                rect(result->rects[orphan_indexes[i]],{r.x,r.y+offset,r.width,r.height});
+            }
+            rect(result->rects[8],{-15,single->bounds.y+2*offset,30,120});
+            rect(result->bounds,{single->bounds.x,single->bounds.y,single->bounds.width,2*offset+120});
+            for (size_t i = 0; i < 11; ++i) {
+                for (size_t j = i+1; j < 11; ++j) {
+                    const auto &a = result->rects[i]; const auto &b = result->rects[j];
+                    CHECK(a.x+a.width <= b.x || b.x+b.width <= a.x || a.y+a.height <= b.y || b.y+b.height <= a.y);
+                }
+            }
+            const auto projected = layout(map,sizes,11,opts);
+            CHECK(projected["nodes"].size() == 11 && projected["treeEdges"].size() == 8);
+            CHECK(projected["crossLinks"] == semantic["crossLinks"]);
+            for (size_t i = 0; i < 11; ++i) {
+                const auto &n = projected["nodes"][i];
+                CHECK(n["id"] == sizes[preorder[i]].id);
+                rect({n["x"],n["y"],n["width"],n["height"]},result->rects[preorder[i]]);
+            }
+            const auto &bounds = projected["bounds"];
+            rect({bounds["x"],bounds["y"],bounds["width"],bounds["height"]},result->bounds);
+            char *out = reinterpret_cast<char *>(1);
+            CHECK(m3_mindmap_layout_json(map.get(),sizes+1,10,&opts,&out) == M3_ERR_INVALID_ARGUMENT);
+            CHECK(out == nullptr && *m3_last_error());
+        }
+    }
+    CHECK(document(map) == semantic);
+    constexpr size_t count = 10000;
+    const std::vector<M3LayoutNode> roots(count,{M3_NO_PARENT,10,4});
+    for (auto direction : {M3_LAYOUT_BALANCED,M3_LAYOUT_RIGHT,M3_LAYOUT_LEFT,M3_LAYOUT_OUTLINE}) {
+        auto result = calculate(roots.data(),roots.size(),{direction,2,1});
+        CHECK(result->node_count == count);
+        for (size_t i = 0; i < count; ++i) rect(result->rects[i],{-5,-2+5*static_cast<double>(i),10,4});
+        rect(result->bounds,{-5,-2,10,4+5*static_cast<double>(count-1)});
+    }
+}
+
 static void legacy_expansion() {
     const auto input = fixture();
     auto plain = load(input);
@@ -130,7 +199,7 @@ static void invalid() {
     };
     reject({{M3_NO_PARENT,10,10},{2,10,10},{1,10,10}});
     reject({{1,10,10},{0,10,10}});
-    reject({{M3_NO_PARENT,10,10},{M3_NO_PARENT,10,10}});
+    reject({{M3_NO_PARENT,10,10},{M3_NO_PARENT,10,10},{3,10,10},{2,10,10}});
     reject({{M3_NO_PARENT,10,10},{3,10,10}});
     reject({{M3_NO_PARENT,10,10},{1,10,10}});
     reject({{M3_NO_PARENT,0,10}});
@@ -141,6 +210,11 @@ static void invalid() {
     reject({{M3_NO_PARENT,10,10}}, {M3_LAYOUT_RIGHT,40,-1});
     reject({{M3_NO_PARENT,10,10}}, {M3_LAYOUT_RIGHT,40,std::numeric_limits<double>::infinity()});
     const double max = std::numeric_limits<double>::max();
+    for (auto direction : {M3_LAYOUT_BALANCED,M3_LAYOUT_RIGHT,M3_LAYOUT_LEFT,M3_LAYOUT_OUTLINE}) {
+        reject({{M3_NO_PARENT,10,max},{M3_NO_PARENT,10,max}}, {direction,0,0});
+        reject({{M3_NO_PARENT,10,max*0.6},{M3_NO_PARENT,10,max*0.6}}, {direction,0,0});
+        reject({{M3_NO_PARENT,10,10},{M3_NO_PARENT,10,10},{M3_NO_PARENT,10,10}}, {direction,0,max});
+    }
     reject({{M3_NO_PARENT,max,10},{0,max,10}}, {M3_LAYOUT_RIGHT,max,0});
     reject({{M3_NO_PARENT,10,10},{0,10,max},{0,10,max}});
     reject({{M3_NO_PARENT,10,10}}, {M3_LAYOUT_OUTLINE,std::numeric_limits<double>::quiet_NaN(),0});
@@ -230,6 +304,7 @@ int main(int argc, char **argv) {
         CHECK(argc == 2);
         const std::string name = argv[1];
         if (name == "geometry") geometry();
+        else if (name == "orphans") orphans();
         else if (name == "legacy_expansion") legacy_expansion();
         else if (name == "invalid") invalid();
         else if (name == "deep") deep();

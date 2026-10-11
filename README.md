@@ -10,7 +10,7 @@ A C++17 mind-map library with a public C API and an optional Qt Widgets editor. 
 
 ## Features
 
-- **Structured maps:** ordered node hierarchies, cross-links, notes, hyperlinks, tags, icons and styles.
+- **Structured maps:** a main tree and independent orphan trees, ordered node hierarchies, cross-links, notes, hyperlinks, tags, icons and styles.
 - **Portable documents:** native JSON preserves the semantic map. Import also accepts simple nested trees and compatible Mind Elixir documents.
 - **Export:** Markdown and a six-level outline JSON projection in the core; standalone HTML export in the Qt editor. These exports are not full-fidelity round-trip formats.
 - **Layout:** balanced, left, right and outline layouts, with collapsed branches retained in the document.
@@ -75,6 +75,8 @@ target_link_libraries(my_app PRIVATE m3::qt_editor)
 ```
 
 [`m3::qt::MindMapEditor`](include/m3/qt/editor.h) is a `QWidget` that owns its model. Hosts provide a `QApplication`, use the GUI thread, and retain control of file handling and URL activation. Selection, layout direction, zoom and pan are view state, not persisted JSON. Core-only package discovery does not require Qt.
+
+Right-click empty canvas and choose **Add Orphan Node** to start an independent tree. Add children normally, or use **Detach Subtree** on an attached node to make its whole branch independent. Drag an orphan root onto a node, or use **Move**, to reattach it. All trees support folding, properties, cross-links, undo/redo and save/reopen. Layout arranges the trees independently in a vertical stack; **Focus Main Node** still targets the main tree. Only that main root is protected from moving or deletion.
 
 Shift-click or Ctrl-click nodes to toggle them in a multi-selection. A plain click selects one node; Escape or an empty-space click clears the selection. With multiple nodes selected, **Delete** is the only node action: properties and editing handles are hidden, and right-clicking a selected member offers only Delete. Deletion asks once, removes selected subtrees and their incident links, and counts overlapping ancestor/descendant selections once. Delete is disabled if the root is selected. Hosts can query `selectedNodeIds()`; `selectedNodeId()` is empty for a multi-selection, and `selectionChanged` still fires for every membership change.
 

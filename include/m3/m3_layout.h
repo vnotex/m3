@@ -20,12 +20,15 @@ typedef struct M3LayoutResult {
     M3Rect bounds;
 } M3LayoutResult;
 /* Borrowed inputs; required options. Positive finite sizes, nonnegative finite
- * gaps. Exactly one root (at any index); siblings retain input order.
- * Empty input succeeds. Rectangles correspond to input indexes, root centered
- * at (0,0). Rectangle coordinates are top-left; bounds are their union without
- * padding. In non-OUTLINE modes, subtree span is max(node height, stacked
- * child spans plus gaps). Each child stack is centered on its parent's center
- * Y; root side stacks are separately centered at zero. Horizontal gaps
+ * gaps. One or more M3_NO_PARENT roots at any indexes; roots and siblings
+ * retain input order. Every node must belong to a rooted, acyclic tree.
+ * Empty input succeeds. Rectangles correspond to input indexes. Each tree is
+ * laid out independently, then its bounds are placed vertical_gap below the
+ * preceding tree's bounds. The first root is centered at (0,0); all root
+ * centers have X=0. Rectangle coordinates are top-left; bounds are their union
+ * without padding. In non-OUTLINE modes, subtree span is max(node height,
+ * stacked child spans plus gaps). Each child stack is centered on its parent's
+ * center Y; root side stacks are separately centered on their root. Horizontal gaps
  * separate adjacent generations. OUTLINE places rows in depth-first preorder:
  * each child's left edge is its parent's left edge plus horizontal_gap,
  * independent of node widths; each row starts vertical_gap below the previous

@@ -842,7 +842,7 @@ private:
         syncFontSize(fontSize, properties.style.fontSize);
         {
             const QSignalBlocker blocker(bold);
-            bold->setChecked(properties.style.bold.value_or(properties.root));
+            bold->setChecked(properties.style.bold.value_or(properties.treeRoot));
             bold->setToolTip(properties.style.bold.has_value()
                 ? tr("Explicit font weight; Reset appearance restores the default")
                 : tr("Default font weight for this node"));
@@ -916,6 +916,7 @@ public:
     QLabel *error;
     QAction *addChild, *addSibling, *addSiblingBefore, *editSelection, *deleteSelection, *toggleExpanded, *move, *up, *down, *addLink;
     QAction *rootSelection, *clearSelectionAction, *editLink, *toggleProperties, *copySelection;
+    QAction *addOrphan, *detachNode;
     QAction *undoAction, *redoAction;
     QAction *boldAction = nullptr, *italicAction = nullptr;
     QList<QAction *> nodeNavigation;
@@ -1228,7 +1229,7 @@ public:
         if (!guard) return;
         if (boldAction) {
             const QSignalBlocker blocker(boldAction);
-            boldAction->setChecked(node.style.bold.value_or(node.root));
+            boldAction->setChecked(node.style.bold.value_or(node.treeRoot));
         }
         if (italicAction) {
             const QSignalBlocker blocker(italicAction);
@@ -1250,11 +1251,13 @@ public:
         const bool hasLink = controller->selectedLinkId().isEmpty() == false;
         const auto selectedNodes = controller->selectedNodeIds();
         const bool hasNodes = !selectedNodes.isEmpty();
-        const bool deletableNodes = hasNodes && !nodes.empty() && !selectedNodes.contains(nodes.front().id);
+        const auto root = std::find_if(nodes.begin(), nodes.end(), [](const NodeChoice &entry) { return entry.root; });
+        const bool deletableNodes = hasNodes && root != nodes.end() && !selectedNodes.contains(root->id);
         const bool writable = host->isEnabled() && !controller->isReadOnly();
-        const bool movable = writable && node && !node->parent.isEmpty();
+        const bool movable = writable && node && !node->root;
         undoAction->setEnabled(controller->canUndo());
         redoAction->setEnabled(controller->canRedo());
+        addOrphan->setEnabled(writable);
         addChild->setEnabled(writable && node); addLink->setEnabled(writable && node);
         addSibling->setEnabled(writable && node); addSiblingBefore->setEnabled(writable && node);
         for (auto *action : nodeNavigation) action->setEnabled(node);
@@ -1274,6 +1277,7 @@ public:
         editLink->setEnabled(writable && hasLink);
         deleteSelection->setEnabled(writable && (deletableNodes || hasLink));
         move->setEnabled(movable);
+        detachNode->setEnabled(movable && !node->parent.isEmpty());
         toggleExpanded->setEnabled(host->isEnabled() && node && !node->children.isEmpty());
         toggleExpanded->setText(node && !node->expanded ? tr("Expand") : tr("Collapse"));
         const auto *parent = node ? choice(nodes, node->parent) : nullptr;
@@ -1369,7 +1373,7 @@ public:
         const auto nodes = controller->choices();
         const QString id = controller->selectedNodeId();
         const auto *node = choice(nodes, id);
-        if (!node || node->parent.isEmpty()) return;
+        if (!node || node->root) return;
         QSet<QString> excluded{id};
         // Choices arrive in child preorder: each excluded parent precedes its descendants.
         for (const auto &entry : nodes) if (excluded.contains(entry.parent)) excluded.insert(entry.id);
@@ -1390,7 +1394,7 @@ public:
             index->setValue(maximum);
         };
         QObject::connect(parent, QOverload<int>::of(&QComboBox::currentIndexChanged), dialog.data(), range);
-        parent->setCurrentIndex(parent->findData(node->parent));
+        if (!node->parent.isEmpty()) parent->setCurrentIndex(parent->findData(node->parent));
         range();
         const auto *oldParent = choice(nodes, node->parent);
         if (oldParent) index->setValue(int(oldParent->children.indexOf(id)));
@@ -1427,6 +1431,12 @@ public:
         });
         undoAction = action("undo", tr("Undo"), config.shortcuts.undo, [this] { host->undo(); });
         redoAction = action("redo", tr("Redo"), config.shortcuts.redo, [this] { host->redo(); });
+        addOrphan = action("addOrphan", tr("Add Orphan Node"), {}, [this] {
+            const QPointer<MindMapEditor> guard(host);
+            const QString created = controller->addNode({}, {}, -1);
+            if (guard && !created.isEmpty() && controller->selectedNodeId() == created)
+                view->beginTopicEdit(created, config.shortcuts.acceptTopic);
+        });
         addChild = action("addChild", tr("Add Child"), config.shortcuts.addChild, [this] { createNode(TopicOperation::Child); });
         addSibling = action("addSibling", tr("Add Sibling"), config.shortcuts.addSibling, [this] { createNode(TopicOperation::SiblingAfter); });
         addSiblingBefore = action("addSiblingBefore", tr("Add Sibling Before"), config.shortcuts.addSiblingBefore, [this] { createNode(TopicOperation::SiblingBefore); });
@@ -1454,6 +1464,9 @@ public:
             if (node) controller->setExpanded(node->id, !node->expanded);
         });
         move = action("moveNode", tr("Move..."), config.shortcuts.moveNode, [this] { moveDialog(); });
+        detachNode = action("detachNode", tr("Detach Subtree"), {}, [this] {
+            controller->moveNode(controller->selectedNodeId(), {}, -1);
+        });
         up = action("moveUp", tr("Move Up"), config.shortcuts.moveUp, [this] { reorder(-1); });
         down = action("moveDown", tr("Move Down"), config.shortcuts.moveDown, [this] { reorder(1); });
         addLink = action("addLink", tr("Add link"), config.shortcuts.addLink, [this] { linkDialog(true); });
@@ -1557,7 +1570,7 @@ public:
                     addBranchColor(tr("%1 (%2)").arg(QCoreApplication::translate("m3::qt::NodeColors", entry.name), hex), QColor(hex), hex);
                 }
                 menu.addSeparator();
-                menu.addActions({deleteSelection, up, down});
+                menu.addActions({move, detachNode, deleteSelection, up, down});
             } else if (!linkId.isEmpty()) {
                 const auto link = controller->linkChoice(linkId);
                 if (!guard || link.id.isEmpty()) return;
@@ -1583,6 +1596,8 @@ public:
                 menu.addAction(deleteSelection);
             } else {
                 menu.addActions({rootSelection, fit, resetZoom, zoomIn, zoomOut});
+                menu.addSeparator();
+                menu.addAction(addOrphan);
             }
             if (hasNode || !linkId.isEmpty() || controller->selectedNodeIds().size() > 1) {
                 menu.addSeparator();

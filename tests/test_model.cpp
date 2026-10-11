@@ -1,4 +1,5 @@
 #include "test_support.h"
+#include <algorithm>
 #include <future>
 #include <exception>
 #include <utility>
@@ -503,7 +504,7 @@ static void mind_elixir_validation() {
       {"id":"a","topic":"Child","children":[{"id":"b","topic":"Leaf"}]}]},
       "linkData":{"l1":{"id":"l1","from":"r","to":"b","label":"Related"}}})");
     auto bad = [&](auto change, const char *label) { auto j = input; change(j); reject(j.dump(), M3_ERR_SCHEMA, label); };
-    for (const auto *key : {"schemaVersion", "rootId", "nodes", "crossLinks"})
+    for (const auto *key : {"schemaVersion", "rootId", "orphanIds", "nodes", "crossLinks"})
         bad([&](Json &j) { j[key] = nullptr; }, key);
     bad([](Json &j) { j["nodeData"] = nullptr; }, "null nodeData");
     bad([](Json &j) { j["nodeData"] = Json::array(); }, "array nodeData");
@@ -643,6 +644,181 @@ static void simple_tree() {
         const auto &n = deep_doc["nodes"][i];
         CHECK(n["id"] == "m3-auto-" + std::to_string(i + 1));
         CHECK(n["children"] == (i + 1 < count ? Json::array({"m3-auto-" + std::to_string(i + 2)}) : Json::array()));
+    }
+}
+
+static void orphans() {
+    auto map = load(fixture());
+    const auto legacy = document(map);
+    CHECK(!legacy.contains("orphanIds"));
+    auto explicit_empty = legacy;
+    explicit_empty["orphanIds"] = Json::array();
+    CHECK(document(load(explicit_empty)) == legacy);
+
+    ok(m3_mindmap_insert_node(map.get(), "", M3_APPEND,
+        R"({"id":"x","topic":"Orphan 世界","note":"Own note","style":{"color":"blue"},"expanded":false})"));
+    ok(m3_mindmap_insert_node(map.get(), "", 0, R"({"id":"y","topic":"Second"})"));
+    ok(m3_mindmap_insert_node(map.get(), "x", 0, R"({"id":"z","topic":"Child"})"));
+    const auto subtree = node(map, "a");
+    ok(m3_mindmap_move_node(map.get(), "a", "", 1));
+    CHECK(document(map)["orphanIds"] == Json({"y", "a", "x"}));
+    CHECK(node(map, "r")["children"] == Json({"b", "c"}));
+    CHECK(node(map, "a") == subtree);
+    CHECK(node(map, "x")["style"] == Json({{"color", "blue"}}));
+    CHECK(!node(map, "x").contains("expanded"));
+    ok(m3_mindmap_move_node(map.get(), "x", "", 0));
+    CHECK(document(map)["orphanIds"] == Json({"x", "y", "a"}));
+    ok(m3_mindmap_move_node(map.get(), "x", "", M3_APPEND));
+    CHECK(document(map)["orphanIds"] == Json({"y", "a", "x"}));
+    ok(m3_mindmap_move_node(map.get(), "x", "", 0));
+    ok(m3_mindmap_add_link(map.get(), R"({"id":"orphan-link","source":"z","target":"c","directed":true})"));
+    const auto forest = document(map);
+    CHECK(forest["rootId"] == "r" && forest["orphanIds"] == Json({"x", "y", "a"}));
+    Json ids = Json::array();
+    for (const auto &entry : forest["nodes"]) ids.push_back(entry["id"]);
+    CHECK(ids == Json({"r", "b", "c", "x", "z", "y", "a", "d"}));
+    CHECK(forest["crossLinks"].size() == 5);
+    CHECK(document(load(forest)) == forest);
+    // Native record order is irrelevant; only children and orphanIds define order.
+    auto shuffled = forest;
+    std::reverse(shuffled["nodes"].begin(), shuffled["nodes"].end());
+    CHECK(document(load(shuffled)) == forest);
+
+    char *raw = nullptr;
+    ok(m3_mindmap_to_json(map.get(), &raw));
+    Text native_snapshot(raw, m3_string_free);
+    ok(m3_mindmap_get_outline_json(map.get(), &raw));
+    Text outline_snapshot(raw, m3_string_free);
+    const auto expected_outline = Json::parse(R"({"id":"r","topic":"Racine 世界 🌍","children":[
+        {"id":"b","topic":"","children":[]},{"id":"c","topic":"","children":[]}],"orphans":[
+        {"id":"x","topic":"Orphan 世界","children":[{"id":"z","topic":"Child","children":[]}]},
+        {"id":"y","topic":"Second","children":[]},
+        {"id":"a","topic":"","children":[{"id":"d","topic":"","children":[]}]}]})");
+    CHECK(Json::parse(outline_snapshot.get()) == expected_outline);
+    auto markdown_snapshot = markdown_text(map);
+    const std::string markdown = markdown_snapshot.get();
+    size_t position = 0;
+    for (const auto *heading : {
+        "# <a id=\"m3-node-72\"></a>Racine 世界 🌍\n",
+        "## <a id=\"m3-node-62\"></a>(untitled)\n",
+        "## <a id=\"m3-node-63\"></a>(untitled)\n",
+        "# <a id=\"m3-node-78\"></a>Orphan 世界\n",
+        "## <a id=\"m3-node-7a\"></a>Child\n",
+        "# <a id=\"m3-node-79\"></a>Second\n",
+        "# <a id=\"m3-node-61\"></a>(untitled)\n",
+        "## <a id=\"m3-node-64\"></a>(untitled)\n"}) {
+        const auto found = markdown.find(heading, position);
+        CHECK(found != std::string::npos);
+        CHECK(found == 0 || markdown[found - 1] == '\n');
+        position = found + std::string(heading).size();
+    }
+    CHECK(markdown_occurrences(markdown, "<a id=\"") == forest["nodes"].size());
+    CHECK(markdown.find("**Note:** Own note") != std::string::npos);
+    CHECK(markdown.find("[Child](#m3-node-7a) → [(untitled)](#m3-node-63)", position) != std::string::npos);
+    CHECK(document(map) == forest);
+
+    const auto fail = [&](M3Status status, M3Status expected) {
+        CHECK(status == expected && *m3_last_error());
+        CHECK(document(map) == forest);
+    };
+    fail(m3_mindmap_move_node(map.get(), "r", "", 0), M3_ERR_INVALID_OPERATION);
+    fail(m3_mindmap_move_node(map.get(), "r", "x", 0), M3_ERR_INVALID_OPERATION);
+    fail(m3_mindmap_remove_subtree(map.get(), "r"), M3_ERR_INVALID_OPERATION);
+    fail(m3_mindmap_move_node(map.get(), "x", "z", 0), M3_ERR_INVALID_OPERATION);
+    fail(m3_mindmap_move_node(map.get(), "a", "d", 0), M3_ERR_INVALID_OPERATION);
+    fail(m3_mindmap_move_node(map.get(), "x", "x", 0), M3_ERR_INVALID_OPERATION);
+    fail(m3_mindmap_move_node(map.get(), "x", "", 3), M3_ERR_INVALID_ARGUMENT);
+    fail(m3_mindmap_move_node(map.get(), "b", "", 4), M3_ERR_INVALID_ARGUMENT);
+    fail(m3_mindmap_move_node(map.get(), "x", nullptr, 0), M3_ERR_INVALID_ARGUMENT);
+    fail(m3_mindmap_move_node(map.get(), "x", "\xff", 0), M3_ERR_INVALID_ARGUMENT);
+    fail(m3_mindmap_move_node(map.get(), "x", "absent", 0), M3_ERR_NOT_FOUND);
+    fail(m3_mindmap_insert_node(map.get(), "", 4, R"({"id":"new"})"), M3_ERR_INVALID_ARGUMENT);
+    fail(m3_mindmap_insert_node(map.get(), nullptr, 0, R"({"id":"new"})"), M3_ERR_INVALID_ARGUMENT);
+    fail(m3_mindmap_insert_node(map.get(), "\xff", 0, R"({"id":"new"})"), M3_ERR_INVALID_ARGUMENT);
+    fail(m3_mindmap_insert_node(map.get(), "", 0, R"({"id":"a"})"), M3_ERR_ALREADY_EXISTS);
+    fail(m3_mindmap_insert_node(map.get(), "", 0, R"({"id":"new","children":["z"]})"), M3_ERR_SCHEMA);
+
+    ok(m3_mindmap_move_node(map.get(), "a", "z", M3_APPEND));
+    CHECK(document(map)["orphanIds"] == Json({"x", "y"}));
+    CHECK(node(map, "z")["children"] == Json({"a"}));
+    CHECK(node(map, "a") == subtree);
+    ok(m3_mindmap_move_node(map.get(), "z", "y", 0));
+    CHECK(node(map, "x")["children"] == Json::array());
+    CHECK(node(map, "y")["children"] == Json({"z"}));
+    ok(m3_mindmap_move_node(map.get(), "x", "b", M3_APPEND));
+    CHECK(document(map)["orphanIds"] == Json({"y"}));
+    CHECK(node(map, "b")["children"] == Json({"x"}));
+    ok(m3_mindmap_move_node(map.get(), "a", "", 0));
+    CHECK(document(map)["orphanIds"] == Json({"a", "y"}));
+    ok(m3_mindmap_remove_subtree(map.get(), "a"));
+    CHECK(document(map)["orphanIds"] == Json({"y"}));
+    CHECK(document(map)["crossLinks"].size() == 2);
+    CHECK(node(map, "z")["children"] == Json::array());
+    ok(m3_mindmap_remove_subtree(map.get(), "y"));
+    CHECK(!document(map).contains("orphanIds"));
+    CHECK(document(map)["crossLinks"] == Json::array({link(map, "l4")}));
+    ok(m3_mindmap_move_node(map.get(), "x", "", M3_APPEND));
+    ok(m3_mindmap_remove_subtree(map.get(), "x"));
+    CHECK(!document(map).contains("orphanIds"));
+    CHECK(document(map)["nodes"].size() == 3);
+    CHECK(node(map, "b")["children"] == Json::array());
+    ok(m3_mindmap_get_outline_json(map.get(), &raw));
+    Text single_tree(raw, m3_string_free);
+    CHECK(!Json::parse(single_tree.get()).contains("orphans"));
+    map.reset();
+    CHECK(Json::parse(native_snapshot.get()) == forest);
+    CHECK(Json::parse(outline_snapshot.get()) == expected_outline);
+    CHECK(std::string(markdown_snapshot.get()) == markdown);
+
+    const auto reject = [](const Json &input) {
+        M3Mindmap *raw_map = reinterpret_cast<M3Mindmap *>(1);
+        const auto status = m3_mindmap_from_json(input.dump().c_str(), &raw_map);
+        Map unexpected(status == M3_OK ? raw_map : nullptr, m3_mindmap_destroy);
+        CHECK(status == M3_ERR_SCHEMA && raw_map == nullptr && *m3_last_error());
+    };
+    const auto bad = [&](auto change) { auto input = forest; change(input); reject(input); };
+    for (const auto &invalid : {Json(nullptr), Json("x"), Json::object(), Json::array({1}),
+        Json::array({""}), Json::array({"missing"}), Json::array({"r"}),
+        Json::array({"x", "x"}), Json::array({"x", "y", "z"})})
+        bad([&](Json &j) { j["orphanIds"] = invalid; });
+    bad([](Json &j) { j.erase("orphanIds"); });
+    bad([](Json &j) { j["orphanIds"] = Json::array(); });
+    bad([](Json &j) { j["orphanIds"] = {"x", "y"}; });
+    bad([](Json &j) { j["nodes"][0]["children"].push_back("x"); });
+    bad([](Json &j) { j["nodes"][4]["children"] = {"x"}; }); // Orphan-root cycle.
+    bad([](Json &j) { j["nodes"][5]["children"] = {"z"}; }); // Duplicate ownership.
+    bad([](Json &j) { j["nodes"].push_back({{"id", "unlisted"}}); });
+    bad([](Json &j) {
+        j["nodes"].push_back({{"id", "u"}, {"children", {"v"}}});
+        j["nodes"].push_back({{"id", "v"}, {"children", {"u"}}});
+    }); // Unlisted rootless cycle must not be traversed or accepted.
+    reject(Json{{"orphanIds", Json::array()}});
+    reject(Json{{"topic", "Not a simple tree"}, {"orphanIds", Json::array({"x"})}});
+    reject(Json{{"nodeData", Json::object()}, {"orphanIds", Json::array()}});
+
+    // An independent tree receives the same iterative, unlimited-depth projection.
+    constexpr size_t depth = 4096;
+    Json deep = {{"schemaVersion", 1}, {"rootId", "r"}, {"orphanIds", {"n0"}},
+        {"nodes", Json::array({{{"id", "r"}}})}};
+    for (size_t i = 0; i < depth; ++i) {
+        auto children = Json::array();
+        if (i + 1 < depth) children.push_back("n" + std::to_string(i + 1));
+        deep["nodes"].push_back({{"id", "n" + std::to_string(i)}, {"children", std::move(children)}});
+    }
+    auto deep_map = load(deep);
+    CHECK(document(deep_map)["nodes"].size() == depth + 1);
+    ok(m3_mindmap_get_outline_json(deep_map.get(), &raw));
+    Text deep_outline(raw, m3_string_free);
+    const auto projected = Json::parse(deep_outline.get());
+    CHECK(projected["children"].empty() && projected["orphans"].size() == 1);
+    const Json *current = &projected["orphans"][0];
+    for (size_t i = 0; i < depth; ++i) {
+        CHECK((*current)["id"] == "n" + std::to_string(i));
+        CHECK(current->size() == 3);
+        if (i + 1 < depth) {
+            CHECK((*current)["children"].size() == 1);
+            current = &(*current)["children"][0];
+        } else CHECK((*current)["children"].empty());
     }
 }
 
@@ -825,6 +1001,7 @@ int main(int argc, char **argv) {
         const std::string name = argv[1];
         if (name == "roundtrip") roundtrip();
         else if (name == "outline") outline();
+        else if (name == "orphans") orphans();
         else if (name == "markdown") markdown();
         else if (name == "markdown_edges") markdown_edges();
         else if (name == "validation") validation();

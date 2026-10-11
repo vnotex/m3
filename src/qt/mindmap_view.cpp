@@ -1235,7 +1235,7 @@ void MindMapView::scrollContentsBy(int dx, int dy) {
 void MindMapView::prepare(NodePresentation &node) const {
     QFont textFont = font();
     if (node.style.fontSize > 0) textFont.setPixelSize(qRound(node.style.fontSize));
-    textFont.setBold(node.style.bold.value_or(node.root));
+    textFont.setBold(node.style.bold.value_or(node.treeRoot));
     if (node.style.italic.has_value()) textFont.setItalic(*node.style.italic);
     auto prepareText = [](const QString &value, const QFont &font, qreal maximumWidth) {
         auto text = std::make_unique<QTextDocument>();
@@ -1297,6 +1297,10 @@ void MindMapView::prepare(NodePresentation &node) const {
 void MindMapView::install(Presentation presentation, bool resetCamera) {
     // Build before touching the current scene, selection or active draft.
     QHash<QString, QString> parents;
+    // Explicitly retain orphan roots with an empty parent; only the main root
+    // is absent. Gesture checks then use the current scene after synchronous edits.
+    for (const auto &node : presentation.nodes)
+        if (node.treeRoot && !node.root) parents.insert(node.id, QString());
     for (const auto &edge : presentation.treeEdges) parents.insert(edge.target, edge.source);
     const QPointF rootCenter = presentation.nodes.front().rectangle.center();
     auto replacement = buildScene(std::move(presentation), font(), palette());

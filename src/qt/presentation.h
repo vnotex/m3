@@ -41,7 +41,7 @@ struct NodeImage {
 struct NodeProperties {
     QString id, topic, hyperlink, note;
     QStringList tags, icons;
-    bool root = false;
+    bool root = false, treeRoot = false;
     std::optional<NodeImage> image;
     NodeStyle style;
 };
@@ -54,7 +54,8 @@ struct NodePresentation {
     QString id, topic, hyperlink;
     QStringList icons;
     std::vector<NodeTagPresentation> tags;
-    bool root = false, expanded = true, hasChildren = false;
+    // root protects the main node; treeRoot gives every independent root its appearance.
+    bool root = false, treeRoot = false, expanded = true, hasChildren = false;
     QRectF rectangle;
     std::optional<NodeImage> image;
     QRectF imageRectangle;
@@ -81,6 +82,7 @@ struct NodeChoice {
     QString id, topic, parent;
     QStringList children;
     bool expanded = true;
+    bool root = false; // Protected main root, not every parentless node.
 };
 }
 #endif

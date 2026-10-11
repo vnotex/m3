@@ -291,6 +291,14 @@
         <translation>やり直す</translation>
     </message>
     <message>
+        <source>Add Orphan Node</source>
+        <translation>独立ノードを追加</translation>
+    </message>
+    <message>
+        <source>Detach Subtree</source>
+        <translation>サブツリーを切り離す</translation>
+    </message>
+    <message>
         <location line="+1"/>
         <source>Add Child</source>
         <translation>子ノードを追加</translation>

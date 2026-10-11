@@ -33,8 +33,12 @@ const Link &get_link(const Model &m, const std::string &id) {
     return it->second;
 }
 std::vector<const Node *> preorder(const Model &m) {
-    std::vector<const Node *> result, pending{&get_node(m, m.root)};
+    std::vector<const Node *> result, pending;
     result.reserve(m.nodes.size());
+    pending.reserve(m.orphans.size() + 1);
+    for (auto it = m.orphans.rbegin(); it != m.orphans.rend(); ++it)
+        pending.push_back(&get_node(m, *it));
+    pending.push_back(&get_node(m, m.root));
     while (!pending.empty()) {
         const auto *node = pending.back();
         pending.pop_back();
@@ -68,17 +72,17 @@ void endpoints(const Model &m, const Link &l) {
 }
 }
 void insert_node(Model &m, const std::string &parent, size_t index, Node n) {
-    auto &p = mutable_node(m, parent);
+    auto &siblings = parent.empty() ? m.orphans : mutable_node(m, parent).children;
     require(!m.nodes.count(n.id), M3_ERR_ALREADY_EXISTS, "Node already exists");
     require(n.children.empty(), M3_ERR_SCHEMA, "Inserted node must be a leaf");
-    index = position(index, p.children.size());
-    auto children = p.children;
+    index = position(index, siblings.size());
+    auto children = siblings;
     children.insert(children.begin() + index, n.id);
     n.parent = parent;
     auto id = n.id;
     m.nodes.emplace(std::move(id), std::move(n));
     // Rehash does not invalidate references. All allocation preceded this swap.
-    p.children.swap(children);
+    siblings.swap(children);
 }
 void update_node(Model &m, const std::string &id, const Json &patch) {
     auto &n = mutable_node(m, id);
@@ -89,26 +93,27 @@ void update_node(Model &m, const std::string &id, const Json &patch) {
 }
 void move_node(Model &m, const std::string &id, const std::string &parent, size_t index) {
     auto &n = mutable_node(m, id);
-    auto &destination = mutable_node(m, parent);
+    auto *destination_node = parent.empty() ? nullptr : &mutable_node(m, parent);
     require(id != m.root, M3_ERR_INVALID_OPERATION, "Cannot move root");
-    for (const Node *ancestor = &destination; ancestor;) {
+    for (const Node *ancestor = destination_node; ancestor;) {
         require(ancestor->id != id, M3_ERR_INVALID_OPERATION, "Cannot move into subtree");
         ancestor = ancestor->parent.empty() ? nullptr : &get_node(m, ancestor->parent);
     }
-    auto &source = mutable_node(m, n.parent);
-    auto old_children = source.children;
+    auto &source = n.parent.empty() ? m.orphans : mutable_node(m, n.parent).children;
+    auto &destination = destination_node ? destination_node->children : m.orphans;
+    auto old_children = source;
     old_children.erase(std::find(old_children.begin(), old_children.end(), id));
     if (&source == &destination) {
         index = position(index, old_children.size());
         old_children.insert(old_children.begin() + index, id);
-        source.children.swap(old_children);
+        source.swap(old_children);
     } else {
-        index = position(index, destination.children.size());
-        auto new_children = destination.children;
+        index = position(index, destination.size());
+        auto new_children = destination;
         new_children.insert(new_children.begin() + index, id);
         auto new_parent = parent;
-        source.children.swap(old_children);
-        destination.children.swap(new_children);
+        source.swap(old_children);
+        destination.swap(new_children);
         n.parent.swap(new_parent);
     }
 }
@@ -122,7 +127,7 @@ void remove_subtree(Model &m, const std::string &id) {
         removed.insert(current->id);
         for (const auto &child : current->children) pending.push_back(&get_node(m, child));
     }
-    auto &siblings = mutable_node(m, n.parent).children;
+    auto &siblings = n.parent.empty() ? m.orphans : mutable_node(m, n.parent).children;
     // No allocation from here onward. String/vector erasure and map erasure
     // cannot throw with these standard value types and hash functions.
     siblings.erase(std::find(siblings.begin(), siblings.end(), id));

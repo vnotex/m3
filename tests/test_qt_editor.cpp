@@ -11156,6 +11156,221 @@ static void history_text_scope_case() {
     }
 }
 
+static void orphans_case() {
+    m3::qt::EditorConfig config;
+    config.autoRandomBranchColor = false;
+    config.confirmSubtreeDeletion = false;
+    config.initialVisibleLevels = 2;
+    Editor editor(config);
+    const QString main = QStringLiteral("main"), attached = QStringLiteral("attached");
+    const Json input{{"schemaVersion", 1}, {"rootId", "main"}, {"nodes", Json::array({
+        {{"id", "main"}, {"topic", "Main tree"}, {"children", {"attached"}}},
+        {{"id", "attached"}, {"topic", "Attached"}}
+    })}};
+    CHECK(editor.loadJson(encoded(input)));
+    showEditor(editor);
+    const Json initial = exported(editor);
+    QSignalSpy changed(&editor, &Editor::documentChanged);
+    for (const char *name : {"moveNode", "detachNode", "deleteSelection"})
+        CHECK(!editAction(editor, name).isEnabled());
+    rejectUnchanged(editor, [&] { return editor.moveNode(main, {}); });
+    rejectUnchanged(editor, [&] { return editor.removeNode(main); });
+
+    editor.clearSelection();
+    CHECK(editAction(editor, "addOrphan").isEnabled());
+    trigger(editor, "addOrphan");
+    const QString orphan = editor.selectedNodeId();
+    CHECK(!orphan.isEmpty() && orphan != main && changed.size() == 1);
+    CHECK(exported(editor).at("orphanIds") == Json::array({utf8(orphan)}));
+    CHECK(record(exported(editor), "nodes", orphan).at("topic") == "");
+    auto *draft = &topicInput(editor);
+    draft->setPlainText(QStringLiteral("Orphan tree"));
+    CHECK(editor.hasPendingEdit());
+    CHECK(record(exported(editor), "nodes", orphan).at("topic") == "");
+    CHECK(editor.commitActiveEdit(true));
+    CHECK(activeTopicInput(editor) == draft && !editor.hasPendingEdit() && changed.size() == 2);
+    const Json named = exported(editor);
+    draft->setPlainText(QStringLiteral("Discard this draft"));
+    topicKey(editor, Qt::Key_Escape);
+    CHECK(exported(editor) == named && changed.size() == 2);
+    CHECK(editAction(editor, "toggleBold").isChecked());
+    CHECK(textItem(editor, QStringLiteral("Orphan tree"))->document()->defaultFont().bold());
+    CHECK(editAction(editor, "moveNode").isEnabled() && editAction(editor, "deleteSelection").isEnabled());
+    CHECK(!editAction(editor, "detachNode").isEnabled());
+    CHECK(editor.undo());
+    CHECK(record(exported(editor), "nodes", orphan).at("topic") == "");
+    CHECK(editor.undo() && exported(editor) == initial && !editor.canUndo());
+    CHECK(editor.redo() && editor.redo() && exported(editor) == named);
+    CHECK(editor.selectedNodeId() == orphan);
+
+    changed.clear();
+    shortcut(editor, Qt::Key_Return); // Enter on any tree root creates a child.
+    const QString child = editor.selectedNodeId();
+    CHECK(!child.isEmpty() && child != orphan && changed.size() == 1);
+    CHECK(record(exported(editor), "nodes", orphan).at("children") == Json::array({utf8(child)}));
+    topicInput(editor).setPlainText(QStringLiteral("Orphan child"));
+    topicKey(editor, Qt::Key_Return);
+    CHECK(changed.size() == 2 && !activeTopicInput(editor));
+    const QString leaf = editor.addNode(child, QStringLiteral("Deep orphan leaf"));
+    CHECK(!leaf.isEmpty());
+    const QString link = editor.addLink(attached, leaf, true, QStringLiteral("Across trees"));
+    CHECK(!link.isEmpty());
+    CHECK(editor.selectNode(orphan));
+    const Json forest = exported(editor);
+    changed.clear();
+    CHECK(editor.setExpanded(orphan, false));
+    CHECK(texts(editor, QStringLiteral("Orphan child")).isEmpty());
+    CHECK(texts(editor, QStringLiteral("Deep orphan leaf")).isEmpty());
+    CHECK(exported(editor) == forest && changed.isEmpty());
+    const auto outline = editor.outline();
+    CHECK(outline.size() == 5);
+    const QStringList ids{main, attached, orphan, child, leaf};
+    const std::vector<int> levels{1, 2, 1, 2, 3};
+    for (int i = 0; i < outline.size(); ++i) {
+        CHECK(outline[i].id == ids[i] && outline[i].level == levels[i]);
+    }
+    const QString markdown = editor.toMarkdown();
+    const auto heading = [](const QString &id, int level, const QString &topic) {
+        return QString(level, QLatin1Char('#')) + QStringLiteral(" <a id=\"m3-node-") +
+            QString::fromLatin1(id.toUtf8().toHex()) + QStringLiteral("\"></a>") + topic;
+    };
+    CHECK(markdown.contains(heading(main, 1, QStringLiteral("Main tree"))));
+    CHECK(markdown.contains(heading(orphan, 1, QStringLiteral("Orphan tree"))));
+    CHECK(markdown.contains(heading(leaf, 3, QStringLiteral("Deep orphan leaf"))));
+    const HtmlPage html(editor.toHtml());
+    CHECK(html.values(QStringLiteral("title")) == QStringList{QStringLiteral("Main tree")});
+    CHECK(html.tags(QStringLiteral("article")).size() == 5);
+    const auto articles = html.tags(QStringLiteral("article"));
+    const int mainList = html.elements[html.elements[articles[0]].parent].parent;
+    const int orphanList = html.elements[html.elements[articles[2]].parent].parent;
+    CHECK(mainList == orphanList && html.elements[mainList].tag == QStringLiteral("ul"));
+    CHECK(html.elements[articles[4]].text.contains(QStringLiteral("Deep orphan leaf")));
+    CHECK(changed.isEmpty() && exported(editor) == forest);
+    editor.findText(QStringLiteral("Deep orphan leaf"), Qt::CaseSensitive);
+    CHECK(editor.selectedNodeId() == leaf && !texts(editor, QStringLiteral("Deep orphan leaf")).isEmpty());
+    CHECK(exported(editor) == forest && changed.isEmpty());
+
+    CHECK(editor.selectNode(child));
+    CHECK(editAction(editor, "detachNode").isEnabled());
+    trigger(editor, "detachNode");
+    const Json detached = exported(editor);
+    CHECK(changed.size() == 1 && editor.selectedNodeId() == child);
+    CHECK(detached.at("orphanIds") == Json::array({utf8(orphan), utf8(child)}));
+    CHECK(record(detached, "nodes", orphan).at("children").empty());
+    CHECK(record(detached, "nodes", child).at("children") == Json::array({utf8(leaf)}));
+    CHECK(hasRecord(detached, "crossLinks", link));
+    CHECK(!editAction(editor, "detachNode").isEnabled());
+    CHECK(editor.undo() && exported(editor) == forest && editor.selectedNodeId() == child);
+    CHECK(editor.redo() && exported(editor) == detached && editor.selectedNodeId() == child);
+    changed.clear();
+    dialogs({[&](QDialog *dialog) {
+        auto *parent = dialog->findChild<QComboBox *>(QStringLiteral("newParent"));
+        CHECK(parent && !pickerIds(*parent).contains(child) && !pickerIds(*parent).contains(leaf));
+        CHECK(parent->currentIndex() >= 0);
+        chooseId(*parent, orphan);
+        dialog->accept();
+    }}, [&] { trigger(editor, "moveNode"); });
+    CHECK(changed.size() == 1 && exported(editor) == forest && editor.selectedNodeId() == child);
+    CHECK(editor.undo() && exported(editor) == detached);
+    CHECK(editor.redo() && exported(editor) == forest);
+
+    // Root-to-node dragging reattaches once; blank, descendant and main-root drags do not mutate.
+    CHECK(editor.setExpanded(attached, true)); // The initial depth frontier also folds leaves.
+    CHECK(editor.selectNode(orphan));
+    assertFit(editor);
+    auto &view = graphics(editor);
+    changed.clear();
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, labelPoint(editor, QStringLiteral("Orphan tree")));
+    const QPoint target = labelPoint(editor, QStringLiteral("Attached"));
+    movePointer(view, target, Qt::LeftButton);
+    CHECK(changed.isEmpty() && exported(editor) == forest);
+    CHECK(view.viewport()->cursor().shape() == Qt::DragMoveCursor);
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, target);
+    pump();
+    const Json reattached = exported(editor);
+    CHECK(changed.size() == 1 && editor.selectedNodeId() == orphan);
+    CHECK(!reattached.contains("orphanIds"));
+    CHECK(record(reattached, "nodes", attached).at("children") == Json::array({utf8(orphan)}));
+    CHECK(editor.undo() && exported(editor) == forest && editor.selectedNodeId() == orphan);
+    CHECK(editor.redo() && exported(editor) == reattached);
+    CHECK(editor.undo() && exported(editor) == forest);
+    for (int invalid = 0; invalid < 3; ++invalid) {
+        CHECK(editor.selectNode(invalid == 2 ? main : orphan));
+        assertFit(editor);
+        changed.clear();
+        const QString source = invalid == 2 ? QStringLiteral("Main tree") : QStringLiteral("Orphan tree");
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, labelPoint(editor, source));
+        const QPoint destination = invalid == 0 ? blankPoint(view) : labelPoint(editor, QStringLiteral("Orphan child"));
+        movePointer(view, destination, Qt::LeftButton);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, destination);
+        pump();
+        CHECK(exported(editor) == forest && changed.isEmpty());
+    }
+
+    CHECK(editor.selectNode(orphan));
+    shortcut(editor, Qt::Key_Home);
+    CHECK(editor.selectedNodeId() == main && exported(editor) == forest);
+    CHECK(editor.selectNode(child));
+    editor.setReadOnly(true);
+    for (const char *name : {"addOrphan", "detachNode", "moveNode", "deleteSelection", "addChild"}) {
+        CHECK(!editAction(editor, name).isEnabled());
+        editAction(editor, name).trigger();
+    }
+    CHECK(editor.addNode({}, QStringLiteral("Blocked")).isEmpty());
+    CHECK(!editor.moveNode(child, {}));
+    CHECK(!editor.removeNode(orphan));
+    CHECK(editor.setExpanded(orphan, false));
+    CHECK(editor.selectedNodeId() == orphan);
+    CHECK(editor.revealNode(leaf) && editor.selectedNodeId() == leaf);
+    CHECK(exported(editor) == forest && changed.isEmpty());
+    editor.setReadOnly(false);
+    editor.setEnabled(false);
+    CHECK(!editAction(editor, "addOrphan").isEnabled() && !editAction(editor, "detachNode").isEnabled());
+    editor.setEnabled(true);
+
+    // Save/reopen preserves the ordered forest and resets local folding per tree.
+    const QByteArray snapshot = editor.toJson();
+    Editor reopened(config);
+    CHECK(reopened.loadJson(snapshot) && exported(reopened) == forest);
+    CHECK(!reopened.canUndo() && !reopened.canRedo());
+    CHECK(!texts(reopened, QStringLiteral("Orphan child")).isEmpty());
+    CHECK(texts(reopened, QStringLiteral("Deep orphan leaf")).isEmpty());
+    CHECK(reopened.outline().size() == 5);
+    CHECK(reopened.revealNode(leaf));
+    CHECK(!texts(reopened, QStringLiteral("Deep orphan leaf")).isEmpty());
+    CHECK(exported(reopened) == forest);
+
+    CHECK(editor.selectNode(orphan));
+    CHECK(editor.setExpanded(orphan, false));
+    changed.clear();
+    trigger(editor, "deleteSelection");
+    CHECK(changed.size() == 1 && editor.selectedNodeIds().isEmpty()); // No surviving ancestor.
+    CHECK(exported(editor) == initial); // Removing the orphan also removes its incident cross-link.
+    CHECK(editor.undo() && exported(editor) == forest && editor.selectedNodeId() == orphan);
+    CHECK(!texts(editor, QStringLiteral("Deep orphan leaf")).isEmpty()); // Reintroduced IDs start expanded.
+    CHECK(editor.redo() && exported(editor) == initial);
+
+    // A semantic observer may synchronously destroy either action's editor.
+    for (bool detach : {false, true}) {
+        QPointer<Editor> closing = new Editor(config);
+        QString id;
+        if (detach) {
+            id = closing->addNode(QStringLiteral("root"), QStringLiteral("Detach before close"));
+            CHECK(!id.isEmpty() && closing->selectNode(id));
+        }
+        auto *action = closing->commandAction(detach ? QStringLiteral("detachNode") : QStringLiteral("addOrphan"));
+        CHECK(action && action->isEnabled());
+        Json committed;
+        QObject::connect(closing.data(), &Editor::documentChanged, qApp, [&] {
+            committed = exported(*closing);
+            delete closing.data();
+        });
+        action->trigger();
+        CHECK(!closing && committed.at("orphanIds").size() == 1);
+        if (detach) CHECK(committed.at("orphanIds").front() == utf8(id));
+    }
+}
+
 static void history_case() {
     history_commands_case();
     history_link_gestures_case();
@@ -11178,6 +11393,7 @@ int main(int argc, char **argv) {
         else if (name == "markdown") markdown_case();
         else if (name == "document") document_case();
         else if (name == "tree_edits") { tree_edits_case(); tree_edits_scene(); }
+        else if (name == "orphans") orphans_case();
         else if (name == "collapse") { collapse_case(); collapse_scene(); }
         else if (name == "graph_edits") { graph_edits_case(); graph_edits_scene(); }
         else if (name == "images") images_case();

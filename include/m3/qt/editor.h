@@ -47,8 +47,9 @@ class QAction;
 // Multiple nodes support only Delete: no properties, editing or mutation gestures.
 // Viewport/help and selection controls remain available. Delete removes selected
 // subtrees once, including overlaps, in one document change and confirmation.
-// A selection containing the root cannot be deleted. After group deletion, select
-// the visible parent of the first selected subtree not covered by another selection.
+// A selection containing the main root cannot be deleted. After group deletion, select
+// the visible parent of the first uncovered subtree; deleting an orphan root leaves
+// no selected ancestor.
 // Selection, folding, layout direction, zoom/pan and fit never change persisted JSON.
 // Shift+vertical wheel scrolls horizontally; with normal left-to-right controls,
 // down/negative deltas move the viewport right and up/positive deltas move it left.
@@ -57,8 +58,11 @@ class QAction;
 // Drag empty space with the left mouse button to pan; the middle button pans anywhere.
 // Empty space shows an open hand cursor, closing during a pan. Empty clicks clear selection.
 // Node context menus separate creation from editing/reordering and omit viewport actions.
-// With no selection the menu contains only Focus Main Node, Fit, 100%, Zoom In and Zoom Out.
-// For a single node, Collapse/Expand, Move and Add Link are command/shortcut actions.
+// With no selection the menu offers Focus Main Node, Fit, 100%, Zoom In and Zoom Out,
+// followed by Add Orphan Node. Move and Detach Subtree act on non-main nodes; detach
+// is available only for an attached subtree. Collapse/Expand and Add Link are commands.
+// Drag a non-main node, including an orphan root, onto another node to reattach it.
+// Dropping on empty space cancels; detachment requires Detach Subtree.
 // A single selected node shows a small arrow outside its top-right corner. Drag it onto
 // another visible node to create an undirected cross-link without moving either node.
 // Escape, an interrupted gesture, or an invalid drop cancels without changing the document.
@@ -171,7 +175,7 @@ struct EditorConfig {
         QList<QKeySequence> undo{QKeySequence(QKeySequence::Undo)};
         QList<QKeySequence> redo{QKeySequence(QKeySequence::Redo)};
         QList<QKeySequence> addChild{QKeySequence(Qt::Key_Tab), QKeySequence(Qt::Key_Insert)};
-        // The root has no sibling: Enter/Shift+Enter append a child there.
+        // Tree roots have no sibling: Enter/Shift+Enter append a child there.
         QList<QKeySequence> addSibling{QKeySequence(Qt::Key_Return), QKeySequence(Qt::Key_Enter)};
         QList<QKeySequence> addSiblingBefore{QKeySequence(Qt::SHIFT | Qt::Key_Return), QKeySequence(Qt::SHIFT | Qt::Key_Enter)};
         QList<QKeySequence> editSelection{QKeySequence(Qt::Key_F2)};
@@ -213,7 +217,7 @@ struct EditorConfig {
     // Maximum completed document commands; 0 is unlimited. Full native snapshots
     // retain embedded images/opaque data, so this bounds commands, not bytes.
     int undoLimit = 100;
-    // Root is level 1; positive values limit initially visible levels, nonpositive
+    // Every tree root is level 1; positive values limit initially visible levels, nonpositive
     // means unlimited. Copied at construction; applied on successful New/Open only.
     int initialVisibleLevels = 3;
     // UI policy only: the removeNode() API never prompts.
@@ -225,8 +229,8 @@ struct EditorConfig {
     // False passes image request and activation URLs unchanged to the host,
     // including relative/protected resource identifiers. No library I/O occurs.
     bool resolveRelativeUrls = true;
-    // New direct children of the root (UI or addNode) get a random palette color.
-    // Prefer colors unused by current main branches, comparing their effective
+    // New direct children of any tree root (UI or addNode) get a random palette color.
+    // Prefer colors unused by that tree's direct branches, comparing their effective
     // QColor values (local override or inherited root color); nested overrides
     // do not reserve colors. Once all 23 are used, allow any palette color.
     // Enabled by default. Creation only: loading/moving nodes never recolors them.
@@ -251,17 +255,19 @@ public:
     // Lowering a positive limit discards excess undo/redo states; 0 is unlimited.
     void setUndoLimit(int limit);
     void setConfirmSubtreeDeletion(bool enabled);
-    // Affects future direct-root-child creation only, never existing colors.
+    // Affects future direct children of any tree root only, never existing colors.
     void setAutoRandomBranchColor(bool enabled);
     // Borrowed command action by stable, case-sensitive name; null for empty/missing.
     // The editor owns lifetime, shortcuts and enablement. Hosts may present actions
     // in toolbars/menus, but must not delete, reparent or override those policies.
-    // Names: undo, redo, addChild, addSibling, addSiblingBefore, editSelection,
-    // deleteSelection, toggleExpanded, moveNode, moveUp, moveDown, addLink, editLink,
+    // Names: undo, redo, addChild, addOrphan, addSibling, addSiblingBefore, editSelection,
+    // deleteSelection, toggleExpanded, moveNode, detachNode, moveUp, moveDown, addLink, editLink,
     // zoomIn, zoomOut, resetZoom, fit, selectRoot, selectParent, selectChild,
     // previousSibling, nextSibling, copy, clearSelection, toggleBold, toggleItalic,
     // resetStyle, textColor, fillColor, editTags, editIcons, editNote, toggleProperties,
     // editTopic, showHelp. Triggering retains the same checked inline-commit behavior.
+    // addOrphan creates an independent tree and starts topic editing; detachNode
+    // detaches an attached non-main subtree. Neither has a default shortcut.
     // toggleBold/toggleItalic are checkable and reflect the selected node's parsed
     // appearance (including defaults), not QAction's optimistic activation state.
     // Toolbar formatting: fontSize is a QWidgetAction creating a size combo for each
@@ -330,14 +336,17 @@ public:
     bool undo();
     bool redo();
     QByteArray toJson() const;
-    // Copied Markdown text of the committed model, empty on error. No selection,
+    // Copied Markdown text of the committed forest, each tree root at level 1.
+    // Empty on error. No selection,
     // layout, or document changes; an active inline draft remains uncommitted.
     QString toMarkdown() const;
     // Copied standalone HTML: top-left switch between the current-layout visible
-    // map (shown initially) and full articles. Committed data only; no editor state
+    // map (shown initially) and full articles for all trees, each root at level 1.
+    // The main root supplies the title. Committed data only; no editor state
     // changes. Empty on error; the snapshot survives edits and widget destruction.
     QString toHtml() const;
     QString lastError() const;
+    // Empty parentId creates an orphan tree; otherwise inserts a child. -1 appends.
     QString addNode(const QString &parentId, const QString &topic, int index = -1);
     bool renameNode(const QString &id, const QString &topic);
     // Copied complete committed node record, empty on error. IDs are immutable.
@@ -347,7 +356,10 @@ public:
     // no documentChanged. Read-only or invalid patches return false. Expansion
     // patches are rejected; use setExpanded() for editor-local folding.
     bool updateNode(const QString &id, const QByteArray &patch);
+    // Removes a subtree, including orphan roots. The main root is protected.
     bool removeNode(const QString &id);
+    // Empty parentId detaches/reorders an orphan; a node ID attaches it there.
+    // Index is after removal from the old list; -1 appends. Main root cannot move.
     bool moveNode(const QString &id, const QString &parentId, int index = -1);
     // View-only, including read-only editors: no JSON/history/semantic signals.
     // Idempotent; missing IDs fail without changing folds or selection.
@@ -355,7 +367,8 @@ public:
     QString addLink(const QString &sourceId, const QString &targetId, bool directed, const QString &topic = {});
     bool updateLink(const QString &id, const QString &sourceId, const QString &targetId, bool directed, const QString &topic);
     bool removeLink(const QString &id);
-    // Complete node preorder, including collapsed descendants; root level is 1.
+    // Complete preorder: main tree, then ordered orphan trees, including collapsed
+    // descendants. Each tree root is level 1; the main root remains the title.
     // Empty output reports an error for a live document.
     QVector<OutlineEntry> outline() const;
     // Select and scroll at the current zoom, opening collapsed ancestors without

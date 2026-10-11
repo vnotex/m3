@@ -106,7 +106,11 @@ void append_endpoint(std::string &out, const Model &model, const std::string &id
 }
 std::string encode_markdown(const Model &model) {
     struct Frame { const Node *node; size_t depth; };
-    std::vector<Frame> pending{{&get_node(model, model.root), 0}};
+    std::vector<Frame> pending;
+    pending.reserve(model.orphans.size() + 1);
+    for (auto it = model.orphans.rbegin(); it != model.orphans.rend(); ++it)
+        pending.push_back({&get_node(model, *it), 0});
+    pending.push_back({&get_node(model, model.root), 0});
     std::string out;
     while (!pending.empty()) {
         const auto frame = pending.back();

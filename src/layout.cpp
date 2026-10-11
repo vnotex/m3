@@ -23,12 +23,16 @@ Geometry layout_tree(const M3LayoutNode *nodes, size_t count, const M3LayoutOpti
     Geometry result;
     if (!count) return result;
     std::vector<Adjacency> adjacency(count);
-    size_t root = M3_NO_PARENT;
+    size_t first_root = M3_NO_PARENT, last_root = M3_NO_PARENT;
     // One input pass constructs sibling lists in declared order.
     for (size_t i = 0; i < count; ++i) {
         dimensions(nodes[i].width, nodes[i].height);
         auto parent = nodes[i].parent_index;
-        if (parent == M3_NO_PARENT) { valid(root == M3_NO_PARENT); root = i; }
+        if (parent == M3_NO_PARENT) {
+            if (last_root == M3_NO_PARENT) first_root = i;
+            else adjacency[last_root].next = i;
+            last_root = i;
+        }
         else {
             valid(parent < count && parent != i);
             auto &p = adjacency[parent];
@@ -37,29 +41,37 @@ Geometry layout_tree(const M3LayoutNode *nodes, size_t count, const M3LayoutOpti
             p.last = i;
         }
     }
-    valid(root != M3_NO_PARENT);
+    valid(first_root != M3_NO_PARENT);
     std::vector<size_t> order;
-    order.reserve(count); order.push_back(root);
-    for (size_t i = 0; i < order.size(); ++i)
-        for (size_t c = adjacency[order[i]].first; c != M3_NO_PARENT; c = adjacency[c].next) order.push_back(c);
-    // Each non-root has exactly one parent. A cycle must be disconnected.
+    order.reserve(count);
+    // Keep each component contiguous, with parents before children.
+    for (size_t root = first_root; root != M3_NO_PARENT; root = adjacency[root].next) {
+        const size_t begin = order.size();
+        order.push_back(root);
+        for (size_t i = begin; i < order.size(); ++i)
+            for (size_t c = adjacency[order[i]].first; c != M3_NO_PARENT; c = adjacency[c].next) order.push_back(c);
+    }
+    // Each non-root has exactly one parent. A cycle cannot reach any root.
     valid(order.size() == count);
     result.rects.resize(count);
-    result.rects[root] = {-nodes[root].width / 2, -nodes[root].height / 2, nodes[root].width, nodes[root].height};
+    for (size_t root = first_root; root != M3_NO_PARENT; root = adjacency[root].next)
+        result.rects[root] = {-nodes[root].width / 2, -nodes[root].height / 2, nodes[root].width, nodes[root].height};
     if (o.direction == M3_LAYOUT_OUTLINE) {
-        double bottom = finite(result.rects[root].y + nodes[root].height);
-        size_t i = adjacency[root].first;
-        while (i != M3_NO_PARENT) {
-            const auto &n = nodes[i];
-            const auto &p = result.rects[n.parent_index];
-            const double y = finite(bottom + o.vertical_gap);
-            result.rects[i] = {finite(p.x + o.horizontal_gap), y, n.width, n.height};
-            bottom = finite(y + n.height);
-            if (adjacency[i].first != M3_NO_PARENT) i = adjacency[i].first;
-            else {
-                // Parent links let preorder resume without a recursive call stack.
-                while (i != root && adjacency[i].next == M3_NO_PARENT) i = nodes[i].parent_index;
-                i = adjacency[i].next;
+        for (size_t root = first_root; root != M3_NO_PARENT; root = adjacency[root].next) {
+            double bottom = finite(result.rects[root].y + nodes[root].height);
+            size_t i = adjacency[root].first;
+            while (i != M3_NO_PARENT) {
+                const auto &n = nodes[i];
+                const auto &p = result.rects[n.parent_index];
+                const double y = finite(bottom + o.vertical_gap);
+                result.rects[i] = {finite(p.x + o.horizontal_gap), y, n.width, n.height};
+                bottom = finite(y + n.height);
+                if (adjacency[i].first != M3_NO_PARENT) i = adjacency[i].first;
+                else {
+                    // Parent links let preorder resume without a recursive call stack.
+                    while (i != root && adjacency[i].next == M3_NO_PARENT) i = nodes[i].parent_index;
+                    i = i == root ? M3_NO_PARENT : adjacency[i].next;
+                }
             }
         }
     } else {
@@ -75,30 +87,32 @@ Geometry layout_tree(const M3LayoutNode *nodes, size_t count, const M3LayoutOpti
             stacks[i] = stack;
             spans[i] = std::max(nodes[i].height, stack);
         }
-        double right_span = 0, left_span = 0;
-        for (size_t c = adjacency[root].first; c != M3_NO_PARENT; c = adjacency[c].next) {
-            const bool right = o.direction == M3_LAYOUT_RIGHT || (o.direction == M3_LAYOUT_BALANCED && right_span <= left_span);
-            sides[c] = right ? 1 : -1;
-            auto &span = right ? right_span : left_span;
-            if (span > 0) span = finite(span + o.vertical_gap);
-            span = finite(span + spans[c]);
-        }
-        double right_cursor = -right_span / 2, left_cursor = -left_span / 2;
-        bool right_started = false, left_started = false;
-        for (size_t c = adjacency[root].first; c != M3_NO_PARENT; c = adjacency[c].next) {
-            auto &cursor = sides[c] == 1 ? right_cursor : left_cursor;
-            auto &started = sides[c] == 1 ? right_started : left_started;
-            if (started) cursor = finite(cursor + o.vertical_gap);
-            started = true;
-            centers[c] = finite(cursor + spans[c] / 2);
-            cursor = finite(cursor + spans[c]);
+        for (size_t root = first_root; root != M3_NO_PARENT; root = adjacency[root].next) {
+            double right_span = 0, left_span = 0;
+            for (size_t c = adjacency[root].first; c != M3_NO_PARENT; c = adjacency[c].next) {
+                const bool right = o.direction == M3_LAYOUT_RIGHT || (o.direction == M3_LAYOUT_BALANCED && right_span <= left_span);
+                sides[c] = right ? 1 : -1;
+                auto &span = right ? right_span : left_span;
+                if (span > 0) span = finite(span + o.vertical_gap);
+                span = finite(span + spans[c]);
+            }
+            double right_cursor = -right_span / 2, left_cursor = -left_span / 2;
+            bool right_started = false, left_started = false;
+            for (size_t c = adjacency[root].first; c != M3_NO_PARENT; c = adjacency[c].next) {
+                auto &cursor = sides[c] == 1 ? right_cursor : left_cursor;
+                auto &started = sides[c] == 1 ? right_started : left_started;
+                if (started) cursor = finite(cursor + o.vertical_gap);
+                started = true;
+                centers[c] = finite(cursor + spans[c] / 2);
+                cursor = finite(cursor + spans[c]);
+            }
         }
         for (size_t i : order) {
-            if (i == root) continue;
             const size_t parent = nodes[i].parent_index;
+            if (parent == M3_NO_PARENT) continue;
             const auto &p = result.rects[parent];
             const auto &n = nodes[i];
-            if (parent != root) sides[i] = sides[parent];
+            if (nodes[parent].parent_index != M3_NO_PARENT) sides[i] = sides[parent];
             const double x = sides[i] == 1 ? finite(finite(p.x + p.width) + o.horizontal_gap)
                 : finite(finite(p.x - o.horizontal_gap) - n.width);
             result.rects[i] = {x, finite(centers[i] - n.height / 2), n.width, n.height};
@@ -110,8 +124,27 @@ Geometry layout_tree(const M3LayoutNode *nodes, size_t count, const M3LayoutOpti
             }
         }
     }
-    double min_x = result.rects[root].x, min_y = result.rects[root].y;
-    double max_x = finite(min_x + nodes[root].width), max_y = finite(min_y + nodes[root].height);
+    if (adjacency[first_root].next != M3_NO_PARENT) {
+        double bottom = 0;
+        for (size_t begin = 0; begin < order.size();) {
+            size_t end = begin + 1;
+            double top = result.rects[order[begin]].y;
+            while (end < order.size() && nodes[order[end]].parent_index != M3_NO_PARENT) {
+                top = std::min(top, result.rects[order[end]].y);
+                ++end;
+            }
+            const double offset = begin == 0 ? 0 : finite(finite(bottom + o.vertical_gap) - top);
+            bottom = top;
+            for (size_t i = begin; i < end; ++i) {
+                auto &r = result.rects[order[i]];
+                if (begin != 0) r.y = finite(r.y + offset);
+                bottom = std::max(bottom, finite(r.y + r.height));
+            }
+            begin = end;
+        }
+    }
+    double min_x = result.rects[first_root].x, min_y = result.rects[first_root].y;
+    double max_x = finite(min_x + nodes[first_root].width), max_y = finite(min_y + nodes[first_root].height);
     for (const auto &r : result.rects) {
         min_x = std::min(min_x, r.x); min_y = std::min(min_y, r.y);
         max_x = std::max(max_x, finite(r.x + r.width)); max_y = std::max(max_y, finite(r.y + r.height));
