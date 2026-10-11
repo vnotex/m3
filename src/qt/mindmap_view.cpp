@@ -17,6 +17,7 @@
 #include <QPlainTextEdit>
 #include <QShortcut>
 #include <QGraphicsScene>
+#include <QGraphicsSceneHoverEvent>
 #include <QGraphicsTextItem>
 #include <QMouseEvent>
 #include <QPainter>
@@ -73,24 +74,30 @@ public:
         : QGraphicsItem(parent), colors(palette) {
         setFlag(ItemIgnoresTransformations);
         setAcceptedMouseButtons(Qt::NoButton);
+        setAcceptHoverEvents(true);
         setCursor(Qt::CrossCursor);
         setToolTip(QCoreApplication::translate("m3::qt::MindMapView", "Drag to create a link"));
     }
     // The parent supplies only the corner anchor; size and gap are device pixels.
     QRectF boundingRect() const override { return QRectF(0, -20, 20, 20); }
     void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
-        p->setPen(QPen(colors.color(QPalette::ButtonText), 1));
-        p->setBrush(colors.color(QPalette::Base));
+        p->setPen(QPen(colors.color(hovered ? QPalette::Highlight : QPalette::ButtonText), 1));
+        p->setBrush(colors.color(hovered ? QPalette::Highlight : QPalette::Base));
         p->drawEllipse(boundingRect().adjusted(0.5, 0.5, -0.5, -0.5));
-        QPen pen(colors.color(QPalette::Highlight), 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        QPen pen(colors.color(hovered ? QPalette::HighlightedText : QPalette::Highlight),
+                 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
         pen.setCosmetic(true);
         p->setPen(pen);
         p->drawLine(QPointF(6, -6), QPointF(14, -14));
         p->drawLine(QPointF(9, -14), QPointF(14, -14));
         p->drawLine(QPointF(14, -14), QPointF(14, -9));
     }
+protected:
+    void hoverEnterEvent(QGraphicsSceneHoverEvent *) override { hovered = true; update(); }
+    void hoverLeaveEvent(QGraphicsSceneHoverEvent *) override { hovered = false; update(); }
 private:
     QPalette colors;
+    bool hovered = false;
 };
 class NodeLinkItem final : public QGraphicsItem {
 public:
@@ -234,6 +241,8 @@ public:
         setPos(node.rectangle.topLeft());
         setZValue(2);
         setFlag(ItemIsSelectable);
+        setAcceptHoverEvents(hasChildren);
+        setFiltersChildEvents(hasChildren);
         auto addText = [this](std::unique_ptr<QTextDocument> text, const QPointF &position, const QColor &color) {
             auto *item = new QGraphicsTextItem(this);
             // setDocument borrows; QObject parenting makes the text item sole owner.
@@ -284,13 +293,33 @@ public:
             p->drawRoundedRect(rectangle.adjusted(0.5, 0.5, -0.5, -0.5), tagCornerRadius, tagCornerRadius);
         if (hasChildren) {
             const QPointF center = affordance().center();
-            p->setPen(QPen(colors.color(QPalette::ButtonText), 1));
-            p->setBrush(colors.color(QPalette::Base));
+            p->setPen(QPen(colors.color(expansionHovered ? QPalette::HighlightedText : QPalette::ButtonText), 1));
+            p->setBrush(colors.color(expansionHovered ? QPalette::Highlight : QPalette::Base));
             p->drawEllipse(center, 6, 6);
             p->drawLine(center - QPointF(3, 0), center + QPointF(3, 0));
             if (!expanded) p->drawLine(center - QPointF(0, 3), center + QPointF(0, 3));
         }
     }
+protected:
+    bool sceneEventFilter(QGraphicsItem *watched, QEvent *event) override {
+        // Accepting children receive hover moves instead of their parent.
+        if (event->type() == QEvent::GraphicsSceneHoverEnter || event->type() == QEvent::GraphicsSceneHoverMove)
+            updateExpansionHover(watched->mapToItem(this, static_cast<QGraphicsSceneHoverEvent *>(event)->pos()));
+        return false;
+    }
+    void hoverEnterEvent(QGraphicsSceneHoverEvent *event) override { updateExpansionHover(event->pos()); }
+    void hoverMoveEvent(QGraphicsSceneHoverEvent *event) override { updateExpansionHover(event->pos()); }
+    void hoverLeaveEvent(QGraphicsSceneHoverEvent *) override { setExpansionHovered(false); }
+private:
+    void updateExpansionHover(const QPointF &position) {
+        setExpansionHovered(hasChildren && affordance().contains(position));
+    }
+    void setExpansionHovered(bool hovered) {
+        if (expansionHovered == hovered) return;
+        expansionHovered = hovered;
+        update(affordance());
+    }
+    bool expansionHovered = false;
 };
 QRectF placeLabel(const QRectF &initial, const std::vector<QRectF> &occupied) {
     auto collision = [&](const QRectF &candidate) {
