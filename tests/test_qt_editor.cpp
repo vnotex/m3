@@ -4701,24 +4701,38 @@ static void separated_properties_case() {
         delete parent; pump();
         CHECK(!editor && !panel && !external && destroyed == 1);
     }
-    // A property commit may synchronously close the editor or just its borrowed panel.
-    for (bool closeEditor : {false, true}) {
+    // Direct commands allow immediate teardown; QLineEdit::setText must finish first.
+    for (bool viaInput : {false, true}) for (bool closeEditor : {false, true}) {
         QWidget external;
         QPointer<Editor> editor = new Editor(config);
         QPointer<QWidget> panel = editor->nodePropertiesPanel();
         panel->setParent(&external);
         QPointer<QLineEdit> tags = panel->findChild<QLineEdit *>(QStringLiteral("nodeTags"));
         CHECK(tags);
+        Json observed;
         QObject::connect(editor, &Editor::documentChanged, &external, [&] {
-            if (closeEditor) delete editor.data(); else delete panel.data();
+            observed = exported(*editor);
+            if (viaInput) {
+                if (closeEditor) editor->deleteLater(); else panel->deleteLater();
+            } else {
+                if (closeEditor) delete editor.data(); else delete panel.data();
+            }
         });
-        tags->setText(QStringLiteral("Close from property commit"));
+        if (viaInput) {
+            tags->setText(QStringLiteral("Close from property commit"));
+            CHECK(editor && panel && tags);
+            pump();
+        } else {
+            CHECK(editor->updateNode(QStringLiteral("root"),
+                encoded(Json{{"tags", Json::array({"Close from property commit"})}})));
+        }
         CHECK(!panel && !tags);
+        CHECK(record(observed, "nodes", QStringLiteral("root")).at("tags") ==
+            Json::array({"Close from property commit"}));
         if (closeEditor) CHECK(!editor);
         else {
             CHECK(editor && !editor->nodePropertiesPanel());
-            CHECK(record(exported(*editor), "nodes", QStringLiteral("root")).at("tags") ==
-                Json::array({"Close from property commit"}));
+            CHECK(exported(*editor) == observed);
             delete editor.data();
         }
     }

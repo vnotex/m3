@@ -178,6 +178,11 @@ destroy the panel first; the accessor then returns null rather than creating a r
 Never create a second properties widget or share the panel between editors. VNote defaults
 to separated mode and exposes the preference in Settings, effective on newly opened maps.
 
+When `documentChanged` is emitted inside a properties `QLineEdit::setText()` / `textChanged`
+operation, hosts must use `deleteLater()` to close the editor or panel: Qt still uses the line
+control after the signal returns. Direct editor commands continue to support synchronous host
+teardown; do not defer the property commit itself.
+
 ### Document lifecycle and host policy
 - **New/Open/Close:** the constructor already creates a selected root. Use `newDocument(topic)` or `loadJson(bytes)` to replace it; failed imports preserve the current document, selection, camera and folds. In a full host, prompt Save/Discard/Cancel before replacing a dirty document or closing. Track the filename separately and update it only on successful load/save. Reuse `DemoWindow::mayReplace`, `openFile`, `saveFile`, and `closeEvent` in `examples/qt_demo_window.cpp` as the reference, not as library internals.
 - **Blank input:** `loadJson()` treats zero bytes or only JSON whitespace (space, tab, CR, LF) as `newDocument()`: a selected `root` / `Central topic`, centered at 100%, with fresh history and no pending draft. Host loads remain allowed in read-only mode. Nonblank input retains the existing import rules (including optional-field trees); invalid input is never replaced with a default map. The Qt-free C JSON parser remains strict about blank input.
