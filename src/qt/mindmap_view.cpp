@@ -928,11 +928,25 @@ void MindMapView::updateTopicEditorGeometry() {
     topicEditor->setGeometry(x, y, width, height);
 }
 bool MindMapView::event(QEvent *event) {
+    if (event->type() == QEvent::Leave || event->type() == QEvent::Hide) pointerPosition.reset();
     if (handleLinkReconnectEvent(event) || handleLinkCreationEvent(event) || handleImageResizeEvent(event) ||
         handleNodeLinkEvent(event) || handleNodeDragEvent(event)) return true;
     return QGraphicsView::event(event);
 }
 bool MindMapView::viewportEvent(QEvent *event) {
+    switch (event->type()) {
+    case QEvent::MouseMove:
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonRelease:
+    case QEvent::MouseButtonDblClick:
+        pointerPosition = static_cast<QMouseEvent *>(event)->pos();
+        break;
+    case QEvent::Leave:
+    case QEvent::Hide:
+        pointerPosition.reset();
+        break;
+    default: break;
+    }
     if (handleLinkReconnectEvent(event) || handleLinkCreationEvent(event) || handleImageResizeEvent(event) ||
         handleNodeLinkEvent(event) || handleNodeDragEvent(event)) return true;
     return QGraphicsView::viewportEvent(event);
@@ -1415,6 +1429,13 @@ void MindMapView::install(Presentation presentation, bool resetCamera) {
     preserveCenter(resetCamera ? rootCenter : center);
     updateTopicEditorGeometry();
     schedulePendingCamera();
+    if (pointerPosition && viewport()->rect().contains(*pointerPosition)) {
+        // The replacement scene needs its own hover owner even if the pointer has not moved.
+        QMouseEvent hover(QEvent::MouseMove, QPointF(*pointerPosition),
+                          QPointF(viewport()->mapToGlobal(*pointerPosition)),
+                          Qt::NoButton, Qt::NoButton, QApplication::keyboardModifiers());
+        QGraphicsView::mouseMoveEvent(&hover);
+    }
     if (cameraChanged) emit zoomChanged(1.0, false);
 }
 QImage MindMapView::renderImage(Presentation presentation) const {
@@ -2145,7 +2166,12 @@ void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
     updatePanCursor(event->pos());
 }
 void MindMapView::mouseDoubleClickEvent(QMouseEvent *event) {
-    if (readOnly || selectedNodes.size() > 1 || suppressNodeDoubleClick ||
+    bool expansion = false;
+    if (event->button() == Qt::LeftButton) {
+        if (auto *node = dynamic_cast<NodeItem *>(targetAt(event->pos())))
+            expansion = node->hasChildren && node->affordance().contains(node->mapFromScene(mapToScene(event->pos())));
+    }
+    if ((readOnly && !expansion) || selectedNodes.size() > 1 || suppressNodeDoubleClick ||
         ((event->modifiers().testFlag(Qt::ShiftModifier) || event->modifiers().testFlag(Qt::ControlModifier)) &&
          dynamic_cast<NodeItem *>(targetAt(event->pos())))) {
         clearLinkReconnect();
@@ -2181,7 +2207,7 @@ void MindMapView::mouseDoubleClickEvent(QMouseEvent *event) {
         updatePanCursor(event->pos());
         return;
     }
-    if (event->button() == Qt::LeftButton) { event->accept(); pick(event, true); }
+    if (event->button() == Qt::LeftButton) { event->accept(); pick(event, !expansion); }
     else QGraphicsView::mouseDoubleClickEvent(event);
 }
 void MindMapView::wheelEvent(QWheelEvent *event) {

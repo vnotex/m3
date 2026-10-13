@@ -7773,8 +7773,12 @@ static void inline_label_hit_case() {
         topicKey(editor, Qt::Key_Escape);
         const QPoint expansion = view.mapFromScene(QPointF(node.right() - 15, node.center().y()));
         noEdit(expansion);
+        CHECK(!texts(editor, QStringLiteral("Alpha")).isEmpty());
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, expansion);
         CHECK(texts(editor, QStringLiteral("Alpha")).isEmpty());
         noEdit(expansion);
+        CHECK(texts(editor, QStringLiteral("Alpha")).isEmpty());
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, expansion);
         CHECK(!texts(editor, QStringLiteral("Alpha")).isEmpty());
         doubleClick(labelPoint(editor, topic));
         CHECK(topicInput(editor).toPlainText() == topic);
@@ -10637,7 +10641,68 @@ static void folding_positions() {
     CHECK(std::abs(editor.zoomFactor() - 1.375) < 1e-6);
 }
 
+static void collapse_hover_scene() {
+    for (bool readOnly : {false, true}) for (qreal zoom : {qreal(1), qreal(1.5)}) {
+        Editor editor;
+        QPalette palette = editor.palette();
+        palette.setColor(QPalette::Base, Qt::white);
+        palette.setColor(QPalette::Highlight, QColor(30, 95, 210));
+        palette.setColor(QPalette::HighlightedText, Qt::white);
+        editor.setPalette(palette);
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        editor.setReadOnly(readOnly);
+        showEditor(editor);
+        editor.zoom(zoom);
+        CHECK(editor.revealNode(QStringLiteral("a")));
+        pump();
+        auto &view = graphics(editor);
+        const QRectF node = topicRect(editor, QStringLiteral("Alpha"));
+        const QPointF center(node.right() - 15, node.center().y());
+        const QPoint button = view.mapFromScene(center);
+        const QRectF circle(center - QPointF(8, 8), QSizeF(16, 16));
+        const Json original = exported(editor);
+        auto checkHover = [&](bool hovered) {
+            const QImage image = paintScene(editor, circle);
+            const QColor actual = image.pixelColor(imagePoint(image, circle, center + QPointF(3, -3)));
+            const QColor expected = palette.color(hovered ? QPalette::Highlight : QPalette::Base);
+            CHECK(std::abs(actual.red() - expected.red()) <= 2 &&
+                  std::abs(actual.green() - expected.green()) <= 2 &&
+                  std::abs(actual.blue() - expected.blue()) <= 2);
+        };
+        movePointer(view, blankPoint(view), Qt::NoButton);
+        checkHover(false);
+        movePointer(view, button, Qt::NoButton);
+        checkHover(true);
+        for (bool expanded : {false, true}) {
+            // Qt delivers the second rapid press as a double-click, not another press.
+            if (expanded) QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, button);
+            else QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, button);
+            checkHover(true);
+            QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, button);
+            pump();
+            checkHover(true);
+            CHECK(texts(editor, QStringLiteral("Delta")).isEmpty() == !expanded);
+            CHECK(exported(editor) == original && !activeTopicInput(editor));
+        }
+        movePointer(view, blankPoint(view), Qt::NoButton);
+        checkHover(false);
+        movePointer(view, button, Qt::NoButton);
+        checkHover(true);
+        QEvent leave(QEvent::Leave);
+        QCoreApplication::sendEvent(view.viewport(), &leave);
+        checkHover(false);
+        CHECK(editor.setExpanded(QStringLiteral("a"), false));
+        checkHover(false);
+        movePointer(view, button, Qt::NoButton);
+        checkHover(true);
+        editor.hide();
+        CHECK(editor.setExpanded(QStringLiteral("a"), true));
+        checkHover(false);
+    }
+}
+
 static void collapse_scene() {
+    collapse_hover_scene();
     Editor editor;
     const Json input = editorFixture();
     CHECK(editor.loadJson(encoded(input)));

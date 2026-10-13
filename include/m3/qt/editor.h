@@ -153,6 +153,7 @@ struct FindResult { int totalMatches = 0; int currentMatch = -1; };
 // link topics inline. Node double-click editing accepts the topic label or blank
 // space inside the node, including empty topics. Images, tags, icons and the
 // expand/collapse button remain excluded; blank canvas space does not start editing.
+// Expand/collapse toggles on each left-button press, including rapid repeated clicks.
 // Link topics are literal text, without node hashtag parsing.
 // These letters remain ordinary input while typing, including in the inline draft.
 // P toggles the selected node's embedded properties card, keeping focus on the canvas.

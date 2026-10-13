@@ -87,6 +87,7 @@ private:
     Qt::MouseButton panning = Qt::NoButton;
     QSet<QString> selectedNodes;
     bool suppressNodeDoubleClick = false;
+    std::optional<QPoint> pointerPosition;
     bool pendingFit = false;
     std::optional<QPointF> pendingCenter;
     bool cameraScheduled = false;
