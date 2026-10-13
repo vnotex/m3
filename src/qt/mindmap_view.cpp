@@ -2,13 +2,10 @@
 #include <QAction>
 #include <QApplication>
 #include <QCursor>
-#include <QDir>
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
-#include <QMimeData>
-#include <QUrl>
 #include <QFocusEvent>
 #include <QFontDatabase>
 #include <QGraphicsItem>
@@ -54,14 +51,6 @@ QString resolveFontFamily(const QString &families) {
             if (requested.compare(family, Qt::CaseInsensitive) == 0) return family;
     }
     return {};
-}
-QString droppedLocalFilePath(const QMimeData *mime) {
-    if (!mime) return {};
-    const auto urls = mime->urls();
-    if (urls.size() != 1 || !urls.front().isValid() || !urls.front().isLocalFile()) return {};
-    const QString path = urls.front().toLocalFile();
-    if (path.isEmpty() || path.contains(QChar::Null) || !QDir::isAbsolutePath(path)) return {};
-    return path;
 }
 constexpr qreal tagHorizontalPadding = 6;
 constexpr qreal tagVerticalPadding = 3;
@@ -948,9 +937,12 @@ bool MindMapView::viewportEvent(QEvent *event) {
         handleNodeLinkEvent(event) || handleNodeDragEvent(event)) return true;
     return QGraphicsView::viewportEvent(event);
 }
+void MindMapView::setMimeDataPredicate(MimeDataPredicate predicate) {
+    mimeDataPredicate = std::move(predicate);
+}
 void MindMapView::dragEnterEvent(QDragEnterEvent *event) {
-    if (readOnly || selectedNodes.size() > 1 || !event->possibleActions().testFlag(Qt::CopyAction) ||
-        droppedLocalFilePath(event->mimeData()).isEmpty()) {
+    if (!isEnabled() || readOnly || selectedNodes.size() > 1 || !event->possibleActions().testFlag(Qt::CopyAction) ||
+        !mimeDataPredicate || !mimeDataPredicate(event->mimeData())) {
         event->ignore();
         return;
     }
@@ -963,8 +955,8 @@ void MindMapView::dragMoveEvent(QDragMoveEvent *event) {
 #else
     const QPoint position = event->pos();
 #endif
-    if (readOnly || selectedNodes.size() > 1 || !event->possibleActions().testFlag(Qt::CopyAction) ||
-        droppedLocalFilePath(event->mimeData()).isEmpty() || !viewport()->rect().contains(position) ||
+    if (!isEnabled() || readOnly || selectedNodes.size() > 1 || !event->possibleActions().testFlag(Qt::CopyAction) ||
+        !mimeDataPredicate || !mimeDataPredicate(event->mimeData()) || !viewport()->rect().contains(position) ||
         !dynamic_cast<NodeItem *>(targetAt(position))) {
         event->ignore();
         return;
@@ -973,18 +965,17 @@ void MindMapView::dragMoveEvent(QDragMoveEvent *event) {
     event->accept();
 }
 void MindMapView::dragLeaveEvent(QDragLeaveEvent *event) {
-    // Canvas file drags bypass scene entry, so leave must bypass the scene too.
+    // Canvas MIME drags bypass scene entry, so leave must bypass the scene too.
     event->accept();
 }
 void MindMapView::dropEvent(QDropEvent *event) {
-    const QString filePath = droppedLocalFilePath(event->mimeData());
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     const QPoint position = event->position().toPoint();
 #else
     const QPoint position = event->pos();
 #endif
-    if (readOnly || selectedNodes.size() > 1 || !event->possibleActions().testFlag(Qt::CopyAction) ||
-        filePath.isEmpty() || !viewport()->rect().contains(position)) {
+    if (!isEnabled() || readOnly || selectedNodes.size() > 1 || !event->possibleActions().testFlag(Qt::CopyAction) ||
+        !mimeDataPredicate || !mimeDataPredicate(event->mimeData()) || !viewport()->rect().contains(position)) {
         event->ignore();
         return;
     }
@@ -1000,7 +991,7 @@ void MindMapView::dropEvent(QDropEvent *event) {
     event->setDropAction(Qt::CopyAction);
     event->accept();
     // The receiver may replace the scene or destroy the editor synchronously.
-    emit fileDropped(nodeId, filePath);
+    emit mimeDataDropped(nodeId, event->mimeData());
 }
 void MindMapView::clearLinkCreation() {
     if (linkSourceId.isEmpty()) return;

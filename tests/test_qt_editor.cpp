@@ -92,6 +92,29 @@ static QString qs(const Json &value) {
 }
 static std::string utf8(const QString &text) { return text.toUtf8().toStdString(); }
 static QByteArray encoded(const Json &value) { return QByteArray::fromStdString(value.dump()); }
+// A real host override reached only through the native action/drag boundary.
+class MimeEditor : public Editor {
+public:
+    using Editor::Editor;
+    QStringList targets;
+    QList<MimeInsertionSource> origins;
+    std::function<void()> insertion;
+protected:
+    bool canInsertFromMimeData(const QMimeData *source, MimeInsertionSource) const override {
+        return source && (source->hasUrls() || source->hasImage() ||
+            source->text().startsWith(QStringLiteral("https://")));
+    }
+    void insertFromMimeData(const QString &id, const QMimeData *source, MimeInsertionSource origin) override {
+        targets.append(id);
+        origins.append(origin);
+        const auto urls = source->urls();
+        const QString url = urls.isEmpty() ? source->text() : urls.front().toString(QUrl::FullyEncoded);
+        if (insertion) {
+            const auto callback = insertion;
+            callback();
+        } else CHECK(updateNode(id, encoded(Json{{"hyperLink", utf8(url)}})));
+    }
+};
 static Json exported(const Editor &editor) {
     const QByteArray text = editor.toJson();
     CHECK(!text.isEmpty());
@@ -1396,6 +1419,125 @@ static void tree_edits_case() {
     CHECK(after.at("crossLinks").size() == 1 && after.at("crossLinks").front().at("id") == "l3");
     CHECK(editor.selectedNodeId() == QStringLiteral("r") && editor.selectedLinkId().isEmpty());
     CHECK(editor.lastError().isEmpty());
+
+    for (int index : {-1, 0}) {
+        Editor batch;
+        CHECK(batch.loadJson(encoded(input)) && batch.selectNode(QStringLiteral("b")));
+        const Json before = exported(batch);
+        const Json records = Json::parse(R"([{"topic":"First","hyperLink":"docs/a%20b%23%25.txt",
+            "image":{"url":"images/a.png","width":32,"height":16},
+            "style":{"custom":{"keep":[true,9007199254740993]}}},
+            {"topic":"Second","note":"Complete at publication","tags":["batch"]}])");
+        QSignalSpy mutations(&batch, &Editor::documentChanged), selection(&batch, &Editor::selectionChanged);
+        Json observed;
+        QObject::connect(&batch, &Editor::documentChanged, &batch, [&] { observed = exported(batch); });
+        const auto ids = batch.addNodes(QStringLiteral("a"), encoded(records), index);
+        CHECK(ids.size() == 2 && ids.front() != ids.back());
+        CHECK(batch.selectedNodeId() == QStringLiteral("b") && selection.isEmpty() && mutations.size() == 1);
+        CHECK(observed == exported(batch) && observed.at("nodes").size() == before.at("nodes").size() + 2);
+        Json expectedParent = record(before, "nodes", QStringLiteral("a"));
+        expectedParent["children"] = index == -1 ? Json({"d", utf8(ids[0]), utf8(ids[1])})
+                                                : Json({utf8(ids[0]), utf8(ids[1]), "d"});
+        CHECK(record(observed, "nodes", QStringLiteral("a")) == expectedParent);
+        for (int i = 0; i < 2; ++i) {
+            const auto &complete = record(observed, "nodes", ids[i]);
+            for (auto it = records[i].begin(); it != records[i].end(); ++it) CHECK(complete.at(it.key()) == it.value());
+            CHECK(complete.at("children").empty());
+        }
+        CHECK(batch.undo() && exported(batch) == before && !batch.canUndo());
+        CHECK(batch.redo() && exported(batch) == observed && !batch.canRedo());
+    }
+    for (int selectionKind = 0; selectionKind < 3; ++selectionKind) {
+        Editor batch;
+        CHECK(batch.loadJson(encoded(input)));
+        showEditor(batch);
+        CHECK(batch.setExpanded(QStringLiteral("a"), false));
+        if (selectionKind == 0) batch.clearSelection();
+        else if (selectionKind == 1) CHECK(batch.selectLink(QStringLiteral("l1")));
+        else {
+            CHECK(batch.selectNode(QStringLiteral("a")));
+            QTest::mouseClick(graphics(batch).viewport(), Qt::LeftButton, Qt::ControlModifier,
+                              labelPoint(batch, QStringLiteral("Beta")));
+            CHECK(batch.selectedNodeIds().size() == 2);
+        }
+        const auto selectedNodes = batch.selectedNodeIds();
+        const auto selectedLink = batch.selectedLinkId();
+        batch.resetZoom(); batch.zoom(0.8); pump();
+        const auto camera = graphics(batch).transform();
+        QSignalSpy selection(&batch, &Editor::selectionChanged);
+        const auto ids = batch.addNodes(QStringLiteral("a"), R"([{"topic":"Hidden first"},{"topic":"Hidden second"}])");
+        CHECK(ids.size() == 2 && batch.selectedNodeIds() == selectedNodes && batch.selectedLinkId() == selectedLink);
+        CHECK(selection.isEmpty() && graphics(batch).transform() == camera);
+        CHECK(texts(batch, QStringLiteral("Hidden first")).isEmpty());
+        CHECK(texts(batch, QStringLiteral("Hidden second")).isEmpty());
+    }
+    {
+        Editor batch;
+        CHECK(batch.loadJson(encoded(input)) && batch.selectNode(QStringLiteral("b")));
+        const QByteArray valid = R"([{"topic":"First"},{"topic":"Second"}])";
+        const QList<QByteArray> invalid{
+            {}, "[", "{}", "[]", "[null]", "[{}]", R"([{"topic":3}])",
+            R"([{"topic":"First"},{"topic":"Second","id":"forbidden"}])",
+            R"([{"topic":"First"},{"topic":"Second","children":[]}])",
+            R"([{"topic":"First"},{"topic":"Second","expanded":true}])",
+            R"([{"topic":"First"},{"topic":"Second","image":{"url":"bad","width":-1,"height":0}}])",
+            R"([{"topic":"First"},{"topic":"Second","unknown":true}])",
+            R"([{"topic":"First"},{"topic":"Second","style":false}])",
+            R"([{"topic":"First"},{"topic":"Second\u0000"}])",
+            R"([{"topic":"First","topic":"Duplicate"}])"
+        };
+        for (const auto &bytes : invalid)
+            rejectUnchanged(batch, [&] { return !batch.addNodes(QStringLiteral("a"), bytes).isEmpty(); });
+        rejectUnchanged(batch, [&] { return !batch.addNodes(QStringLiteral("a"), valid, -2).isEmpty(); });
+        rejectUnchanged(batch, [&] { return !batch.addNodes(QStringLiteral("a"), valid, 99).isEmpty(); });
+        rejectUnchanged(batch, [&] { return !batch.addNodes(QStringLiteral("missing"), valid).isEmpty(); });
+        CHECK(!batch.canUndo() && !batch.canRedo());
+        batch.setReadOnly(true);
+        rejectUnchanged(batch, [&] { return !batch.addNodes(QStringLiteral("a"), valid).isEmpty(); });
+        batch.setReadOnly(false);
+        const auto orphans = batch.addNodes({}, valid);
+        CHECK(orphans.size() == 2 && batch.selectedNodeId() == QStringLiteral("b"));
+        CHECK(exported(batch).at("orphanIds") == Json({utf8(orphans[0]), utf8(orphans[1])}));
+    }
+    {
+        Editor batch;
+        QStringList palette;
+        for (auto *button : batch.findChildren<QToolButton *>())
+            if (button->property("color").isValid()) palette.append(button->property("color").toString());
+        CHECK(!palette.isEmpty());
+        const QString existing = batch.addNode(QStringLiteral("root"), QStringLiteral("Existing"));
+        const QString existingColor = qs(record(exported(batch), "nodes", existing).at("style").at("branchColor"));
+        Json entries = Json::array();
+        for (int i = 0; i < palette.size(); ++i) entries.push_back({{"topic", "Batch " + std::to_string(i)}});
+        const auto ids = batch.addNodes(QStringLiteral("root"), encoded(entries));
+        CHECK(ids.size() == palette.size() && batch.selectedNodeId() == existing);
+        const auto result = exported(batch);
+        QSet<QString> used{existingColor};
+        for (qsizetype i = 0; i < ids.size(); ++i) {
+            const auto color = qs(record(result, "nodes", ids[i]).at("style").at("branchColor"));
+            CHECK(palette.contains(color));
+            if (i + 1 < palette.size()) CHECK(!used.contains(color));
+            used.insert(color);
+        }
+        CHECK(used.size() == palette.size());
+        const auto childIds = batch.addNodes(existing, encoded(entries));
+        for (const auto &id : childIds) CHECK(!record(exported(batch), "nodes", id).at("style").contains("branchColor"));
+        const QString orphan = batch.addNode({}, QStringLiteral("Independent tree"));
+        const Json explicitStyle{{"branchColor", utf8(palette.front())}, {"custom", {{"preserved", true}}}};
+        const auto explicitIds = batch.addNodes(orphan, encoded(Json::array({
+            Json{{"topic", "Explicit"}, {"style", explicitStyle}},
+            Json{{"topic", "Automatic one"}}, Json{{"topic", "Automatic two"}}
+        })));
+        CHECK(explicitIds.size() == 3 && batch.selectedNodeId() == orphan);
+        const auto orphanResult = exported(batch);
+        CHECK(record(orphanResult, "nodes", explicitIds[0]).at("style") == explicitStyle);
+        const auto firstColor = record(orphanResult, "nodes", explicitIds[1]).at("style").at("branchColor");
+        const auto secondColor = record(orphanResult, "nodes", explicitIds[2]).at("style").at("branchColor");
+        CHECK(firstColor != utf8(palette.front()) && secondColor != utf8(palette.front()) && firstColor != secondColor);
+        batch.setAutoRandomBranchColor(false);
+        const auto uncolored = batch.addNodes(QStringLiteral("root"), R"([{"topic":"Plain"}])");
+        CHECK(uncolored.size() == 1 && !record(exported(batch), "nodes", uncolored.front()).at("style").contains("branchColor"));
+    }
 }
 
 static void collapse_case() {
@@ -2933,16 +3075,155 @@ static void hyperlinks_case() {
     class RelativeEditor : public Editor {
     public:
         using Editor::Editor;
-        mutable QStringList received;
+        QStringList received;
         bool veto = false;
     protected:
-        QString resolveDroppedFileUrl(const QString &filePath) const override {
+        void insertFromMimeData(const QString &nodeId, const QMimeData *source, MimeInsertionSource origin) override {
+            CHECK(origin == MimeInsertionSource::Drop);
+            const QString filePath = source->urls().front().toLocalFile();
             received.append(filePath);
-            // The hook knows this is a filename, so protect literal # and %
-            // before returning a relative URL reference for later activation.
-            return veto ? QString() : QUrl::fromLocalFile(QDir(resourceBasePath()).relativeFilePath(filePath)).path(QUrl::FullyEncoded);
+            if (veto) return;
+            // Preserve literal # and % in the relative URL reference.
+            const QString url = QUrl::fromLocalFile(QDir(resourceBasePath()).relativeFilePath(filePath)).path(QUrl::FullyEncoded);
+            CHECK(updateNode(nodeId, encoded(Json{{"hyperLink", utf8(url)}})));
         }
     };
+    {
+        Editor standalone;
+        prepare(standalone, false);
+        auto *clipboard = new QMimeData;
+        clipboard->setUrls({QUrl::fromLocalFile(path)});
+        clipboard->setImageData(QImage(8, 8, QImage::Format_ARGB32));
+        QApplication::clipboard()->setMimeData(clipboard);
+        CHECK(!editAction(standalone, "paste").isEnabled());
+        const Json before = exported(standalone);
+        standalone.setReadOnly(true);
+        enterFile(standalone, localFile, actions, labelPoint(standalone, alpha), false);
+        CHECK(exported(standalone) == before);
+    }
+    {
+        MimeEditor editor;
+        prepare(editor, false);
+        CHECK(editor.selectNode(b));
+        const Json before = exported(editor);
+        auto &view = graphics(editor);
+        const QTransform camera = view.transform();
+        QMimeData mixed;
+        mixed.setUrls({QUrl::fromLocalFile(path), QUrl::fromLocalFile(missingPath)});
+        mixed.setImageData(QImage(8, 8, QImage::Format_ARGB32));
+        enterFile(editor, mixed, actions, blankPoint(view));
+        moveFile(editor, mixed, actions, labelPoint(editor, alpha));
+        CHECK(editor.targets.isEmpty() && exported(editor) == before);
+        dropFile(editor, mixed, actions, labelPoint(editor, alpha));
+        CHECK(editor.targets == QStringList{a} && editor.origins.front() == Editor::MimeInsertionSource::Drop);
+        CHECK(exported(editor) == withUrl(before, a, fileUrl));
+        CHECK(editor.selectedNodeId() == b && view.transform() == camera);
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ControlModifier, labelPoint(editor, alpha));
+        CHECK(editor.selectedNodeIds().size() == 2);
+        enterFile(editor, mixed, actions, labelPoint(editor, alpha), false);
+        CHECK(editor.targets.size() == 1);
+    }
+    {
+        MimeEditor editor;
+        prepare(editor, false);
+        CHECK(editor.selectNode(b));
+        const QString url = QStringLiteral("https://example.test/pasted%20image.png");
+        QApplication::clipboard()->setText(url);
+        CHECK(editAction(editor, "paste").isEnabled());
+        CHECK(editAction(editor, "paste").shortcuts().contains(QKeySequence(QKeySequence::Paste)));
+        const Json before = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), selection(&editor, &Editor::selectionChanged);
+        shortcut(editor, Qt::Key_V, Qt::ControlModifier);
+        CHECK(editor.targets == QStringList{b} && editor.origins.front() == Editor::MimeInsertionSource::Clipboard);
+        CHECK(exported(editor) == withUrl(before, b, url));
+        CHECK(changed.size() == 1 && selection.isEmpty());
+        CHECK(editor.undo() && exported(editor) == before);
+        CHECK(editor.redo() && exported(editor) == withUrl(before, b, url));
+        QApplication::clipboard()->setText(QStringLiteral("ordinary canvas text"));
+        CHECK(!editAction(editor, "paste").isEnabled());
+        QApplication::clipboard()->setText(url);
+        QSignalSpy policy(&editor, &Editor::readOnlyChanged);
+        QObject::connect(&editor, &Editor::readOnlyChanged, &editor, [&](bool readOnly) {
+            CHECK(editor.isReadOnly() == readOnly);
+            CHECK(editAction(editor, "paste").isEnabled() == !readOnly);
+        });
+        editor.setReadOnly(true);
+        editor.setReadOnly(true);
+        CHECK(policy.size() == 1 && policy.front().front().toBool());
+        editor.setReadOnly(false);
+        CHECK(policy.size() == 2 && !policy.back().front().toBool());
+        editor.setEnabled(false);
+        CHECK(!editAction(editor, "paste").isEnabled());
+        editor.setEnabled(true);
+        CHECK(editAction(editor, "paste").isEnabled());
+        editor.clearSelection();
+        CHECK(!editAction(editor, "paste").isEnabled());
+        CHECK(editor.selectLink(QStringLiteral("l1")));
+        CHECK(!editAction(editor, "paste").isEnabled());
+        CHECK(editor.selectNode(a));
+        QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::ControlModifier,
+                          labelPoint(editor, QStringLiteral("Beta")));
+        CHECK(editor.selectedNodeIds().size() == 2 && !editAction(editor, "paste").isEnabled());
+        CHECK(editor.selectNode(a));
+        auto &view = graphics(editor);
+        const QPoint point = labelPoint(editor, alpha);
+        bool visited = false;
+        std::exception_ptr failure;
+        // Resolve the hit point before arming the responder: labelPoint pumps events.
+        QTimer::singleShot(0, &editor, [&] {
+            auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+            try {
+                CHECK(menu && menu->actions().contains(&editAction(editor, "paste")));
+                visited = true;
+            } catch (...) { failure = std::current_exception(); }
+            if (menu) menu->close();
+        });
+        QContextMenuEvent menu(QContextMenuEvent::Mouse, point, view.viewport()->mapToGlobal(point));
+        QCoreApplication::sendEvent(view.viewport(), &menu);
+        if (failure) std::rethrow_exception(failure);
+        CHECK(visited);
+    }
+    for (bool destroy : {false, true}) {
+        QPointer<MimeEditor> editor = new MimeEditor;
+        prepare(*editor, false);
+        QMimeData remote;
+        remote.setText(QStringLiteral("https://example.test/from-drop"));
+        bool inserted = false;
+        editor->insertion = [&] {
+            inserted = true;
+            if (destroy) delete editor.data();
+            else CHECK(editor->newDocument(QStringLiteral("Replacement from MIME hook")));
+        };
+        const QPoint point = labelPoint(*editor, alpha);
+        enterFile(*editor, remote, actions, point);
+        dropFile(*editor, remote, actions, point);
+        CHECK(inserted);
+        if (destroy) CHECK(editor.isNull());
+        else {
+            CHECK(editor->selectedNodeId() == QStringLiteral("root"));
+            CHECK(record(exported(*editor), "nodes", QStringLiteral("root")).at("topic") == "Replacement from MIME hook");
+            delete editor.data();
+        }
+    }
+    {
+        MimeEditor editor;
+        prepare(editor, false);
+        CHECK(editor.selectNode(a));
+        bool inserted = false;
+        editor.insertion = [&] { inserted = true; };
+        QImage pixels(8, 8, QImage::Format_ARGB32);
+        pixels.fill(Qt::red);
+        QApplication::clipboard()->setImage(pixels);
+        CHECK(editAction(editor, "paste").isEnabled());
+        shortcut(editor, Qt::Key_V, Qt::ControlModifier);
+        CHECK(inserted && editor.targets == QStringList{a});
+        CHECK(editor.origins.front() == Editor::MimeInsertionSource::Clipboard);
+        QMimeData image;
+        image.setImageData(pixels);
+        enterFile(editor, image, actions, labelPoint(editor, alpha));
+        dropFile(editor, image, actions, labelPoint(editor, alpha));
+        CHECK(editor.origins.size() == 2 && editor.origins.back() == Editor::MimeInsertionSource::Drop);
+    }
     {
         Editor editor;
         prepare(editor, false);
@@ -2985,7 +3266,7 @@ static void hyperlinks_case() {
         RelativeEditor editor(config);
         prepare(editor, false);
         CHECK(editor.selectNode(a));
-        // Loading, ordinary field edits, and activation must bypass the resolver.
+        // Loading, ordinary field edits, and activation must bypass MIME insertion.
         accessibleUrl(editor, rawUrl);
         QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, linkPoint(editor, alpha));
         CHECK(editor.received.isEmpty());
@@ -6621,6 +6902,95 @@ static void link_interaction_case() {
 
 static void host_commit_case() {
     const QString a = QStringLiteral("a"), b = QStringLiteral("b"), root = QStringLiteral("r");
+    for (int reaction = 0; reaction < 10; ++reaction) {
+        QPointer<MimeEditor> editor = new MimeEditor;
+        CHECK(editor->loadJson(encoded(editorFixture())));
+        showEditor(*editor);
+        CHECK(editor->selectNode(a));
+        const Json replacement = exported(*editor);
+        QApplication::clipboard()->setText(QStringLiteral("https://example.test/draft-paste"));
+        shortcut(*editor, Qt::Key_F2);
+        topicInput(*editor).setPlainText(reaction == 1 ? QStringLiteral("Rejected") + QChar::Null
+                                                    : QStringLiteral("Committed before paste"));
+        int inserted = 0;
+        editor->insertion = [&] {
+            ++inserted;
+            CHECK(!editor->hasPendingEdit());
+            CHECK(record(exported(*editor), "nodes", a).at("topic") == "Committed before paste");
+        };
+        bool reacted = false;
+        QObject::connect(editor.data(), &Editor::documentChanged, qApp, [&] {
+            if (reacted) return;
+            reacted = true;
+            if (reaction == 2) CHECK(editor->newDocument(QStringLiteral("Replacement")));
+            else if (reaction == 3) { CHECK(editor->loadJson(encoded(replacement))); CHECK(editor->selectNode(a)); }
+            else if (reaction == 4) CHECK(editor->selectNode(b));
+            else if (reaction == 5) { CHECK(editor->selectNode(b)); CHECK(editor->selectNode(a)); }
+            else if (reaction == 6) editor->setReadOnly(true);
+            else if (reaction == 7) CHECK(editor->removeNode(a));
+            else if (reaction == 8) editor->setEnabled(false);
+            else if (reaction == 9) delete editor.data();
+        });
+        trigger(*editor, "paste");
+        CHECK(inserted == (reaction == 0 ? 1 : 0));
+        if (reaction == 1) CHECK(editor->hasPendingEdit() && exported(*editor) == replacement);
+        if (reaction == 9) CHECK(editor.isNull());
+        delete editor.data();
+    }
+    for (bool link : {false, true}) {
+        MimeEditor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        CHECK(link ? editor.selectLink(QStringLiteral("l1")) : editor.selectNode(a));
+        const Json before = exported(editor);
+        const QString pasted = QStringLiteral("https://example.test/native-text-paste");
+        QApplication::clipboard()->setText(pasted);
+        shortcut(editor, Qt::Key_F2);
+        CHECK(editAction(editor, "paste").shortcuts().isEmpty());
+        topicInput(editor).selectAll();
+        topicKey(editor, Qt::Key_V, Qt::ControlModifier);
+        CHECK(topicInput(editor).toPlainText() == pasted && editor.targets.isEmpty());
+        CHECK(exported(editor) == before && editor.hasPendingEdit());
+        topicKey(editor, Qt::Key_Escape);
+        CHECK(!editAction(editor, "paste").shortcuts().isEmpty());
+    }
+    {
+        m3::qt::EditorConfig config;
+        config.separateNodePropertiesPanel = true;
+        MimeEditor editor(config);
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        CHECK(editor.selectNode(a));
+        QWidget tools;
+        auto *layout = new QVBoxLayout(&tools);
+        auto *panel = editor.nodePropertiesPanel();
+        CHECK(panel);
+        layout->addWidget(panel);
+        panel->show();
+        tools.resize(400, 750);
+        tools.show();
+        tools.activateWindow();
+        auto *url = panel->findChild<QLineEdit *>(QStringLiteral("nodeUrl"));
+        CHECK(url);
+        url->setFocus();
+        pump();
+        const QString pasted = QStringLiteral("https://example.test/tools-text-paste");
+        QApplication::clipboard()->setText(pasted);
+        url->selectAll();
+        QTest::keyClick(url, Qt::Key_V, Qt::ControlModifier);
+        pump();
+        CHECK(url->text() == pasted && editor.targets.isEmpty());
+        CHECK(record(exported(editor), "nodes", a).at("topic") == "Alpha");
+    }
+    {
+        QPointer<Editor> editor = new Editor;
+        QObject::connect(editor.data(), &Editor::readOnlyChanged, qApp, [&](bool readOnly) {
+            CHECK(readOnly);
+            delete editor.data();
+        });
+        editor->setReadOnly(true);
+        CHECK(editor.isNull());
+    }
     for (bool link : {false, true}) {
         Editor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
@@ -10524,6 +10894,14 @@ static void history_commands_case() {
         added = editor.addNode(a, QStringLiteral("Created child"));
         CHECK(!added.isEmpty() && !hasRecord(baseline, "nodes", added));
         CHECK(record(exported(editor), "nodes", a).at("children") == Json({"d", utf8(added)}));
+    });
+    roundTrip([&] {
+        const auto ids = editor.addNodes(a, encoded(Json::array({
+            Json{{"topic", "Batch image"}, {"image", {{"url", utf8(embedded)}, {"width", 40}, {"height", 20}}}},
+            Json{{"topic", "Batch link"}, {"hyperLink", "https://example.test/batch"}}
+        })));
+        CHECK(ids.size() == 2 && editor.selectedNodeId() == added);
+        CHECK(record(exported(editor), "nodes", a).at("children") == Json({"d", utf8(added), utf8(ids[0]), utf8(ids[1])}));
     });
     roundTrip([&] { CHECK(editor.renameNode(added, QStringLiteral("Renamed child 世界"))); });
     roundTrip([&] {

@@ -26,6 +26,8 @@ public:
     void beginLinkTopicEdit(const QString &id, const QList<QKeySequence> &acceptShortcuts);
     using TopicCommitHandler = std::function<bool(const QString &, const QString &, const QString &, bool)>;
     void setTopicCommitHandler(TopicCommitHandler handler);
+    using MimeDataPredicate = std::function<bool(const QMimeData *)>;
+    void setMimeDataPredicate(MimeDataPredicate predicate);
     bool finishTopicEdit(bool commit, bool restoreFocus = false, bool keepEditing = false);
     bool hasPendingEdit() const { return pendingEdit; }
     void setReadOnly(bool value);
@@ -52,7 +54,7 @@ signals:
     void nodeSelectionToggled(const QString &id);
     void nodeLinkActivated(const QString &nodeId, const QString &url);
     void imageResizeRequested(const QString &nodeId, const QString &url, const QSizeF &originalSize, const QSizeF &size);
-    void fileDropped(const QString &nodeId, const QString &filePath);
+    void mimeDataDropped(const QString &nodeId, const QMimeData *source);
     void nodeMoveRequested(const QString &id, const QString &parent, int index);
     void linkPicked(const QString &id);
     void emptyPicked();
@@ -119,6 +121,7 @@ private:
     bool topicLabelVisible = false;
     bool pendingEdit = false, finishingTopicEdit = false;
     TopicCommitHandler topicCommitHandler;
+    MimeDataPredicate mimeDataPredicate;
     void updatePendingEdit();
     QPointer<QPlainTextEdit> topicEditor;
     QList<QKeySequence> topicAcceptShortcuts;

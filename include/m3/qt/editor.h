@@ -11,6 +11,7 @@
 #include <memory>
 
 class QAction;
+class QMimeData;
 
 #ifdef M3_QT_STATIC
 #define M3_QT_API
@@ -115,8 +116,8 @@ class QAction;
 // show an indicator beside the topic. Activating it emits nodeLinkActivated with
 // the node ID and target: relative paths become absolute file URLs unless
 // resolveRelativeUrls is false. The host decides whether and how to open it.
-// Dropping one local file onto a canvas node sets or replaces its URL through
-// resolveDroppedFileUrl, without changing selection.
+// Canvas paste/drop dispatch synchronous MIME hooks without changing selection.
+// Standalone editors accept only single absolute local-file drops as hyperlinks.
 // Collapsing the card leaves only its top-right toggle, without changing selection.
 // The expanded/collapsed preference is local to this editor and survives selection
 // and document changes; links/groups/empty selection hide either form without resetting it.
@@ -247,6 +248,7 @@ public:
     // Outline shows depth-first indented rows with square tree connectors.
     enum class LayoutDirection { Balanced, Right, Left, Outline };
     Q_ENUM(LayoutDirection)
+    enum class MimeInsertionSource { Clipboard, Drop };
     explicit MindMapEditor(QWidget *parent = nullptr);
     explicit MindMapEditor(const EditorConfig &config, QWidget *parent = nullptr);
     ~MindMapEditor() override;
@@ -263,7 +265,7 @@ public:
     // Names: undo, redo, addChild, addOrphan, addSibling, addSiblingBefore, editSelection,
     // deleteSelection, toggleExpanded, moveNode, detachNode, moveUp, moveDown, addLink, editLink,
     // zoomIn, zoomOut, resetZoom, fit, selectRoot, selectParent, selectChild,
-    // previousSibling, nextSibling, copy, clearSelection, toggleBold, toggleItalic,
+    // previousSibling, nextSibling, copy, paste, clearSelection, toggleBold, toggleItalic,
     // resetStyle, textColor, fillColor, editTags, editIcons, editNote, toggleProperties,
     // editTopic, showHelp. Triggering retains the same checked inline-commit behavior.
     // addOrphan creates an independent tree and starts topic editing; detachNode
@@ -348,6 +350,11 @@ public:
     QString lastError() const;
     // Empty parentId creates an orphan tree; otherwise inserts a child. -1 appends.
     QString addNode(const QString &parentId, const QString &topic, int index = -1);
+    // Atomically insert complete node-property objects, keeping the current selection.
+    // nodesJson is a nonempty array; each entry requires a string topic and forbids
+    // id, children and expanded. Generated IDs follow input order; failure returns
+    // an empty list without mutation. One successful batch consumes one undo step.
+    QStringList addNodes(const QString &parentId, const QByteArray &nodesJson, int index = -1);
     bool renameNode(const QString &id, const QString &topic);
     // Copied complete committed node record, empty on error. IDs are immutable.
     QByteArray nodeJson(const QString &id) const;
@@ -427,6 +434,8 @@ signals:
     // Availability includes read-only policy; emitted only on boolean transitions.
     void undoAvailable(bool available);
     void redoAvailable(bool available);
+    // Actual policy transitions only, after action/policy updates.
+    void readOnlyChanged(bool readOnly);
     // Only transitions between a draft differing from its original and no
     // changed draft. Cancel/accept emits false; it does not imply a saved map.
     void pendingEditChanged(bool pending);
@@ -437,14 +446,15 @@ signals:
     void imageRequested(const QString &url, quint64 requestId);
     void errorOccurred(const QString &message);
 protected:
-    // Called once per eligible canvas drop with the decoded absolute local path,
-    // never on hover, URL-field edits, loading, or activation. The default returns
-    // a fully encoded file URL. Subclasses may use QDir::relativeFilePath with
-    // their own base directory. The result is stored unchanged as hyperLink:
-    // no trimming, re-encoding, or scheme/existence validation. Empty skips the
-    // mutation, preserving any existing URL. This is a synchronous conversion
-    // hook, not an asynchronous operation or document-mutation callback.
-    virtual QString resolveDroppedFileUrl(const QString &filePath) const;
+    // Pure, cheap eligibility query: no IO, decoding, dialogs or document changes.
+    // The default accepts one absolute local-file URL for Drop, never Clipboard.
+    virtual bool canInsertFromMimeData(const QMimeData *source, MimeInsertionSource origin) const;
+    // Borrowed MIME valid only during this synchronous call. Snapshot needed data
+    // before modal UI. Clipboard commits its captured target's draft first; Drop
+    // does not commit an unrelated draft. Hosts own acquisition and node updates.
+    // The default stores the fully encoded dropped file URL as hyperLink.
+    virtual void insertFromMimeData(const QString &nodeId, const QMimeData *source,
+                                    MimeInsertionSource origin);
     // Synchronous context-menu hooks, called after any inline draft is committed.
     // nodeId is the selected node when the menu opens. Defaults do nothing;
     // subclasses own URL/image editing and any resulting document changes.

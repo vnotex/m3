@@ -17,6 +17,7 @@
 #include <iterator>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace m3::qt {
 namespace {
@@ -129,6 +130,77 @@ LinkPresentation linkPresentation(const Json &j) {
     }
     return {string(j.at("id")), string(j.at("source")), string(j.at("target")), string(j.at("topic")), direction};
 }
+// One preparation context per command: sibling colors include earlier batch entries.
+class NodeInsertion {
+public:
+    NodeInsertion(const QByteArray &snapshot, const QString &parent, bool automatic)
+        : parentId(utf8(parent)) {
+        if (!automatic || parent.isEmpty()) return;
+        const auto data = Json::parse(snapshot.constData(), snapshot.constData() + snapshot.size());
+        const auto orphans = data.find("orphanIds");
+        colorBranches = data.at("rootId") == parentId ||
+            (orphans != data.end() && std::find(orphans->begin(), orphans->end(), parentId) != orphans->end());
+        if (!colorBranches) return;
+        const auto &nodes = data.at("nodes");
+        const auto &root = *std::find_if(nodes.begin(), nodes.end(),
+            [this](const Json &node) { return node.at("id") == parentId; });
+        rootColor = branchColor(root.at("style"));
+        const auto &children = root.at("children");
+        auto child = children.begin();
+        // Native snapshots are root-first child preorder; skip each subtree.
+        for (const auto &node : nodes) {
+            if (child == children.end()) break;
+            if (node.at("id") != *child) continue;
+            remember(branchColor(node.at("style")));
+            ++child;
+        }
+    }
+    QString prepare(Json &record) {
+        const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        record["id"] = utf8(id);
+        if (!colorBranches) return id;
+        auto style = record.find("style");
+        if (style != record.end()) {
+            // Preserve caller style, including explicit branch-color policy. The
+            // C insertion validates malformed records, without publishing any child.
+            if (!style->is_object()) return id;
+            if (style->contains("branchColor")) {
+                remember(branchColor(*style));
+                return id;
+            }
+        }
+        std::array<size_t, std::size(nodeColors)> candidates;
+        int count = 0;
+        for (size_t i = 0; i < used.size(); ++i)
+            if (!used[i]) candidates[count++] = i;
+        if (count == 0)
+            for (size_t i = 0; i < used.size(); ++i) candidates[count++] = i;
+        const auto picked = candidates[QRandomGenerator::global()->bounded(count)];
+        record["style"]["branchColor"] = nodeColors[picked].hex;
+        used[picked] = true;
+        return id;
+    }
+    const std::string parentId;
+private:
+    static QColor branchColor(const Json &style) {
+        const auto color = style.find("branchColor");
+        return color != style.end() && color->is_string() ? QColor(string(*color)) : QColor();
+    }
+    void remember(QColor color) {
+        static const auto palette = [] {
+            std::array<QColor, std::size(nodeColors)> colors;
+            for (size_t i = 0; i < colors.size(); ++i)
+                colors[i] = QColor(QString::fromLatin1(nodeColors[i].hex));
+            return colors;
+        }();
+        if (!color.isValid()) color = rootColor;
+        for (size_t i = 0; i < palette.size(); ++i)
+            if (color == palette[i]) used[i] = true;
+    }
+    bool colorBranches = false;
+    QColor rootColor;
+    std::array<bool, std::size(nodeColors)> used{};
+};
 }
 MindMapController::MindMapController(MindMapView &v, const EditorConfig &config, QObject *parent)
     : QObject(parent), undoLimit(size_t(std::max(0, config.undoLimit))),
@@ -776,55 +848,57 @@ QString MindMapController::addNode(const QString &parent, const QString &topic, 
     if (!strings({parent, topic})) return {};
     if (index < -1) { fail(tr("Invalid insertion index")); return {}; }
     try {
-        const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        Json record{{"id", utf8(id)}, {"topic", utf8(topic)}};
-        if (autoRandomBranchColor) {
-            const auto &bytes = currentSnapshot;
-            const auto data = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
-            const auto parentId = utf8(parent);
-            const auto orphans = data.find("orphanIds");
-            const bool treeRoot = data.at("rootId") == parentId ||
-                (orphans != data.end() && std::find(orphans->begin(), orphans->end(), parentId) != orphans->end());
-            if (treeRoot) {
-                static const auto palette = [] {
-                    std::array<QColor, std::size(nodeColors)> colors;
-                    for (size_t i = 0; i < colors.size(); ++i)
-                        colors[i] = QColor(QString::fromLatin1(nodeColors[i].hex));
-                    return colors;
-                }();
-                std::array<bool, std::size(nodeColors)> used{};
-                const auto &nodes = data.at("nodes");
-                const auto &root = *std::find_if(nodes.begin(), nodes.end(),
-                    [&parentId](const Json &node) { return node.at("id") == parentId; });
-                const QColor rootColor = nodeStyle(root.at("style")).branchColor;
-                const auto &children = root.at("children");
-                auto child = children.begin();
-                // Native snapshots are root-first child preorder; skip each subtree
-                // until the next direct child, without building another node index.
-                for (const auto &node : nodes) {
-                    if (child == children.end()) break;
-                    if (node.at("id") != *child) continue;
-                    QColor color = nodeStyle(node.at("style")).branchColor;
-                    if (!color.isValid()) color = rootColor;
-                    for (size_t i = 0; i < palette.size(); ++i)
-                        if (color == palette[i]) used[i] = true;
-                    ++child;
-                }
-                std::array<size_t, std::size(nodeColors)> candidates;
-                int count = 0;
-                for (size_t i = 0; i < used.size(); ++i)
-                    if (!used[i]) candidates[count++] = i;
-                if (count == 0)
-                    for (size_t i = 0; i < used.size(); ++i) candidates[count++] = i;
-                const auto picked = candidates[QRandomGenerator::global()->bounded(count)];
-                record["style"] = {{"branchColor", nodeColors[picked].hex}};
-            }
-        }
+        NodeInsertion insertion(currentSnapshot, parent, autoRandomBranchColor);
+        Json record{{"topic", utf8(topic)}};
+        const QString id = insertion.prepare(record);
         const auto serialized = record.dump();
         return transact([&](M3Mindmap *candidate) {
-            return m3_mindmap_insert_node(candidate, parent.toUtf8().constData(),
+            return m3_mindmap_insert_node(candidate, insertion.parentId.c_str(),
                 index == -1 ? M3_APPEND : size_t(index), serialized.c_str());
         }, id) ? id : QString();
+    } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
+}
+QStringList MindMapController::addNodes(const QString &parent, const QByteArray &nodesJson, int index) {
+    if (!writable() || !strings({parent})) return {};
+    if (index < -1) { fail(tr("Invalid insertion index")); return {}; }
+    try {
+        // Do not normalize duplicate members away before the C record validator.
+        std::vector<std::unordered_set<std::string>> keys;
+        auto records = Json::parse(nodesJson.constData(), nodesJson.constData() + nodesJson.size(),
+            [&keys](int, Json::parse_event_t event, Json &value) {
+                if (event == Json::parse_event_t::object_start) keys.emplace_back();
+                else if (event == Json::parse_event_t::object_end) keys.pop_back();
+                else if (event == Json::parse_event_t::key &&
+                         !keys.back().insert(value.get<std::string>()).second)
+                    throw std::runtime_error("Duplicate node property");
+                return true;
+            });
+        if (!records.is_array() || records.empty()) {
+            fail(tr("Expected a nonempty node array")); return {};
+        }
+        for (const auto &record : records) {
+            if (!record.is_object() || !record.contains("topic") || !record.at("topic").is_string() ||
+                record.contains("id") || record.contains("children") || record.contains("expanded")) {
+                fail(tr("Invalid node insertion properties")); return {};
+            }
+        }
+        NodeInsertion insertion(currentSnapshot, parent, autoRandomBranchColor);
+        QStringList ids;
+        ids.reserve(qsizetype(records.size()));
+        const bool inserted = transact([&](M3Mindmap *candidate) {
+            size_t position = index == -1 ? M3_APPEND : size_t(index);
+            for (auto &record : records) {
+                ids.append(insertion.prepare(record));
+                const auto serialized = record.dump();
+                const auto result = m3_mindmap_insert_node(candidate, insertion.parentId.c_str(),
+                    position, serialized.c_str());
+                if (result != M3_OK) return result;
+                if (index != -1) ++position;
+            }
+            return M3_OK;
+        });
+        if (!inserted) return {};
+        return ids;
     } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
 bool MindMapController::renameNode(const QString &id, const QString &topic) {

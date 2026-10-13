@@ -11,6 +11,7 @@
 #include <QClipboard>
 #include <QComboBox>
 #include <QDialog>
+#include <QDir>
 #include <QDialogButtonBox>
 #include <QEvent>
 #include <QFile>
@@ -25,6 +26,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -59,6 +61,14 @@ static void initializeM3Resources() {
 
 namespace m3::qt {
 namespace {
+QString droppedLocalFilePath(const QMimeData *mime) {
+    if (!mime) return {};
+    const auto urls = mime->urls();
+    if (urls.size() != 1 || !urls.front().isValid() || !urls.front().isLocalFile()) return {};
+    const QString path = urls.front().toLocalFile();
+    if (path.isEmpty() || path.contains(QChar::Null) || !QDir::isAbsolutePath(path)) return {};
+    return path;
+}
 QString loadStyleSheet(const QString &path) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly))
@@ -915,7 +925,7 @@ public:
     MindMapController *controller;
     QLabel *error;
     QAction *addChild, *addSibling, *addSiblingBefore, *editSelection, *deleteSelection, *toggleExpanded, *move, *up, *down, *addLink;
-    QAction *rootSelection, *clearSelectionAction, *editLink, *toggleProperties, *copySelection;
+    QAction *rootSelection, *clearSelectionAction, *editLink, *toggleProperties, *copySelection, *pasteSelection;
     QAction *addOrphan, *detachNode;
     QAction *undoAction, *redoAction;
     QAction *boldAction = nullptr, *italicAction = nullptr;
@@ -1201,12 +1211,13 @@ public:
         QObject::connect(result, &QAction::triggered, host, [this, result, command = std::move(command)] {
             const QPointer<MindMapEditor> guard(host);
             if (!result->isEnabled()) { syncFormatting(); return; }
-            const bool appearance = result == boldAction || result == italicAction ||
-                result->objectName() == QStringLiteral("resetStyle");
+            const bool boundTarget = result == boldAction || result == italicAction ||
+                result->objectName() == QStringLiteral("resetStyle") ||
+                result->objectName() == QStringLiteral("paste");
             const FormattingBinding binding = formattingBinding();
             const bool committed = view->finishTopicEdit(true);
             if (!guard) return;
-            if (!committed || !result->isEnabled() || (appearance && !validBinding(binding))) {
+            if (!committed || !result->isEnabled() || (boundTarget && !validBinding(binding))) {
                 syncFormatting();
                 return;
             }
@@ -1271,6 +1282,8 @@ public:
         if (properties) properties->updateEditability();
         if (!guard) return;
         copySelection->setEnabled(hasNodes || hasLink);
+        pasteSelection->setEnabled(writable && node &&
+            host->canInsertFromMimeData(QApplication::clipboard()->mimeData(), MimeInsertionSource::Clipboard));
         rootSelection->setEnabled(!nodes.empty());
         clearSelectionAction->setEnabled(hasNodes || hasLink);
         editSelection->setEnabled(writable && (node || hasLink));
@@ -1485,6 +1498,12 @@ public:
         copySelection = action("copy", tr("Copy"), {QKeySequence(QKeySequence::Copy)}, [this] {
             QApplication::clipboard()->setText(host->selectedText());
         });
+        pasteSelection = action("paste", tr("Paste"), {QKeySequence(QKeySequence::Paste)}, [this] {
+            const QString target = controller->selectedNodeId();
+            const QMimeData *source = QApplication::clipboard()->mimeData();
+            if (canFormat() && host->canInsertFromMimeData(source, MimeInsertionSource::Clipboard))
+                host->insertFromMimeData(target, source, MimeInsertionSource::Clipboard);
+        });
         clearSelectionAction = action("clearSelection", tr("Clear selection"), config.shortcuts.clearSelection, [this] { controller->clearSelection(); });
         layout->addWidget(view, 1); layout->addWidget(error);
         properties = new NodePropertiesPanel(editor, view, controller, config.separateNodePropertiesPanel);
@@ -1602,6 +1621,7 @@ public:
             if (hasNode || !linkId.isEmpty() || controller->selectedNodeIds().size() > 1) {
                 menu.addSeparator();
                 menu.addAction(copySelection);
+                if (hasNode) menu.addAction(pasteSelection);
             }
             menu.exec(view->mapToGlobal(point));
         });
@@ -1629,20 +1649,22 @@ public:
         QObject::connect(controller, &MindMapController::layoutDirectionChanged, editor, &MindMapEditor::layoutDirectionChanged);
         QObject::connect(view, &MindMapView::zoomChanged, editor, &MindMapEditor::zoomChanged);
         QObject::connect(view, &MindMapView::pendingEditChanged, editor, &MindMapEditor::pendingEditChanged);
+        QObject::connect(QApplication::clipboard(), &QClipboard::dataChanged, editor, [this] { updateActions(); });
         QObject::connect(view, &MindMapView::nodePicked, controller, &MindMapController::selectNode);
         QObject::connect(view, &MindMapView::nodeSelectionToggled, controller, &MindMapController::toggleNodeSelection);
         QObject::connect(view, &MindMapView::nodeLinkActivated, editor, [this, editor](const QString &id, const QString &url) {
             const QString resolved = controller->resolveResourceUrl(url);
             emit editor->nodeLinkActivated(id, resolved);
         });
-        QObject::connect(view, &MindMapView::fileDropped, editor, [this, editor](const QString &nodeId, const QString &filePath) {
-            if (controller->isReadOnly()) return;
-            const QPointer<MindMapEditor> guard(editor);
-            const QString resolvedUrl = editor->resolveDroppedFileUrl(filePath);
-            if (!guard || controller->isReadOnly() || resolvedUrl.isEmpty()) return;
-            const QJsonObject patch{{QStringLiteral("hyperLink"), resolvedUrl}};
-            const QByteArray json = QJsonDocument(patch).toJson(QJsonDocument::Compact);
-            controller->updateNodeProperties(nodeId, json);
+        view->setMimeDataPredicate([editor](const QMimeData *source) {
+            return editor->canInsertFromMimeData(source, MimeInsertionSource::Drop);
+        });
+        QObject::connect(view, &MindMapView::mimeDataDropped, editor, [this, editor](const QString &nodeId, const QMimeData *source) {
+            if (!editor->isEnabled() || controller->isReadOnly() || nodeId.isEmpty() ||
+                controller->selectedNodeIds().size() > 1 ||
+                !editor->canInsertFromMimeData(source, MimeInsertionSource::Drop)) return;
+            // Do not commit an unrelated inline draft: the host owns drop policy.
+            editor->insertFromMimeData(nodeId, source, MimeInsertionSource::Drop);
         });
         QObject::connect(view, &MindMapView::imageResizeRequested, controller,
             [this](const QString &id, const QString &url, const QSizeF &original, const QSizeF &size) {
@@ -1706,8 +1728,15 @@ void MindMapEditor::setAutoRandomBranchColor(bool enabled) {
     d->config.autoRandomBranchColor = enabled;
     d->controller->setAutoRandomBranchColor(enabled);
 }
-QString MindMapEditor::resolveDroppedFileUrl(const QString &filePath) const {
-    return QUrl::fromLocalFile(filePath).toString(QUrl::FullyEncoded);
+bool MindMapEditor::canInsertFromMimeData(const QMimeData *source, MimeInsertionSource origin) const {
+    return origin == MimeInsertionSource::Drop && !droppedLocalFilePath(source).isEmpty();
+}
+void MindMapEditor::insertFromMimeData(const QString &nodeId, const QMimeData *source, MimeInsertionSource origin) {
+    if (origin != MimeInsertionSource::Drop || !isEnabled() || isReadOnly()) return;
+    const QString path = droppedLocalFilePath(source);
+    if (path.isEmpty()) return;
+    const QJsonObject patch{{QStringLiteral("hyperLink"), QUrl::fromLocalFile(path).toString(QUrl::FullyEncoded)}};
+    updateNode(nodeId, QJsonDocument(patch).toJson(QJsonDocument::Compact));
 }
 void MindMapEditor::onAddUrl(const QString &) {}
 void MindMapEditor::onAddImage(const QString &) {}
@@ -1729,12 +1758,14 @@ bool MindMapEditor::commitActiveEdit(bool keepEditing) { return d->view->finishT
 bool MindMapEditor::hasPendingEdit() const { return d->view->hasPendingEdit(); }
 void MindMapEditor::setReadOnly(bool value) {
     const QPointer<MindMapEditor> guard(this);
-    if (value != d->controller->isReadOnly()) d->invalidateFormatting();
+    const bool changed = value != d->controller->isReadOnly();
+    if (changed) d->invalidateFormatting();
     if (!guard) return;
     d->controller->setReadOnly(value);
     if (!guard) return;
     if (d->controller->isReadOnly() && d->mutationDialog) d->mutationDialog->reject();
     if (guard) d->updateActions();
+    if (guard && changed && value == d->controller->isReadOnly()) emit readOnlyChanged(value);
 }
 bool MindMapEditor::isReadOnly() const { return d->controller->isReadOnly(); }
 bool MindMapEditor::canUndo() const { return d->controller->canUndo(); }
@@ -1752,6 +1783,7 @@ void MindMapEditor::provideImage(const QString &url, quint64 requestId, const QI
 void MindMapEditor::reloadImages() { d->controller->reloadImages(); }
 void MindMapEditor::setResourceBasePath(const QString &path) { d->controller->setResourceBasePath(path); }
 QString MindMapEditor::addNode(const QString &parent, const QString &topic, int index) { return d->controller->addNode(parent, topic, index); }
+QStringList MindMapEditor::addNodes(const QString &parent, const QByteArray &nodesJson, int index) { return d->controller->addNodes(parent, nodesJson, index); }
 bool MindMapEditor::renameNode(const QString &id, const QString &topic) { return d->controller->renameNode(id, topic); }
 bool MindMapEditor::removeNode(const QString &id) { return d->controller->removeNode(id); }
 bool MindMapEditor::moveNode(const QString &id, const QString &parent, int index) { return d->controller->moveNode(id, parent, index); }
