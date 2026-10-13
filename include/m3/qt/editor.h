@@ -150,7 +150,10 @@ struct FindResult { int totalMatches = 0; int currentMatch = -1; };
 // Child inputs and active shortcuts take priority. Changing focus or interrupting
 // the code cancels a partial entry. Digits in text fields remain ordinary input.
 // E begins inline topic editing for nodes only; F2 and double-click edit node or
-// link topics inline. Link topics are literal text, without node hashtag parsing.
+// link topics inline. Node double-click editing accepts the topic label or blank
+// space inside the node, including empty topics. Images, tags, icons and the
+// expand/collapse button remain excluded; blank canvas space does not start editing.
+// Link topics are literal text, without node hashtag parsing.
 // These letters remain ordinary input while typing, including in the inline draft.
 // P toggles the selected node's embedded properties card, keeping focus on the canvas.
 // Separate panels have no collapse toggle or P/Escape collapse binding; property

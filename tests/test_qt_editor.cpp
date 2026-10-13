@@ -7697,7 +7697,94 @@ static void read_only_case() {
     CHECK(exported(editor) == before && changed.size() == 3);
 }
 
+static void inline_label_hit_case() {
+    for (qreal zoom : {qreal(1), qreal(1.5)}) {
+        Editor editor;
+        CHECK(editor.newDocument(QString()));
+        showEditor(editor);
+        editor.zoom(zoom);
+        pump();
+        auto &view = graphics(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        const Json original = exported(editor);
+        const QPoint blank = blankPoint(view);
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, blank);
+        QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, blank);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, blank);
+        pump();
+        CHECK(activeTopicInput(editor) == nullptr && editor.selectedNodeId().isEmpty());
+        CHECK(exported(editor) == original && changed.isEmpty());
+        const QPoint center = view.mapFromScene(emptyNodeRect(editor).center());
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, center);
+        QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, center);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, center);
+        pump();
+        CHECK(topicInput(editor).toPlainText().isEmpty());
+        CHECK(editor.selectedNodeId() == QStringLiteral("root"));
+        CHECK(exported(editor) == original && changed.isEmpty());
+        topicInput(editor).setPlainText(QStringLiteral("Named empty topic"));
+        topicKey(editor, Qt::Key_Return, Qt::ControlModifier);
+        CHECK(record(exported(editor), "nodes", QStringLiteral("root")).at("topic") == "Named empty topic");
+        CHECK(activeTopicInput(editor) == nullptr && changed.size() == 1);
+    }
+    const QString topic = QStringLiteral("Label first line\nLabel second line");
+    for (int imageState : {0, 1, 2}) for (qreal zoom : {qreal(1), qreal(1.5)}) {
+        Editor editor;
+        if (imageState != 0) {
+            QObject::connect(&editor, &Editor::imageRequested, &editor,
+                [&editor, imageState](const QString &url, quint64 id) {
+                    editor.provideImage(url, id, imageState == 1 ? imagePixels() : QImage());
+                });
+        }
+        CHECK(editor.loadJson(encoded(imageDocument())));
+        CHECK(editor.updateNode(QStringLiteral("r"), encoded(Json{
+            {"topic", utf8(topic)}, {"icons", Json::array({"Icon row"})}})));
+        showEditor(editor);
+        editor.zoom(zoom);
+        pump();
+        auto &view = graphics(editor);
+        const Json original = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        auto doubleClick = [&](const QPoint &point) {
+            QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+            QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+            QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+            pump();
+        };
+        auto noEdit = [&](const QPoint &point) {
+            doubleClick(point);
+            CHECK(activeTopicInput(editor) == nullptr);
+            CHECK(editor.selectedNodeId() == QStringLiteral("r"));
+            CHECK(exported(editor) == original && changed.isEmpty());
+        };
+        // Hit the image body, not its separately guarded resize handle.
+        noEdit(view.mapFromScene(nodeImageRect(editor, topic).center()));
+        noEdit(labelPoint(editor, QStringLiteral("one")));
+        auto *tag = textItem(editor, QStringLiteral("one"));
+        const QRectF tagText = tag->sceneBoundingRect();
+        const QPoint tagPadding = view.mapFromScene(QPointF(tagText.left() - 3, tagText.center().y()));
+        CHECK(view.itemAt(tagPadding) == ownerItem(tag));
+        noEdit(tagPadding);
+        noEdit(labelPoint(editor, QStringLiteral("Icon row")));
+        const QRectF node = topicRect(editor, topic);
+        doubleClick(view.mapFromScene(QPointF(node.left() + 6, node.center().y())));
+        CHECK(topicInput(editor).toPlainText() == topic);
+        CHECK(exported(editor) == original && changed.isEmpty());
+        topicKey(editor, Qt::Key_Escape);
+        const QPoint expansion = view.mapFromScene(QPointF(node.right() - 15, node.center().y()));
+        noEdit(expansion);
+        CHECK(texts(editor, QStringLiteral("Alpha")).isEmpty());
+        noEdit(expansion);
+        CHECK(!texts(editor, QStringLiteral("Alpha")).isEmpty());
+        doubleClick(labelPoint(editor, topic));
+        CHECK(topicInput(editor).toPlainText() == topic);
+        CHECK(exported(editor) == original && changed.isEmpty());
+        topicKey(editor, Qt::Key_Escape);
+    }
+}
+
 static void inline_edit_case() {
+    inline_label_hit_case();
     inline_tags_case();
     {
         Editor editor;

@@ -1728,13 +1728,20 @@ bool MindMapView::pick(QMouseEvent *event, bool activate) {
     enum class Target { Empty, Node, Link, Expansion };
     Target target = Target::Empty;
     QString id;
-    bool expanded = false;
+    bool expanded = false, topicHit = false;
     {
         auto *item = targetAt(event->pos());
         if (auto *node = dynamic_cast<NodeItem *>(item)) {
             id = node->id;
             expanded = !node->expanded;
-            const bool toggle = node->hasChildren && node->affordance().contains(node->mapFromScene(mapToScene(event->pos())));
+            const QPointF position = node->mapFromScene(mapToScene(event->pos()));
+            const bool toggle = node->hasChildren && node->affordance().contains(position);
+            if (activate && !toggle) {
+                const auto *hit = itemAt(event->pos());
+                topicHit = hit == node->label || (hit == node &&
+                    std::none_of(node->tagRectangles.begin(), node->tagRectangles.end(),
+                        [&](const QRectF &rectangle) { return rectangle.contains(position); }));
+            }
             target = toggle && !activate ? Target::Expansion : Target::Node;
         } else if (auto *link = dynamic_cast<LinkItem *>(item)) {
             id = link->id;
@@ -1755,7 +1762,7 @@ bool MindMapView::pick(QMouseEvent *event, bool activate) {
             draggedNodeId = id;
             dragPressPosition = event->pos();
         }
-        if (activate && selectedNodes.size() <= 1) emit editRequested();
+        if (activate && topicHit && selectedNodes.size() <= 1) emit editRequested();
         break;
     case Target::Link:
         emit linkPicked(id);
