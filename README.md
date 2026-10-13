@@ -40,7 +40,7 @@ Use a separate build directory when changing generators or toolchains. `CMAKE_BU
 
 ## Run the Qt demo
 
-The editor requires Qt 6.5 or newer with Widgets; building its tests also requires Qt Test. Make the matching Qt kit discoverable through `CMAKE_PREFIX_PATH` or `Qt6_DIR`.
+The editor supports Qt 5.15 or Qt 6.5 and newer, with Widgets and LinguistTools; building its tests also requires Qt Test. Select Qt 5 with `-DQT_DEFAULT_MAJOR_VERSION=5` (Qt 6 is the default). Make the matching Qt kit discoverable through `CMAKE_PREFIX_PATH`, `Qt5_DIR` or `Qt6_DIR`, and use a compatible compiler toolset.
 
 For Windows with Visual Studio 2022 and an x64 MSVC Qt kit:
 
@@ -54,7 +54,7 @@ cmake --install build/qt --config Debug --prefix build/install-qt
 
 Installation deploys Qt runtime dependencies on Windows. With no argument the demo opens its built-in sample map; pass one JSON file to open your own. The screenshot above shows a custom example map in the demo.
 
-CTest runs Qt cases offscreen. Do not set `QT_QPA_PLATFORM=offscreen` globally when launching the interactive demo.
+CTest runs Qt cases offscreen, except Qt 5 on Windows uses the native Windows platform. Emoji-grid navigation checks allow font- and DPI-dependent column counts. Do not set `QT_QPA_PLATFORM=offscreen` globally when launching the interactive demo.
 
 ## Embed the library
 

@@ -502,8 +502,8 @@ public:
         stroker.setJoinStyle(Qt::RoundJoin);
         stroker.setWidth(8);
         hit = stroker.createStroke(curve);
-        for (const auto *arrow : {&sourceArrow, &targetArrow}) {
-            if (!arrow->isEmpty()) { QPainterPath outline; outline.addPolygon(*arrow); hit = hit.united(outline); }
+        for (const auto *arrowHead : {&sourceArrow, &targetArrow}) {
+            if (!arrowHead->isEmpty()) { QPainterPath outline; outline.addPolygon(*arrowHead); hit = hit.united(outline); }
         }
         label = new QGraphicsTextItem(this);
         label->setFont(font);
@@ -921,7 +921,11 @@ void MindMapView::dragEnterEvent(QDragEnterEvent *event) {
     event->accept();
 }
 void MindMapView::dragMoveEvent(QDragMoveEvent *event) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const QPoint position = event->position().toPoint();
+#else
     const QPoint position = event->pos();
+#endif
     if (readOnly || selectedNodes.size() > 1 || !event->possibleActions().testFlag(Qt::CopyAction) ||
         droppedLocalFilePath(event->mimeData()).isEmpty() || !viewport()->rect().contains(position) ||
         !dynamic_cast<NodeItem *>(targetAt(position))) {
@@ -937,7 +941,11 @@ void MindMapView::dragLeaveEvent(QDragLeaveEvent *event) {
 }
 void MindMapView::dropEvent(QDropEvent *event) {
     const QString filePath = droppedLocalFilePath(event->mimeData());
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const QPoint position = event->position().toPoint();
+#else
     const QPoint position = event->pos();
+#endif
     if (readOnly || selectedNodes.size() > 1 || !event->possibleActions().testFlag(Qt::CopyAction) ||
         filePath.isEmpty() || !viewport()->rect().contains(position)) {
         event->ignore();

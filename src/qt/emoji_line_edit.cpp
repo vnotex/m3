@@ -56,9 +56,9 @@ const Catalog &catalog() {
             if (semicolon < 0 || comment < semicolon ||
                 line.mid(semicolon + 1, comment - semicolon - 1).trimmed() != QStringLiteral("fully-qualified")) continue;
             const QStringList codes = line.left(semicolon).simplified().split(QLatin1Char(' '));
-            QVector<uint> points;
+            QVector<char32_t> points;
             points.reserve(codes.size());
-            for (const auto &code : codes) points.append(code.toUInt(nullptr, 16));
+            for (const auto &code : codes) points.append(char32_t(code.toUInt(nullptr, 16)));
             const QString annotation = line.mid(comment + 1).trimmed();
             const qsizetype version = annotation.indexOf(QStringLiteral(" E"));
             const qsizetype nameStart = annotation.indexOf(QLatin1Char(' '), version + 2);

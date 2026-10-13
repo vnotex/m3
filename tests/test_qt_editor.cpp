@@ -3241,18 +3241,19 @@ static void emoji_category_popup_case() {
         for (int width : {337, 517}) {
             popup->resize(width, originalPopupSize.height());
             pump();
-            const QModelIndex first = choices->model()->index(0, 0), right = choices->model()->index(1, 0);
+            // IconMode horizontal navigation follows model order, including a one-column grid.
+            // Font and DPI determine whether the next item is beside or below the first.
+            const QModelIndex first = choices->model()->index(0, 0), next = choices->model()->index(1, 0);
             choices->setCurrentIndex(first);
             choices->scrollToTop();
-            const QRect firstCell = choices->visualRect(first), rightCell = choices->visualRect(right);
-            CHECK(rightCell.top() == firstCell.top() && rightCell.left() > firstCell.right());
+            const QRect firstCell = choices->visualRect(first);
             int belowRow = 1;
             while (belowRow < choices->model()->rowCount() &&
                    choices->visualRect(choices->model()->index(belowRow, 0)).top() == firstCell.top()) ++belowRow;
             CHECK(belowRow < choices->model()->rowCount());
             const QModelIndex below = choices->model()->index(belowRow, 0);
             CHECK(choices->visualRect(below).left() == firstCell.left());
-            CHECK(navigate(Qt::Key_L) == right);
+            CHECK(navigate(Qt::Key_L) == next);
             CHECK(navigate(Qt::Key_H) == first);
             CHECK(navigate(Qt::Key_J) == below);
             CHECK(navigate(Qt::Key_K) == first);
