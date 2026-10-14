@@ -349,22 +349,27 @@ public:
     QSize sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const override { return view.gridSize(); }
     void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
         painter->save();
-        const bool selected = option.state.testFlag(QStyle::State_Selected);
+        QStyleOptionViewItem item(option);
+        initStyleOption(&item, index);
+        const bool selected = item.state.testFlag(QStyle::State_Selected);
         const QRect bounds = option.rect.adjusted(2, 2, -2, -2);
-        if (selected || option.state.testFlag(QStyle::State_MouseOver)) {
-            painter->setPen(Qt::NoPen);
-            painter->setBrush(option.palette.color(selected ? QPalette::Highlight : QPalette::AlternateBase));
-            painter->drawRoundedRect(bounds, 4, 4);
+        item.rect = bounds;
+        // The picker is the active navigation target while focus stays in the input.
+        item.state |= QStyle::State_Active;
+        item.displayAlignment = Qt::AlignHCenter | Qt::AlignBottom;
+        item.textElideMode = Qt::ElideRight;
+        view.style()->drawControl(QStyle::CE_ItemViewItem, &item, painter, &view);
+        if (selected) {
+            painter->setPen(item.palette.color(QPalette::Text));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRect(bounds.adjusted(0, 0, -1, -1));
         }
-        painter->setPen(option.palette.color(selected ? QPalette::HighlightedText : QPalette::Text));
-        QFont glyphFont = option.font;
+        painter->setPen(item.palette.color(selected ? QPalette::HighlightedText : QPalette::Text));
+        QFont glyphFont = item.font;
         glyphFont.setPixelSize(28);
         painter->setFont(glyphFont);
         painter->drawText(QRect(bounds.left(), bounds.top(), bounds.width(), 36), Qt::AlignCenter,
                           index.data(glyphRole).toString());
-        painter->setFont(option.font);
-        painter->drawText(bounds.adjusted(3, 36, -3, 0), Qt::AlignHCenter | Qt::AlignTop,
-                          option.fontMetrics.elidedText(index.data().toString(), Qt::ElideRight, bounds.width() - 6));
         painter->restore();
     }
 private:

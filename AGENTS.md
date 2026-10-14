@@ -231,6 +231,10 @@ teardown; do not defer the property commit itself.
 - Qt commands are synchronous and require the GUI thread with a host `QApplication`. Independent core handles may run concurrently; callers synchronize shared handles. Use context-bound deferred Qt callbacks, not an invented worker-thread pipeline.
 - Configure shortcuts through `EditorConfig`; extend resource acquisition through the protected synchronous MIME hooks. Paste/drop targets are captured before host callbacks; never retarget them from a later selection. Reuse controller signals and QObject ownership rather than introducing a dependency-injection framework.
 - Semantic success emits `documentChanged`; a later rendering failure does not roll back the committed edit. Preserve the distinction between semantic failure and presentation failure, and keep uncommitted inline drafts out of snapshot exports.
+- Emoji picker backgrounds and captions use the host's `CE_ItemViewItem` rendering, not
+  palette-only fills: host QSS may make `Highlight` transparent and `AlternateBase` equal to
+  the normal background. Paint the current selection as active while keyboard focus stays
+  in the input. Keep its `Text`-colored outline: native styles may share selection/hover fills.
 
 ## Important Files
 - `include/m3/m3.h`, `include/m3/m3_layout.h`, `include/m3/qt/editor.h`: authoritative ownership, persistence, layout and widget behavior contracts; read these before changing public behavior.
