@@ -1656,6 +1656,9 @@ public:
             const QString resolved = controller->resolveResourceUrl(url);
             emit editor->nodeLinkActivated(id, resolved);
         });
+        QObject::connect(view, &MindMapView::nodeImageActivated, editor, [editor](const QString &id, const QImage &image) {
+            if (editor->isEnabled()) emit editor->nodeImageActivated(id, image);
+        });
         view->setMimeDataPredicate([editor](const QMimeData *source) {
             return editor->canInsertFromMimeData(source, MimeInsertionSource::Drop);
         });

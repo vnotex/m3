@@ -1748,6 +1748,151 @@ static void lifetime_case() {
     CHECK(exported(restored) == retainedDocument);
 }
 
+static void image_activation_case() {
+    const QString root = QStringLiteral("r"), topic = QStringLiteral("Image root"), url = QStringLiteral("memory:picture");
+    const QImage pixels = imagePixels();
+    auto prepare = [&](Editor &editor) {
+        QObject::connect(&editor, &Editor::imageRequested, &editor,
+            [&editor, pixels](const QString &source, quint64 id) { editor.provideImage(source, id, pixels); });
+        CHECK(editor.loadJson(encoded(imageDocument())));
+        showEditor(editor, QSize(1200, 900));
+        CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, url); }, 5000));
+        CHECK(editor.selectNode(root));
+    };
+    for (bool readOnly : {false, true}) {
+        Editor editor;
+        prepare(editor);
+        CHECK(editor.renameNode(QStringLiteral("a"), QStringLiteral("First history entry")));
+        CHECK(editor.renameNode(QStringLiteral("a"), QStringLiteral("Second history entry")));
+        CHECK(editor.undo());
+        CHECK(editor.selectNode(root));
+        editor.setReadOnly(readOnly);
+        const Json before = exported(editor);
+        const bool canUndo = editor.canUndo(), canRedo = editor.canRedo();
+        QSignalSpy activated(&editor, &Editor::nodeImageActivated), changed(&editor, &Editor::documentChanged);
+        QSignalSpy undo(&editor, &Editor::undoAvailable), redo(&editor, &Editor::redoAvailable);
+        auto &view = graphics(editor);
+        const QPoint point = view.mapFromScene(nodeImageRect(editor).center());
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        CHECK(activated.isEmpty());
+        QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        pump();
+        CHECK(activated.size() == 1 && activated.front().at(0).toString() == root);
+        CHECK(qvariant_cast<QImage>(activated.front().at(1)) == pixels);
+        CHECK(!activeTopicInput(editor) && !editor.hasPendingEdit());
+        CHECK(exported(editor) == before && changed.isEmpty() && undo.isEmpty() && redo.isEmpty());
+        CHECK(editor.canUndo() == canUndo && editor.canRedo() == canRedo);
+        checkImageSize(nodeImageRect(editor), QSizeF(120, 60));
+    }
+    for (bool failed : {false, true}) {
+        Editor editor;
+        if (failed) QObject::connect(&editor, &Editor::imageRequested, &editor,
+            [&editor](const QString &source, quint64 id) { editor.provideImage(source, id, QImage()); });
+        CHECK(editor.loadJson(encoded(imageDocument())));
+        showEditor(editor);
+        const Json before = exported(editor);
+        QSignalSpy activated(&editor, &Editor::nodeImageActivated), changed(&editor, &Editor::documentChanged);
+        auto &view = graphics(editor);
+        QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::NoModifier,
+                          view.mapFromScene(nodeImageRect(editor).center()));
+        pump();
+        CHECK(activated.isEmpty() && changed.isEmpty() && exported(editor) == before);
+        CHECK(!activeTopicInput(editor) && !editor.canUndo() && !editor.canRedo());
+    }
+    {
+        Editor editor;
+        prepare(editor);
+        auto &view = graphics(editor);
+        const Json before = exported(editor);
+        QSignalSpy activated(&editor, &Editor::nodeImageActivated), changed(&editor, &Editor::documentChanged);
+        const auto point = [&] { return view.mapFromScene(nodeImageRect(editor).center()); };
+        for (auto modifier : {Qt::ShiftModifier, Qt::ControlModifier, Qt::AltModifier, Qt::MetaModifier}) {
+            QTest::mouseDClick(view.viewport(), Qt::LeftButton, modifier, point());
+            CHECK(activated.isEmpty() && !activeTopicInput(editor));
+        }
+        QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, imageHandlePoint(editor));
+        CHECK(activated.isEmpty());
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, imageHandlePoint(editor));
+        QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, point());
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, point());
+        CHECK(activated.isEmpty());
+        QTest::mousePress(view.viewport(), Qt::MiddleButton, Qt::NoModifier, point());
+        QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, point());
+        QTest::mouseRelease(view.viewport(), Qt::MiddleButton, Qt::NoModifier, point());
+        CHECK(activated.isEmpty());
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ControlModifier,
+                          labelPoint(editor, QStringLiteral("Alpha")));
+        CHECK(editor.selectedNodeIds().size() == 2);
+        QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, point());
+        CHECK(activated.isEmpty());
+        // The first click collapses the group, but its second click still must not activate.
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, point());
+        CHECK(editor.selectedNodeIds().size() == 1);
+        QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, point());
+        CHECK(activated.isEmpty());
+        editor.setEnabled(false);
+        // Exercise the facade gate even if the native view emits while disabled.
+        CHECK(QMetaObject::invokeMethod(&view, "nodeImageActivated", Qt::DirectConnection,
+                                       Q_ARG(QString, root), Q_ARG(QImage, pixels)));
+        CHECK(activated.isEmpty());
+        CHECK(exported(editor) == before && changed.isEmpty());
+        CHECK(!activeTopicInput(editor) && !editor.canUndo() && !editor.canRedo());
+        checkImageSize(nodeImageRect(editor), QSizeF(120, 60));
+    }
+    {
+        Editor editor;
+        prepare(editor);
+        // Qt's default right-button double-click handling can change scene selection;
+        // keep it separate from the selected-image handle scenarios above.
+        const Json before = exported(editor);
+        QSignalSpy activated(&editor, &Editor::nodeImageActivated), changed(&editor, &Editor::documentChanged);
+        auto &view = graphics(editor);
+        QTest::mouseDClick(view.viewport(), Qt::RightButton, Qt::NoModifier,
+                          view.mapFromScene(nodeImageRect(editor).center()));
+        CHECK(activated.isEmpty() && changed.isEmpty() && exported(editor) == before);
+        CHECK(!activeTopicInput(editor) && !editor.canUndo() && !editor.canRedo());
+    }
+    {
+        Editor editor;
+        prepare(editor);
+        bool replaced = false;
+        QObject::connect(&editor, &Editor::nodeImageActivated, &editor, [&](const QString &id, const QImage &image) {
+            CHECK(id == root && image == pixels);
+            CHECK(editor.newDocument(QStringLiteral("Reentrant image replacement")));
+            CHECK(id == root && image == pixels);
+            replaced = true;
+        });
+        auto &view = graphics(editor);
+        QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::NoModifier,
+                          view.mapFromScene(nodeImageRect(editor).center()));
+        pump();
+        CHECK(replaced && editor.selectedNodeId() == QStringLiteral("root"));
+    }
+    {
+        auto editor = std::make_unique<Editor>();
+        prepare(*editor);
+        QPointer<Editor> alive(editor.get());
+        QSignalSpy activated(editor.get(), &Editor::nodeImageActivated);
+        bool delivered = false;
+        QObject::connect(editor.get(), &Editor::nodeImageActivated, [&](const QString &id, const QImage &image) {
+            CHECK(id == root && image == pixels);
+            editor.reset();
+            CHECK(id == root && image == pixels);
+            delivered = true;
+        });
+        auto &view = graphics(*editor);
+        auto *viewport = view.viewport();
+        const QPoint point = view.mapFromScene(nodeImageRect(*editor).center());
+        QMouseEvent event(QEvent::MouseButtonDblClick, QPointF(point), QPointF(viewport->mapToGlobal(point)),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(viewport, &event);
+        pump();
+        CHECK(delivered && alive.isNull() && activated.size() == 1);
+        CHECK(activated.front().at(0).toString() == root && qvariant_cast<QImage>(activated.front().at(1)) == pixels);
+    }
+}
+
 static void images_case() {
     const QString root = QStringLiteral("r"), topic = QStringLiteral("Image root"), url = QStringLiteral("memory:picture");
     const QImage pixels = imagePixels();
@@ -11923,7 +12068,7 @@ int main(int argc, char **argv) {
         else if (name == "orphans") orphans_case();
         else if (name == "collapse") { collapse_case(); collapse_scene(); }
         else if (name == "graph_edits") { graph_edits_case(); graph_edits_scene(); }
-        else if (name == "images") images_case();
+        else if (name == "images") { images_case(); image_activation_case(); }
         else if (name == "render") { render_case(); routing_case(); }
         else if (name == "navigation") navigation_case();
         else if (name == "outline_navigation") outline_navigation_case();

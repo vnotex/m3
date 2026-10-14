@@ -153,6 +153,8 @@ struct FindResult { int totalMatches = 0; int currentMatch = -1; };
 // link topics inline. Node double-click editing accepts the topic label or blank
 // space inside the node, including empty topics. Images, tags, icons and the
 // expand/collapse button remain excluded; blank canvas space does not start editing.
+// Plain left double-clicks on decoded images emit nodeImageActivated, including in
+// read-only mode. The host owns the viewer; placeholders and resize handles do not activate.
 // Expand/collapse toggles on each left-button press, including rapid repeated clicks.
 // Link topics are literal text, without node hashtag parsing.
 // These letters remain ordinary input while typing, including in the inline draft.
@@ -447,6 +449,7 @@ signals:
     // empty; query selectedNodeIds() to distinguish a group from no selection.
     void selectionChanged(const QString &nodeId, const QString &linkId);
     void nodeLinkActivated(const QString &nodeId, const QString &url);
+    void nodeImageActivated(const QString &nodeId, const QImage &image);
     void imageRequested(const QString &url, quint64 requestId);
     void errorOccurred(const QString &message);
 protected:

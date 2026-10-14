@@ -2166,6 +2166,22 @@ void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
     updatePanCursor(event->pos());
 }
 void MindMapView::mouseDoubleClickEvent(QMouseEvent *event) {
+    if (event->button() == Qt::LeftButton && event->modifiers() == Qt::NoModifier &&
+        panning == Qt::NoButton && selectedNodes.size() <= 1 && !suppressNodeDoubleClick &&
+        reconnectedLinkId.isEmpty() && linkSourceId.isEmpty() && resizedNodeId.isEmpty() &&
+        pressedLinkNodeId.isEmpty() && draggedNodeId.isEmpty()) {
+        // Hit the image itself, never walk up from its resize handle.
+        if (auto *item = dynamic_cast<NodeImageItem *>(itemAt(event->pos()))) {
+            if (!item->pixels.isNull()) {
+                const QString id = static_cast<NodeItem *>(item->parentItem())->id;
+                const QImage image = item->pixels;
+                event->accept();
+                // Receivers may replace the scene or destroy the editor synchronously.
+                emit nodeImageActivated(id, image);
+                return;
+            }
+        }
+    }
     bool expansion = false;
     if (event->button() == Qt::LeftButton) {
         if (auto *node = dynamic_cast<NodeItem *>(targetAt(event->pos())))

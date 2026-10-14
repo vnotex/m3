@@ -53,6 +53,7 @@ signals:
     void nodePicked(const QString &id);
     void nodeSelectionToggled(const QString &id);
     void nodeLinkActivated(const QString &nodeId, const QString &url);
+    void nodeImageActivated(const QString &nodeId, const QImage &image);
     void imageResizeRequested(const QString &nodeId, const QString &url, const QSizeF &originalSize, const QSizeF &size);
     void mimeDataDropped(const QString &nodeId, const QMimeData *source);
     void nodeMoveRequested(const QString &id, const QString &parent, int index);
