@@ -8381,7 +8381,11 @@ static void shortcut_help_case() {
         auto *browser = configuredHelp();
         const QString original = browser->toPlainText();
         const QStringList lines = original.split(QLatin1Char('\n'));
-        for (const auto &binding : expectedKeys) CHECK(lines.contains(binding.toString(QKeySequence::NativeText)));
+        for (const auto &binding : expectedKeys) {
+            const QString key = binding.toString(QKeySequence::NativeText);
+            CHECK(lines.contains(key));
+            CHECK(browser->document()->find(key).charFormat().fontWeight() >= QFont::Bold);
+        }
         CHECK(lines.count(newline.toString(QKeySequence::NativeText)) == 1);
         CHECK(lines.count(keypadNewline.toString(QKeySequence::NativeText)) == 1);
         escape(editor);

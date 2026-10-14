@@ -115,18 +115,18 @@
     </message>
     <message>
         <location line="+13"/>
-        <source>Accept topic</source>
-        <translation>确认主题</translation>
+        <source>Apply changes</source>
+        <translation>应用更改</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Cancel draft</source>
-        <translation>放弃编辑</translation>
+        <source>Discard changes</source>
+        <translation>放弃更改</translation>
     </message>
     <message>
         <location line="+8"/>
-        <source>New line</source>
-        <translation>换行</translation>
+        <source>Insert a line break</source>
+        <translation>插入换行</translation>
     </message>
     <message>
         <location line="+1"/>
@@ -135,18 +135,18 @@
     </message>
     <message>
         <location line="+3"/>
-        <source>Previous / next emoji</source>
-        <translation>上一个 / 下一个表情符号</translation>
+        <source>Select previous / next emoji</source>
+        <translation>选择上一个 / 下一个表情符号</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Previous / next category</source>
-        <translation>上一个 / 下一个分类</translation>
+        <source>Select previous / next category</source>
+        <translation>选择上一个 / 下一个分类</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Use selected emoji</source>
-        <translation>使用选中的表情符号</translation>
+        <source>Insert selected emoji</source>
+        <translation>插入选中的表情符号</translation>
     </message>
     <message>
         <location line="+1"/>
@@ -155,33 +155,33 @@
     </message>
     <message>
         <location line="+1"/>
-        <source>Leave picker field</source>
-        <translation>离开选择器输入框</translation>
+        <source>Move to next / previous field</source>
+        <translation>移至下一个 / 上一个输入框</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Canvas</source>
-        <translation>画布</translation>
+        <source>Map commands</source>
+        <translation>导图操作</translation>
     </message>
     <message>
         <location line="+0"/>
-        <source>During drag or image resize</source>
-        <translation>拖动或调整图像大小时</translation>
+        <source>Dragging and resizing</source>
+        <translation>拖动和调整大小</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Cancel gesture</source>
-        <translation>取消手势</translation>
+        <source>Cancel drag or resize</source>
+        <translation>取消拖动或大小调整</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Selected node on canvas</source>
-        <translation>画布上选中的节点</translation>
+        <source>Selected node</source>
+        <translation>选中的节点</translation>
     </message>
     <message>
         <location line="+0"/>
-        <source>Inline topic</source>
-        <translation>就地编辑主题</translation>
+        <source>Editing a topic</source>
+        <translation>编辑主题时</translation>
     </message>
     <message>
         <location line="+1"/>
@@ -190,22 +190,22 @@
     </message>
     <message>
         <location line="+0"/>
-        <source>Collapse card</source>
-        <translation>折叠卡片</translation>
+        <source>Collapse properties panel</source>
+        <translation>收起属性面板</translation>
     </message>
     <message>
         <location line="+2"/>
-        <source>With properties expanded, outside inputs:</source>
-        <translation>属性面板展开且焦点不在输入框内时：</translation>
+        <source>When the panel is open and no field has focus:</source>
+        <translation>属性面板打开且焦点不在输入框内时：</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Type row (1-4), then column (1-6).</source>
-        <translation>先输入行号（1-4），再输入列号（1-6）。</translation>
+        <source>Type the color's row (1-4), then column (1-6).</source>
+        <translation>输入颜色所在的行号（1-4），再输入列号（1-6）。</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>11 selects Auto.</source>
+        <source>Type 11 to select Auto.</source>
         <translation>输入 11 选择“自动”。</translation>
     </message>
     <message>
@@ -221,8 +221,12 @@
     </message>
     <message>
         <location line="-269"/>
-        <source>Canvas shortcuts require map focus. Letters type normally in text fields.</source>
-        <translation>画布快捷键仅在思维导图获得焦点时生效。在文本输入框中，字母键可正常输入。</translation>
+        <source>Map shortcuts work when the map has focus.</source>
+        <translation>思维导图获得焦点时，导图快捷键才会生效。</translation>
+    </message>
+    <message>
+        <source>You can type normally in text fields.</source>
+        <translation>在文本输入框中，您可以正常输入文字。</translation>
     </message>
     <message>
         <location line="+55"/>
@@ -903,8 +907,8 @@
     </message>
     <message>
         <location line="+4"/>
-        <source>%1 to close</source>
-        <translation>按 %1 关闭</translation>
+        <source>Press %1 or click outside to close</source>
+        <translation>按 %1 或点击面板外部关闭</translation>
     </message>
 </context>
 </TS>

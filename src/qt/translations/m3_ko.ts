@@ -115,18 +115,18 @@
     </message>
     <message>
         <location line="+13"/>
-        <source>Accept topic</source>
-        <translation>주제 확정</translation>
+        <source>Apply changes</source>
+        <translation>변경 사항 적용</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Cancel draft</source>
-        <translation>작성 취소</translation>
+        <source>Discard changes</source>
+        <translation>변경 사항 취소</translation>
     </message>
     <message>
         <location line="+8"/>
-        <source>New line</source>
-        <translation>줄 바꿈</translation>
+        <source>Insert a line break</source>
+        <translation>줄 바꿈 삽입</translation>
     </message>
     <message>
         <location line="+1"/>
@@ -135,18 +135,18 @@
     </message>
     <message>
         <location line="+3"/>
-        <source>Previous / next emoji</source>
-        <translation>이전 / 다음 이모지</translation>
+        <source>Select previous / next emoji</source>
+        <translation>이전 / 다음 이모지 선택</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Previous / next category</source>
-        <translation>이전 / 다음 카테고리</translation>
+        <source>Select previous / next category</source>
+        <translation>이전 / 다음 카테고리 선택</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Use selected emoji</source>
-        <translation>선택한 이모지 사용</translation>
+        <source>Insert selected emoji</source>
+        <translation>선택한 이모지 삽입</translation>
     </message>
     <message>
         <location line="+1"/>
@@ -155,33 +155,33 @@
     </message>
     <message>
         <location line="+1"/>
-        <source>Leave picker field</source>
-        <translation>선택기 입력란에서 나가기</translation>
+        <source>Move to next / previous field</source>
+        <translation>다음 / 이전 입력란으로 이동</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Canvas</source>
-        <translation>캔버스</translation>
+        <source>Map commands</source>
+        <translation>마인드맵 명령</translation>
     </message>
     <message>
         <location line="+0"/>
-        <source>During drag or image resize</source>
-        <translation>드래그하거나 이미지 크기를 조절하는 동안</translation>
+        <source>Dragging and resizing</source>
+        <translation>드래그 및 크기 조절</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Cancel gesture</source>
-        <translation>제스처 취소</translation>
+        <source>Cancel drag or resize</source>
+        <translation>드래그 또는 크기 조절 취소</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Selected node on canvas</source>
-        <translation>캔버스에서 선택한 노드</translation>
+        <source>Selected node</source>
+        <translation>선택한 노드</translation>
     </message>
     <message>
         <location line="+0"/>
-        <source>Inline topic</source>
-        <translation>인라인 주제</translation>
+        <source>Editing a topic</source>
+        <translation>주제 편집 중</translation>
     </message>
     <message>
         <location line="+1"/>
@@ -190,22 +190,22 @@
     </message>
     <message>
         <location line="+0"/>
-        <source>Collapse card</source>
-        <translation>카드 접기</translation>
+        <source>Collapse properties panel</source>
+        <translation>속성 패널 접기</translation>
     </message>
     <message>
         <location line="+2"/>
-        <source>With properties expanded, outside inputs:</source>
-        <translation>속성을 펼친 상태에서 입력란 밖에 포커스가 있을 때:</translation>
+        <source>When the panel is open and no field has focus:</source>
+        <translation>패널이 열려 있고 입력란에 포커스가 없을 때:</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Type row (1-4), then column (1-6).</source>
-        <translation>행 번호(1-4)를 입력한 다음 열 번호(1-6)를 입력하세요.</translation>
+        <source>Type the color's row (1-4), then column (1-6).</source>
+        <translation>색상의 행(1-4), 열(1-6) 순서로 입력하세요.</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>11 selects Auto.</source>
+        <source>Type 11 to select Auto.</source>
         <translation>11을 입력하면 자동이 선택됩니다.</translation>
     </message>
     <message>
@@ -221,8 +221,12 @@
     </message>
     <message>
         <location line="-313"/>
-        <source>Canvas shortcuts require map focus. Letters type normally in text fields.</source>
-        <translation>캔버스 단축키를 사용하려면 마인드맵에 포커스가 있어야 합니다. 텍스트 입력란에서는 문자가 그대로 입력됩니다.</translation>
+        <source>Map shortcuts work when the map has focus.</source>
+        <translation>마인드맵에 포커스가 있을 때 마인드맵 단축키를 사용할 수 있습니다.</translation>
+    </message>
+    <message>
+        <source>You can type normally in text fields.</source>
+        <translation>텍스트 입력란에서는 평소처럼 입력할 수 있습니다.</translation>
     </message>
     <message>
         <location line="+88"/>
@@ -908,8 +912,8 @@
     </message>
     <message>
         <location line="+4"/>
-        <source>%1 to close</source>
-        <translation>%1 키로 닫기</translation>
+        <source>Press %1 or click outside to close</source>
+        <translation>%1 키를 누르거나 패널 밖을 클릭하여 닫기</translation>
     </message>
 </context>
 </TS>

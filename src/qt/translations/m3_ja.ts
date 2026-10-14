@@ -115,18 +115,18 @@
     </message>
     <message>
         <location line="+13"/>
-        <source>Accept topic</source>
-        <translation>トピックを確定</translation>
+        <source>Apply changes</source>
+        <translation>変更を適用</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Cancel draft</source>
-        <translation>編集中の内容を破棄</translation>
+        <source>Discard changes</source>
+        <translation>変更を破棄</translation>
     </message>
     <message>
         <location line="+8"/>
-        <source>New line</source>
-        <translation>改行</translation>
+        <source>Insert a line break</source>
+        <translation>改行を挿入</translation>
     </message>
     <message>
         <location line="+1"/>
@@ -135,18 +135,18 @@
     </message>
     <message>
         <location line="+3"/>
-        <source>Previous / next emoji</source>
-        <translation>前 / 次の絵文字</translation>
+        <source>Select previous / next emoji</source>
+        <translation>前 / 次の絵文字を選択</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Previous / next category</source>
-        <translation>前 / 次のカテゴリ</translation>
+        <source>Select previous / next category</source>
+        <translation>前 / 次のカテゴリを選択</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Use selected emoji</source>
-        <translation>選択した絵文字を使用</translation>
+        <source>Insert selected emoji</source>
+        <translation>選択した絵文字を挿入</translation>
     </message>
     <message>
         <location line="+1"/>
@@ -155,33 +155,33 @@
     </message>
     <message>
         <location line="+1"/>
-        <source>Leave picker field</source>
-        <translation>選択パネルの入力欄から移動</translation>
+        <source>Move to next / previous field</source>
+        <translation>次 / 前の入力欄へ移動</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Canvas</source>
-        <translation>キャンバス</translation>
+        <source>Map commands</source>
+        <translation>マップの操作</translation>
     </message>
     <message>
         <location line="+0"/>
-        <source>During drag or image resize</source>
-        <translation>ドラッグ中または画像のサイズ変更中</translation>
+        <source>Dragging and resizing</source>
+        <translation>ドラッグとサイズ変更</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Cancel gesture</source>
-        <translation>操作をキャンセル</translation>
+        <source>Cancel drag or resize</source>
+        <translation>ドラッグやサイズ変更をキャンセル</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Selected node on canvas</source>
-        <translation>キャンバス上の選択ノード</translation>
+        <source>Selected node</source>
+        <translation>選択したノード</translation>
     </message>
     <message>
         <location line="+0"/>
-        <source>Inline topic</source>
-        <translation>トピックのインライン編集</translation>
+        <source>Editing a topic</source>
+        <translation>トピックの編集中</translation>
     </message>
     <message>
         <location line="+1"/>
@@ -190,23 +190,23 @@
     </message>
     <message>
         <location line="+0"/>
-        <source>Collapse card</source>
-        <translation>カードを折りたたむ</translation>
+        <source>Collapse properties panel</source>
+        <translation>プロパティパネルを折りたたむ</translation>
     </message>
     <message>
         <location line="+2"/>
-        <source>With properties expanded, outside inputs:</source>
-        <translation>プロパティを展開し、入力欄以外にフォーカスがある場合:</translation>
+        <source>When the panel is open and no field has focus:</source>
+        <translation>パネルが開き、入力欄にフォーカスがない場合:</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>Type row (1-4), then column (1-6).</source>
-        <translation>行番号 (1-4)、列番号 (1-6) の順に入力します。</translation>
+        <source>Type the color's row (1-4), then column (1-6).</source>
+        <translation>色の行番号 (1-4)、列番号 (1-6) の順に入力します。</translation>
     </message>
     <message>
         <location line="+1"/>
-        <source>11 selects Auto.</source>
-        <translation>11 で「自動」を選択します。</translation>
+        <source>Type 11 to select Auto.</source>
+        <translation>11 を入力すると「自動」を選択します。</translation>
     </message>
     <message>
         <location line="+1"/>
@@ -221,8 +221,12 @@
     </message>
     <message>
         <location line="-269"/>
-        <source>Canvas shortcuts require map focus. Letters type normally in text fields.</source>
-        <translation>キャンバスのショートカットを使うには、マップにフォーカスを移してください。テキスト欄では通常どおり文字を入力できます。</translation>
+        <source>Map shortcuts work when the map has focus.</source>
+        <translation>マップにフォーカスがあるときに、マップのショートカットを使えます。</translation>
+    </message>
+    <message>
+        <source>You can type normally in text fields.</source>
+        <translation>テキスト欄では通常どおり文字を入力できます。</translation>
     </message>
     <message>
         <location line="+55"/>
@@ -903,8 +907,8 @@
     </message>
     <message>
         <location line="+4"/>
-        <source>%1 to close</source>
-        <translation>%1 で閉じる</translation>
+        <source>Press %1 or click outside to close</source>
+        <translation>%1 を押すか、パネルの外側をクリックして閉じます</translation>
     </message>
 </context>
 </TS>

@@ -132,7 +132,7 @@ public:
         browser->setLineWrapMode(QTextEdit::NoWrap);
         browser->setHtml(help);
         layout->addWidget(browser, 1);
-        layout->addWidget(new QLabel(tr("%1 to close").arg(QKeySequence(Qt::Key_Escape).toString(QKeySequence::NativeText)), this));
+        layout->addWidget(new QLabel(tr("Press %1 or click outside to close").arg(QKeySequence(Qt::Key_Escape).toString(QKeySequence::NativeText)), this));
         setFocusProxy(browser);
     }
 protected:
@@ -1148,7 +1148,8 @@ public:
             QStringList keys;
             for (const auto &binding : bindings)
                 if (!binding.isEmpty()) keys.append(binding.toString(QKeySequence::NativeText).toHtmlEscaped());
-            const QString value = keys.isEmpty() ? tr("Unassigned").toHtmlEscaped() : keys.join(QStringLiteral("<br>"));
+            const QString value = keys.isEmpty() ? tr("Unassigned").toHtmlEscaped()
+                : QStringLiteral("<b>%1</b>").arg(keys.join(QStringLiteral("<br>")));
             return QStringLiteral("<tr><td valign=top><nobr>%1</nobr></td><td valign=top><nobr>%2</nobr></td></tr>")
                 .arg(value, label.toHtmlEscaped());
         };
@@ -1162,8 +1163,8 @@ public:
             auto &rows = nodeEditingActions.contains(action) ? nodes : canvas;
             rows += row(action->text(), action->shortcuts());
         }
-        QString inlineEdit = row(tr("Accept topic"), config.shortcuts.acceptTopic);
-        inlineEdit += row(tr("Cancel draft"), {QKeySequence(Qt::Key_Escape)});
+        QString inlineEdit = row(tr("Apply changes"), config.shortcuts.acceptTopic);
+        inlineEdit += row(tr("Discard changes"), {QKeySequence(Qt::Key_Escape)});
         QList<QKeySequence> newlines;
         for (const auto &newline : {QKeySequence(Qt::SHIFT | Qt::Key_Return), QKeySequence(Qt::SHIFT | Qt::Key_Enter)}) {
             bool accepts = false;
@@ -1171,29 +1172,30 @@ public:
                 if (!binding.isEmpty() && binding[0] == newline[0]) { accepts = true; break; }
             if (!accepts) newlines.append(newline);
         }
-        if (!newlines.isEmpty()) inlineEdit += row(tr("New line"), newlines);
+        if (!newlines.isEmpty()) inlineEdit += row(tr("Insert a line break"), newlines);
         QString emoji = row(tr("Move left / down / up / right"),
             {QKeySequence(Qt::CTRL | Qt::Key_H), QKeySequence(Qt::CTRL | Qt::Key_J),
              QKeySequence(Qt::CTRL | Qt::Key_K), QKeySequence(Qt::CTRL | Qt::Key_L)});
-        emoji += row(tr("Previous / next emoji"), {QKeySequence(Qt::Key_Up), QKeySequence(Qt::Key_Down)});
-        emoji += row(tr("Previous / next category"), {QKeySequence(Qt::CTRL | Qt::Key_PageUp), QKeySequence(Qt::CTRL | Qt::Key_PageDown)});
-        emoji += row(tr("Use selected emoji"), {QKeySequence(Qt::Key_Return), QKeySequence(Qt::Key_Enter)});
+        emoji += row(tr("Select previous / next emoji"), {QKeySequence(Qt::Key_Up), QKeySequence(Qt::Key_Down)});
+        emoji += row(tr("Select previous / next category"), {QKeySequence(Qt::CTRL | Qt::Key_PageUp), QKeySequence(Qt::CTRL | Qt::Key_PageDown)});
+        emoji += row(tr("Insert selected emoji"), {QKeySequence(Qt::Key_Return), QKeySequence(Qt::Key_Enter)});
         emoji += row(tr("Close picker"), {QKeySequence(Qt::Key_Escape)});
-        emoji += row(tr("Leave picker field"), {QKeySequence(Qt::Key_Tab), QKeySequence(Qt::SHIFT | Qt::Key_Tab)});
-        const QString left = section(tr("Canvas"), canvas) + section(tr("During drag or image resize"),
-            row(tr("Cancel gesture"), {QKeySequence(Qt::Key_Escape)}));
-        const QString right = section(tr("Selected node on canvas"), nodes) + section(tr("Inline topic"), inlineEdit)
+        emoji += row(tr("Move to next / previous field"), {QKeySequence(Qt::Key_Tab), QKeySequence(Qt::SHIFT | Qt::Key_Tab)});
+        const QString left = section(tr("Map commands"), canvas) + section(tr("Dragging and resizing"),
+            row(tr("Cancel drag or resize"), {QKeySequence(Qt::Key_Escape)}));
+        const QString right = section(tr("Selected node"), nodes) + section(tr("Editing a topic"), inlineEdit)
             + section(tr("Node properties"), (config.separateNodePropertiesPanel ? QString() :
-                row(tr("Collapse card"), {QKeySequence(Qt::Key_Escape)}))
+                row(tr("Collapse properties panel"), {QKeySequence(Qt::Key_Escape)}))
                 + QStringLiteral("<tr><td colspan=2>%1<br>%2<br>%3</td></tr>").arg(
-                    tr("With properties expanded, outside inputs:").toHtmlEscaped(),
-                    tr("Type row (1-4), then column (1-6).").toHtmlEscaped(),
-                    tr("11 selects Auto.").toHtmlEscaped()))
+                    tr("When the panel is open and no field has focus:").toHtmlEscaped(),
+                    tr("Type the color's row (1-4), then column (1-6).").toHtmlEscaped(),
+                    tr("Type 11 to select Auto.").toHtmlEscaped()))
             + section(tr("Emoji picker"), emoji);
-        return QStringLiteral("<qt><b>%1</b><p>%2</p><table cellspacing=12><tr>"
-            "<td valign=top>%3</td><td valign=top>%4</td></tr></table></qt>")
+        return QStringLiteral("<qt><b>%1</b><p>%2<br>%3</p><table cellspacing=12><tr>"
+            "<td valign=top>%4</td><td valign=top>%5</td></tr></table></qt>")
             .arg(tr("Keyboard shortcuts").toHtmlEscaped(),
-                 tr("Canvas shortcuts require map focus. Letters type normally in text fields.").toHtmlEscaped(), left, right);
+                 tr("Map shortcuts work when the map has focus.").toHtmlEscaped(),
+                 tr("You can type normally in text fields.").toHtmlEscaped(), left, right);
     }
     QAction *action(const char *name, const QString &text, const QList<QKeySequence> &shortcuts, std::function<void()> command) {
         auto *result = new QAction(text, host);
