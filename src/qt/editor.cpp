@@ -1536,11 +1536,12 @@ public:
                          QStringLiteral("background"), fillPalette);
         createIconsPopup();
         for (auto *action : nodeEditingActions) action->setAutoRepeat(false);
-        action("showHelp", tr("Keyboard shortcuts"), config.shortcuts.showHelp, [this] { showHelp(); })->setAutoRepeat(false);
+        auto *helpAction = action("showHelp", tr("Shortcuts Help"), config.shortcuts.showHelp, [this] { showHelp(); });
+        helpAction->setAutoRepeat(false);
         // Snapshot configured bindings before inline editing temporarily clears them.
         shortcutHelpText = shortcutHelp();
         view->setContextMenuPolicy(Qt::CustomContextMenu);
-        QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this, zoomIn, zoomOut, resetZoom, fit](const QPoint &point) {
+        QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this, zoomIn, zoomOut, resetZoom, fit, helpAction](const QPoint &point) {
             const QPointer<MindMapEditor> guard(host);
             if (!view->finishTopicEdit(true) || !guard) return;
             const QString nodeId = controller->selectedNodeId();
@@ -1620,7 +1621,7 @@ public:
                 menu.addSeparator();
                 menu.addAction(addOrphan);
                 menu.addSeparator();
-                menu.addAction(tr("Shortcuts Help"), host, [this] { showHelp(); });
+                menu.addAction(helpAction);
             }
             if (hasNode || !linkId.isEmpty() || controller->selectedNodeIds().size() > 1) {
                 menu.addSeparator();
