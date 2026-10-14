@@ -30,10 +30,12 @@ constexpr char navigationHintShownProperty[] = "m3.emojiNavigationHintShown";
 struct Emoji {
     QString glyph, name, searchable;
     int category;
+    bool featured = false;
 };
 struct Catalog {
     QStringList categories;
     QList<Emoji> entries;
+    QList<int> allOrder;
 };
 const Catalog &catalog() {
     // Unicode 15.1, unmodified upstream data; notice embedded alongside the data.
@@ -69,6 +71,195 @@ const Catalog &catalog() {
                                    (name + QLatin1Char(' ') + group).toCaseFolded(), int(result.categories.size() - 1)});
         }
         if (result.entries.isEmpty()) qFatal("Empty embedded emoji catalog");
+        // Keep Unicode names/glyphs and category order; curate only All categories.
+        static const struct { const char *name, *keywords; } featured[] = {
+            {"check mark button", "todo task done complete"},
+            {"clipboard", "todo task checklist management office stationery"},
+            {"bullseye", "efficiency productivity focus goal target project"},
+            {"rocket", "efficiency productivity project launch release engineer engineering aerospace"},
+            {"briefcase", "project management work business office"},
+            {"busts in silhouette", "management team meeting people office"},
+            {"memo", "diary journal notes todo office stationery"},
+            {"notebook", "diary journal daily reflection office stationery"},
+            {"calendar", "management project schedule deadline diary office"},
+            {"stopwatch", "efficiency productivity time focus timer"},
+            {"light bulb", "efficiency productivity idea brainstorm"},
+            {"bar chart", "management project report metrics review office"},
+            {"star", "importance important priority favorite highlight"},
+            {"glowing star", "importance important priority high special highlight"},
+            {"red exclamation mark", "importance important priority high urgent attention"},
+            {"double exclamation mark", "importance important priority high urgent critical"},
+            {"exclamation question mark", "importance important priority urgent question attention"},
+            {"red question mark", "importance important priority question clarify decision"},
+            {"fire", "importance important priority high urgent hot"},
+            {"police car light", "importance important priority high urgent critical emergency"},
+            {"red circle", "importance important priority high urgent critical"},
+            {"orange circle", "importance important priority high"},
+            {"yellow circle", "importance important priority medium normal"},
+            {"green circle", "importance important priority low"},
+            {"blue circle", "importance important priority low"},
+            {"white circle", "importance important priority optional none"},
+            {"red square", "importance important priority high urgent critical"},
+            {"orange square", "importance important priority high"},
+            {"yellow square", "importance important priority medium normal"},
+            {"green square", "importance important priority low"},
+            {"blue square", "importance important priority low"},
+            {"keycap: 0", "importance important priority number numbers numeric digit rank 0 zero zeroth"},
+            {"keycap: 1", "importance important priority number numbers numeric digit rank 1 one first"},
+            {"keycap: 2", "importance important priority number numbers numeric digit rank 2 two second"},
+            {"keycap: 3", "importance important priority number numbers numeric digit rank 3 three third"},
+            {"keycap: 4", "importance important priority number numbers numeric digit rank 4 four fourth"},
+            {"keycap: 5", "importance important priority number numbers numeric digit rank 5 five fifth"},
+            {"keycap: 6", "importance important priority number numbers numeric digit rank 6 six sixth"},
+            {"keycap: 7", "importance important priority number numbers numeric digit rank 7 seven seventh"},
+            {"keycap: 8", "importance important priority number numbers numeric digit rank 8 eight eighth"},
+            {"keycap: 9", "importance important priority number numbers numeric digit rank 9 nine ninth"},
+            {"keycap: 10", "importance important priority number numbers numeric digit rank 10 ten tenth"},
+            {"TOP arrow", "importance important priority high top"},
+            {"UP! button", "importance important priority escalate raise"},
+            {"check box with check", "todo task checked complete"},
+            {"hourglass not done", "todo task pending waiting progress"},
+            {"hourglass done", "todo task overdue deadline"},
+            {"play button", "todo task start progress"},
+            {"pause button", "todo task paused hold"},
+            {"cross mark", "todo task cancelled failed"},
+            {"prohibited", "todo task blocked"},
+            {"warning", "todo project risk issue attention importance important priority urgent"},
+            {"triangular flag", "todo project priority importance important high milestone"},
+            {"pushpin", "todo task important importance priority pinned office stationery"},
+            {"bell", "todo reminder notification"},
+            {"repeat button", "todo efficiency recurring routine habit"},
+            {"alarm clock", "efficiency productivity reminder deadline wake"},
+            {"high voltage", "efficiency productivity energy quick engineer engineering electrical"},
+            {"brain", "efficiency productivity thinking brainstorm learning"},
+            {"gear", "efficiency productivity workflow process automation engineer engineering mechanical automation"},
+            {"magnifying glass tilted left", "efficiency project research review investigate"},
+            {"trophy", "efficiency project achievement success"},
+            {"hundred points", "efficiency quality achievement complete"},
+            {"file folder", "project documents organize office"},
+            {"open file folder", "project active documents office"},
+            {"card index dividers", "project management organize categories office"},
+            {"card file box", "project archive records office"},
+            {"laptop", "office computer equipment workstation remote work engineer engineering software"},
+            {"desktop computer", "office computer equipment workstation desk engineer engineering software"},
+            {"printer", "office equipment print documents engineer engineering design"},
+            {"keyboard", "office computer equipment typing input engineer engineering software"},
+            {"computer mouse", "office computer equipment pointer input engineer engineering software"},
+            {"trackball", "office computer equipment pointer input"},
+            {"floppy disk", "office computer save backup storage"},
+            {"telephone", "office call communication contact"},
+            {"fax machine", "office equipment fax documents communication"},
+            {"e-mail", "office email mail message communication"},
+            {"envelope", "office email mail letter correspondence"},
+            {"incoming envelope", "office email mail receive incoming"},
+            {"envelope with arrow", "office email mail send outgoing"},
+            {"inbox tray", "office email mail incoming receive documents"},
+            {"outbox tray", "office email mail outgoing send documents"},
+            {"page facing up", "office stationery documents report document"},
+            {"page with curl", "office stationery documents document form"},
+            {"scroll", "office documents contract policy agreement"},
+            {"bookmark tabs", "office stationery documents reference index"},
+            {"label", "office stationery organize tag label"},
+            {"pen", "office stationery writing signature"},
+            {"black nib", "office stationery writing signature"},
+            {"ledger", "office accounting finance budget accounts"},
+            {"notebook with decorative cover", "office stationery notes notebook diary journal"},
+            {"card index", "office contacts directory address organize"},
+            {"chart decreasing", "office management report metrics decline"},
+            {"round pushpin", "office stationery location pin"},
+            {"linked paperclips", "office stationery documents attachment"},
+            {"straight ruler", "office stationery measure length engineer engineering measurement"},
+            {"triangular ruler", "office stationery measure angle drafting engineer engineering drafting"},
+            {"scissors", "office stationery cut supplies"},
+            {"file cabinet", "office documents storage archive organize"},
+            {"wastebasket", "office trash discard recycle cleanup"},
+            {"receipt", "office accounting finance invoice expense"},
+            {"credit card", "office accounting finance payment purchase"},
+            {"abacus", "office accounting finance calculate"},
+            {"office building", "office workplace company business headquarters"},
+            {"office worker", "office workplace staff employee colleague business"},
+            {"package", "project deliverable delivery release"},
+            {"construction", "project todo progress work engineer engineering civil"},
+            {"hammer and wrench", "project build maintenance engineer engineering tools"},
+            {"wrench", "project fix maintenance engineer engineering tools mechanical"},
+            {"technologist", "engineer engineering software developer programmer coding technology"},
+            {"mechanic", "engineer engineering mechanical technician repair maintenance"},
+            {"scientist", "engineer engineering research laboratory experiment"},
+            {"construction worker", "engineer engineering civil construction safety hardhat"},
+            {"factory worker", "engineer engineering industrial manufacturing production"},
+            {"toolbox", "engineer engineering tools equipment maintenance"},
+            {"hammer", "engineer engineering tools build construction"},
+            {"hammer and pick", "engineer engineering tools mining construction"},
+            {"pick", "engineer engineering tools mining excavation"},
+            {"screwdriver", "engineer engineering tools assembly repair"},
+            {"nut and bolt", "engineer engineering mechanical hardware fastener assembly"},
+            {"clamp", "engineer engineering tools mechanical hold fixture"},
+            {"carpentry saw", "engineer engineering tools carpentry cutting fabrication"},
+            {"ladder", "engineer engineering tools construction maintenance"},
+            {"magnet", "engineer engineering electrical physics magnetism"},
+            {"electric plug", "engineer engineering electrical electronics power"},
+            {"battery", "engineer engineering electrical electronics energy power"},
+            {"control knobs", "engineer engineering electrical electronics controls tuning"},
+            {"level slider", "engineer engineering electrical electronics controls adjustment"},
+            {"satellite antenna", "engineer engineering electrical telecommunications signal radio"},
+            {"satellite", "engineer engineering aerospace communications space"},
+            {"microscope", "engineer engineering laboratory research inspection science"},
+            {"telescope", "engineer engineering laboratory optics astronomy science"},
+            {"test tube", "engineer engineering laboratory chemistry testing experiment"},
+            {"petri dish", "engineer engineering laboratory biology testing experiment"},
+            {"alembic", "engineer engineering laboratory chemistry distillation"},
+            {"building construction", "engineer engineering civil construction crane building"},
+            {"brick", "engineer engineering civil construction materials"},
+            {"compass", "engineer engineering civil surveying navigation"},
+            {"chains", "engineer engineering mechanical hardware linkage"},
+            {"motorway", "engineer engineering civil infrastructure road transport"},
+            {"link", "project dependency connection"},
+            {"paperclip", "project attachment reference office stationery"},
+            {"handshake", "management agreement collaboration delegation office"},
+            {"speech balloon", "management discussion meeting feedback office"},
+            {"telephone receiver", "management call meeting contact office"},
+            {"megaphone", "management announcement communication office"},
+            {"spiral calendar", "management project planning roadmap schedule office"},
+            {"chart increasing", "management project progress growth office"},
+            {"money bag", "management project budget finance office"},
+            {"money with wings", "management project expense cost office"},
+            {"balance scale", "management decision balance policy"},
+            {"ballot box with ballot", "management vote decision"},
+            {"locked", "management project confidential private"},
+            {"key", "management project access responsibility"},
+            {"spiral notepad", "diary journal notes meeting office stationery"},
+            {"tear-off calendar", "diary journal daily date office"},
+            {"open book", "diary journal reading study"},
+            {"books", "diary learning study reference"},
+            {"pencil", "diary journal writing draft office stationery"},
+            {"fountain pen", "diary journal writing office stationery"},
+            {"writing hand", "diary journal writing reflection office"},
+            {"bookmark", "diary journal remember favorite office stationery"},
+            {"camera", "diary journal photo memory"},
+            {"sun behind small cloud", "diary journal weather mood"},
+            {"smiling face with smiling eyes", "diary journal mood happy"},
+            {"pensive face", "diary journal mood sad reflection"},
+            {"red heart", "diary journal gratitude love"},
+            {"seedling", "diary journal habit growth"},
+            {"flexed biceps", "diary journal habit exercise health"},
+            {"person in lotus position", "diary journal habit meditation mindfulness"},
+            {"sleeping face", "diary journal sleep rest"},
+            {"hot beverage", "diary journal break coffee"},
+            {"party popper", "diary journal celebration project success"},
+        };
+        result.allOrder.reserve(result.entries.size());
+        for (const auto &item : featured) {
+            const auto entry = std::find_if(result.entries.begin(), result.entries.end(), [&item](const Emoji &emoji) {
+                return emoji.name == QLatin1String(item.name);
+            });
+            if (entry == result.entries.end() || entry->featured) qFatal("Invalid featured emoji catalog");
+            entry->searchable += QLatin1Char(' ') + QString::fromLatin1(item.keywords).toCaseFolded();
+            entry->featured = true;
+            result.allOrder.append(int(entry - result.entries.begin()));
+        }
+        for (qsizetype i = 0; i < result.entries.size(); ++i) {
+            if (!result.entries[i].featured) result.allOrder.append(int(i));
+        }
         return result;
     }();
     return data;
@@ -92,13 +283,14 @@ public:
         const QStringList terms = query.toCaseFolded().simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
         beginResetModel();
         rows.clear();
-        const auto &entries = catalog().entries;
-        for (qsizetype i = 0; i < entries.size(); ++i) {
-            const auto &entry = entries[i];
+        const auto &data = catalog();
+        for (qsizetype i = 0; i < data.entries.size(); ++i) {
+            const int row = category < 0 ? data.allOrder[i] : int(i);
+            const auto &entry = data.entries[row];
             if (category >= 0 && entry.category != category) continue;
             if (std::all_of(terms.begin(), terms.end(), [&entry](const QString &term) {
                 return entry.searchable.contains(term) || entry.glyph.contains(term);
-            })) rows.append(int(i));
+            })) rows.append(row);
         }
         endResetModel();
     }

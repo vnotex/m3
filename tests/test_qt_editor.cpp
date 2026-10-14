@@ -3763,6 +3763,126 @@ static void emoji_category_popup_case() {
     CHECK(!popup->isVisible());
 }
 
+static void emoji_productivity_case() {
+    Editor editor;
+    showEditor(editor, QSize(1100, 900));
+    expandProperties(editor);
+    auto *panel = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
+    auto *icons = panel->findChild<QLineEdit *>(QStringLiteral("nodeIcons"));
+    panel->findChild<QScrollArea *>()->ensureWidgetVisible(icons);
+    icons->setFocus();
+    pump();
+    auto *categories = icons->findChild<QComboBox *>(QStringLiteral("emojiCategories"));
+    auto *choices = icons->findChild<QListView *>(QStringLiteral("emojiChoices"));
+    CHECK(categories && choices);
+    categories->setCurrentIndex(0);
+    icons->clear();
+    pump();
+    auto rowOf = [&](const char *name) {
+        for (int row = 0; row < choices->model()->rowCount(); ++row)
+            if (choices->model()->index(row, 0).data().toString() == QLatin1String(name)) return row;
+        return -1;
+    };
+    const int ordinary = rowOf("red apple");
+    CHECK(ordinary >= 0);
+    for (const auto *name : {"stopwatch", "rocket", "briefcase", "check mark button", "notebook",
+                             "star", "red circle", "keycap: 0", "keycap: 10", "printer",
+                             "office worker", "technologist", "toolbox"}) {
+        CHECK(rowOf(name) >= 0 && rowOf(name) < ordinary);
+    }
+    // The curated prefix is a permutation, not a second copy of the catalog.
+    std::set<QString> allGlyphs, categoryGlyphs;
+    for (int row = 0; row < choices->model()->rowCount(); ++row) {
+        CHECK(allGlyphs.insert(choices->model()->index(row, 0).data(Qt::UserRole + 1).toString()).second);
+    }
+    for (int category = 1; category < categories->count(); ++category) {
+        categories->setCurrentIndex(category);
+        for (int row = 0; row < choices->model()->rowCount(); ++row)
+            categoryGlyphs.insert(choices->model()->index(row, 0).data(Qt::UserRole + 1).toString());
+    }
+    CHECK(allGlyphs == categoryGlyphs);
+    const int objects = categories->findText(QStringLiteral("Objects"));
+    CHECK(objects >= 0);
+    categories->setCurrentIndex(objects);
+    CHECK(rowOf("notebook") >= 0 && rowOf("notebook") < rowOf("clipboard"));
+    categories->setCurrentIndex(0);
+    for (const auto &item : std::initializer_list<std::pair<const char *, const char *>>{
+             {"efficiency", "stopwatch"}, {"project", "rocket"}, {"management", "briefcase"},
+             {"todo", "check mark button"}, {"diary", "notebook"}, {"importance", "star"},
+             {"priority", "red circle"}, {"urgent", "police car light"}, {"number", "keycap: 0"},
+             {"office", "printer"}, {"office stationery", "linked paperclips"},
+             {"engineer", "technologist"}, {"engineering electrical", "electric plug"}}) {
+        icons->setText(QString::fromLatin1(item.first));
+        pump();
+        CHECK(rowOf(item.second) >= 0 && rowOf("red apple") < 0);
+    }
+    icons->setText(QStringLiteral("  OFFICE   equipment  "));
+    pump();
+    CHECK(rowOf("printer") >= 0 && rowOf("office building") < 0);
+    icons->setText(QStringLiteral("office"));
+    pump();
+    CHECK(rowOf("office building") >= 0 && rowOf("office worker") >= 0);
+    categories->setCurrentIndex(objects);
+    CHECK(rowOf("printer") >= 0 && rowOf("office building") < 0 && rowOf("office worker") < 0);
+    categories->setCurrentIndex(0);
+    icons->setText(QStringLiteral("  ENGINEERING   electrical  "));
+    pump();
+    CHECK(rowOf("electric plug") >= 0 && rowOf("technologist") < 0);
+    const int people = categories->findText(QStringLiteral("People & Body"));
+    CHECK(people >= 0);
+    icons->setText(QStringLiteral("engineer"));
+    pump();
+    categories->setCurrentIndex(people);
+    CHECK(rowOf("technologist") >= 0 && rowOf("electric plug") < 0);
+    categories->setCurrentIndex(0);
+    icons->setText(QStringLiteral("priority HIGH"));
+    pump();
+    CHECK(rowOf("red circle") >= 0 && rowOf("green circle") < 0);
+    icons->setText(QStringLiteral("priority low"));
+    pump();
+    CHECK(rowOf("green circle") >= 0 && rowOf("red circle") < 0);
+    icons->setText(QStringLiteral("priority number"));
+    pump();
+    QStringList numbers;
+    for (int number = 0; number < 10; ++number)
+        numbers.append(QString(QChar(ushort('0' + number))) + QStringLiteral("\uFE0F\u20E3"));
+    numbers.append(QString::fromUtf8("\xF0\x9F\x94\x9F"));
+    CHECK(choices->model()->rowCount() == numbers.size());
+    for (int number = 0; number < numbers.size(); ++number)
+        CHECK(choices->model()->index(number, 0).data(Qt::UserRole + 1).toString() == numbers[number]);
+    choices->setCurrentIndex(choices->model()->index(10, 0));
+    QTest::keyClick(icons, Qt::Key_Return);
+    pump();
+    CHECK(record(exported(editor), "nodes", QStringLiteral("root")).at("icons") == Json::array({utf8(numbers[10])}));
+    icons->setText(QStringLiteral("  ToDo   PeNdInG  "));
+    pump();
+    CHECK(rowOf("hourglass not done") >= 0 && rowOf("check mark button") < 0);
+    categories->setCurrentIndex(objects);
+    CHECK(choices->model()->rowCount() == 0);
+    icons->setText(QStringLiteral("diary"));
+    pump();
+    CHECK(rowOf("notebook") >= 0 && rowOf("red heart") < 0);
+    categories->setCurrentIndex(0);
+    icons->setText(QStringLiteral("todo complete"));
+    pump();
+    const int check = rowOf("check box with check");
+    CHECK(check >= 0);
+    choices->setCurrentIndex(choices->model()->index(check, 0));
+    QTest::keyClick(icons, Qt::Key_Return);
+    pump();
+    const QString glyph = QString::fromUtf8("\xE2\x98\x91\xEF\xB8\x8F");
+    CHECK(record(exported(editor), "nodes", QStringLiteral("root")).at("icons") == Json::array({utf8(glyph)}));
+    Editor reopened;
+    CHECK(reopened.loadJson(editor.toJson()));
+    CHECK(record(exported(reopened), "nodes", QStringLiteral("root")).at("icons") == Json::array({utf8(glyph)}));
+    icons->setText(glyph);
+    pump();
+    CHECK(rowOf("check box with check") >= 0);
+    icons->setText(QStringLiteral("red apple"));
+    pump();
+    CHECK(rowOf("red apple") >= 0 && rowOf("notebook") < 0);
+}
+
 static void properties_visibility_case() {
     Editor editor;
     CHECK(editor.loadJson(encoded(editorFixture())));
@@ -5171,6 +5291,7 @@ static void separated_properties_case() {
 static void properties_case() {
     properties_visibility_case();
     emoji_category_popup_case();
+    emoji_productivity_case();
     separated_properties_case();
     {
         Editor editor;
