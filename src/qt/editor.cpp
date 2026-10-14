@@ -1617,6 +1617,8 @@ public:
                 menu.addActions({rootSelection, fit, resetZoom, zoomIn, zoomOut});
                 menu.addSeparator();
                 menu.addAction(addOrphan);
+                menu.addSeparator();
+                menu.addAction(tr("Shortcuts Help"), host, [this] { showHelp(); });
             }
             if (hasNode || !linkId.isEmpty() || controller->selectedNodeIds().size() > 1) {
                 menu.addSeparator();

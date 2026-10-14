@@ -60,8 +60,9 @@ class QMimeData;
 // Empty space shows an open hand cursor, closing during a pan. Empty clicks clear selection.
 // Node context menus separate creation from editing/reordering and omit viewport actions.
 // With no selection the menu offers Focus Main Node, Fit, 100%, Zoom In and Zoom Out,
-// followed by Add Orphan Node. Move and Detach Subtree act on non-main nodes; detach
-// is available only for an attached subtree. Collapse/Expand and Add Link are commands.
+// followed by Add Orphan Node and Shortcuts Help (the existing keyboard shortcuts overlay).
+// Move and Detach Subtree act on non-main nodes; detach is available only for an attached
+// subtree. Collapse/Expand and Add Link are commands.
 // Drag a non-main node, including an orphan root, onto another node to reattach it.
 // Dropping on empty space cancels; detachment requires Detach Subtree.
 // A single selected node shows a small arrow outside its top-right corner. Drag it onto

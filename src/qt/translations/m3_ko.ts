@@ -295,6 +295,10 @@
         <translation>독립 노드 추가</translation>
     </message>
     <message>
+        <source>Shortcuts Help</source>
+        <translation>단축키 도움말</translation>
+    </message>
+    <message>
         <source>Detach Subtree</source>
         <translation>하위 트리 분리</translation>
     </message>

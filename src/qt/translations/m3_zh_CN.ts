@@ -295,6 +295,10 @@
         <translation>添加孤立节点</translation>
     </message>
     <message>
+        <source>Shortcuts Help</source>
+        <translation>快捷键帮助</translation>
+    </message>
+    <message>
         <source>Detach Subtree</source>
         <translation>分离子树</translation>
     </message>

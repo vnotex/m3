@@ -295,6 +295,10 @@
         <translation>独立ノードを追加</translation>
     </message>
     <message>
+        <source>Shortcuts Help</source>
+        <translation>ショートカットのヘルプ</translation>
+    </message>
+    <message>
         <source>Detach Subtree</source>
         <translation>サブツリーを切り離す</translation>
     </message>
