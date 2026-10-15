@@ -11260,13 +11260,12 @@ static void collapse_hover_scene() {
         pump();
         auto &view = graphics(editor);
         const QRectF node = topicRect(editor, QStringLiteral("Alpha"));
-        const QPointF center(node.right() - 15, node.center().y());
-        const QPoint button = view.mapFromScene(center);
-        const QRectF circle(center - QPointF(8, 8), QSizeF(16, 16));
+        const QPoint button = expansionPoint(editor, QStringLiteral("Alpha"));
+        const QPointF center = view.mapToScene(button);
         const Json original = exported(editor);
         auto checkHover = [&](bool hovered) {
-            const QImage image = paintScene(editor, circle);
-            const QColor actual = image.pixelColor(imagePoint(image, circle, center + QPointF(3, -3)));
+            const QImage image = paintScene(editor, node);
+            const QColor actual = image.pixelColor(imagePoint(image, node, center + QPointF(3, -3)));
             const QColor expected = palette.color(hovered ? QPalette::Highlight : QPalette::Base);
             CHECK(std::abs(actual.red() - expected.red()) <= 2 &&
                   std::abs(actual.green() - expected.green()) <= 2 &&

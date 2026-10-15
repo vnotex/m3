@@ -270,4 +270,7 @@ teardown; do not defer the property commit itself.
 - CTest drives standalone case-dispatched C/C++ executables, not GoogleTest/Catch2. Reuse `CHECK`, `ok`, `Map`, `Text` and fixtures in `tests/test_support.h`; register new case arguments in `tests/CMakeLists.txt` and the matching executable dispatch.
 - Focused examples: `ctest --test-dir build/core -C Debug -R '^m3_model_' --output-on-failure` and `ctest --test-dir build/qt -C Debug -R '^m3_qt_' --output-on-failure`. Qt tests use Qt Test helpers and CTest sets `QT_QPA_PLATFORM=offscreen`; the matching platform plugin must be available. Demo cases require `M3_BUILD_QT_DEMO=ON`.
 - Cover observable contracts: mutation atomicity, snapshot ownership, schema/Unicode errors, deep/collapsed layouts, and Qt signal/state transitions. `m3_allocations_outputs` / `m3_allocations_mutations` use a separate fault-injection core; never expose allocator controls in the installed library.
+- Visual affordance regressions share gesture helpers such as `expansionPoint()` for target
+  coordinates and render the node's scene bounds. Do not duplicate control offsets or sizes
+  inside color checks; retain palette and hover/fold/leave/hide behavior checks.
 - CI covers Windows/Linux core and Windows Qt, Debug/Release and shared/static core. Packaging changes also require the installed consumers and core-without-Qt checks in CI; these are not CTest registrations. No coverage percentage is configured.
