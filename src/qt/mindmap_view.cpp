@@ -68,29 +68,51 @@ constexpr qreal tagVerticalPadding = 3;
 constexpr qreal tagGap = 4;
 constexpr qreal topicTagGap = 6;
 constexpr qreal tagCornerRadius = 4;
+constexpr qreal nodeControlSize = 20;
+constexpr qreal nodeControlGap = 4;
 class LinkCreationHandle final : public QGraphicsItem {
 public:
     LinkCreationHandle(const QPalette &palette, QGraphicsItem *parent)
         : QGraphicsItem(parent), colors(palette) {
-        setFlag(ItemIgnoresTransformations);
         setAcceptedMouseButtons(Qt::NoButton);
         setAcceptHoverEvents(true);
         setCursor(Qt::CrossCursor);
         setToolTip(QCoreApplication::translate("m3::qt::MindMapView", "Drag to create a link"));
     }
-    // The parent supplies only the corner anchor; size and gap are device pixels.
-    QRectF boundingRect() const override { return QRectF(0, -20, 20, 20); }
+    QRectF boundingRect() const override {
+        return QRectF(0, -nodeControlSize, nodeControlSize, nodeControlSize);
+    }
     void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
         p->setPen(QPen(colors.color(hovered ? QPalette::Highlight : QPalette::ButtonText), 1));
         p->setBrush(colors.color(hovered ? QPalette::Highlight : QPalette::Base));
         p->drawEllipse(boundingRect().adjusted(0.5, 0.5, -0.5, -0.5));
-        QPen pen(colors.color(hovered ? QPalette::HighlightedText : QPalette::Highlight),
-                 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-        pen.setCosmetic(true);
-        p->setPen(pen);
-        p->drawLine(QPointF(6, -6), QPointF(14, -14));
-        p->drawLine(QPointF(9, -14), QPointF(14, -14));
-        p->drawLine(QPointF(14, -14), QPointF(14, -9));
+        // Lucide: https://lucide.dev/icons/external-link; notice: third_party/lucide/LICENSE.
+        static const QPainterPath glyph = [] {
+            QPainterPath path;
+            path.moveTo(15, 3);
+            path.lineTo(21, 3);
+            path.lineTo(21, 9);
+            path.moveTo(10, 14);
+            path.lineTo(21, 3);
+            path.moveTo(18, 13);
+            path.lineTo(18, 19);
+            path.arcTo(QRectF(14, 17, 4, 4), 0, -90);
+            path.lineTo(5, 21);
+            path.arcTo(QRectF(3, 17, 4, 4), 270, -90);
+            path.lineTo(3, 8);
+            path.arcTo(QRectF(3, 6, 4, 4), 180, -90);
+            path.lineTo(11, 6);
+            return path;
+        }();
+        p->save();
+        p->translate(2, 2 - nodeControlSize);
+        p->scale((nodeControlSize - 4) / 24, (nodeControlSize - 4) / 24);
+        p->setRenderHint(QPainter::Antialiasing);
+        p->setBrush(Qt::NoBrush);
+        p->setPen(QPen(colors.color(hovered ? QPalette::HighlightedText : QPalette::Highlight),
+                       2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p->drawPath(glyph);
+        p->restore();
     }
 protected:
     void hoverEnterEvent(QGraphicsSceneHoverEvent *) override { hovered = true; update(); }
@@ -108,7 +130,7 @@ public:
         setCursor(Qt::PointingHandCursor);
         setToolTip(QStringLiteral("<qt>%1</qt>").arg(url.toHtmlEscaped()));
     }
-    QRectF boundingRect() const override { return QRectF(0, 0, 20, 20); }
+    QRectF boundingRect() const override { return QRectF(0, 0, nodeControlSize, nodeControlSize); }
     QPainterPath shape() const override { QPainterPath path; path.addRect(boundingRect()); return path; }
     void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
         static const QColor foreground = QColor::fromRgb(0x3498db);
@@ -119,23 +141,32 @@ public:
             p->setBrush(fill);
             p->drawRoundedRect(boundingRect(), 3, 3);
         }
-        p->setBrush(Qt::NoBrush);
-        p->setPen(QPen(foreground, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        // Lucide: https://lucide.dev/icons/link; notice: third_party/lucide/LICENSE.
         static const QPainterPath glyph = [] {
             QPainterPath path;
-            path.moveTo(9, 5);
-            path.lineTo(5, 5);
-            path.lineTo(5, 15);
-            path.lineTo(15, 15);
-            path.lineTo(15, 11);
-            path.moveTo(9, 11);
-            path.lineTo(15, 5);
-            path.lineTo(11, 5);
-            path.moveTo(15, 5);
-            path.lineTo(15, 9);
+            path.moveTo(10, 13);
+            path.arcTo(QRectF(9.0038252222, 5.0051070821, 10, 10),
+                       216.7967790553, 98.2136076587);
+            path.lineTo(20.54, 10.54);
+            path.arcTo(QRectF(11.9435589714, 2.0664410286, 10, 10),
+                       315.9957446136, 178.0085107728);
+            path.lineTo(11.75, 5.18);
+            path.moveTo(14, 11);
+            path.arcTo(QRectF(4.9961747778, 8.9948929179, 10, 10),
+                       36.7967790553, 98.2136076587);
+            path.lineTo(3.46, 13.46);
+            path.arcTo(QRectF(2.0564410286, 11.9335589714, 10, 10),
+                       135.9957446136, 178.0085107728);
+            path.lineTo(12.24, 18.82);
             return path;
         }();
+        p->save();
+        p->scale(nodeControlSize / 24, nodeControlSize / 24);
+        p->setRenderHint(QPainter::Antialiasing);
+        p->setBrush(Qt::NoBrush);
+        p->setPen(QPen(foreground, 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p->drawPath(glyph);
+        p->restore();
     }
 protected:
     void hoverEnterEvent(QGraphicsSceneHoverEvent *) override { hovered = true; update(); }
@@ -270,7 +301,9 @@ public:
         }
         if (!hyperlink.isEmpty()) {
             auto *indicator = new NodeLinkItem(hyperlink, this);
-            indicator->setPos(rect.right() - 32 - (hasChildren ? 18 : 0), rect.center().y() - 10);
+            indicator->setPos(rect.right() - 12 - nodeControlSize -
+                                  (hasChildren ? nodeControlSize + nodeControlGap : 0),
+                              rect.center().y() - nodeControlSize / 2);
         }
     }
     QVariant itemChange(GraphicsItemChange change, const QVariant &value) override {
@@ -278,7 +311,10 @@ public:
             imageItem->handle->setVisible(value.toBool());
         return QGraphicsItem::itemChange(change, value);
     }
-    QRectF affordance() const { return QRectF(rect.right() - 22, rect.center().y() - 8, 18, 16); }
+    QRectF affordance() const {
+        return QRectF(rect.right() - 12 - nodeControlSize, rect.center().y() - nodeControlSize / 2,
+                      nodeControlSize, nodeControlSize);
+    }
     QRectF boundingRect() const override { return rect.adjusted(-2, -2, 2, 2); }
     QPainterPath shape() const override { QPainterPath path; path.addRoundedRect(rect, 8, 8); return path; }
     void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
@@ -295,9 +331,10 @@ public:
             const QPointF center = affordance().center();
             p->setPen(QPen(colors.color(expansionHovered ? QPalette::HighlightedText : QPalette::ButtonText), 1));
             p->setBrush(colors.color(expansionHovered ? QPalette::Highlight : QPalette::Base));
-            p->drawEllipse(center, 6, 6);
-            p->drawLine(center - QPointF(3, 0), center + QPointF(3, 0));
-            if (!expanded) p->drawLine(center - QPointF(0, 3), center + QPointF(0, 3));
+            p->drawEllipse(affordance().adjusted(0.5, 0.5, -0.5, -0.5));
+            const qreal arm = nodeControlSize / 5;
+            p->drawLine(center - QPointF(arm, 0), center + QPointF(arm, 0));
+            if (!expanded) p->drawLine(center - QPointF(0, arm), center + QPointF(0, arm));
         }
     }
 protected:
@@ -1328,7 +1365,8 @@ void MindMapView::prepare(NodePresentation &node) const {
         contentBottom = node.imageRectangle.bottom();
     }
     node.rectangle = QRectF(0, 0, qMax(qreal(72), contentWidth + 24 +
-                                    (node.hyperlink.isEmpty() ? 0 : 24) + (node.hasChildren ? 18 : 0)),
+                                    (node.hyperlink.isEmpty() ? 0 : nodeControlSize + nodeControlGap) +
+                                    (node.hasChildren ? nodeControlSize + nodeControlGap : 0)),
                             qMax(qreal(36), contentBottom + 8));
 }
 void MindMapView::install(Presentation presentation, bool resetCamera) {
@@ -1508,7 +1546,7 @@ void MindMapView::ensureNodeVisible(const QString &id, const QRect &occlusion) {
             obstruction = obstruction.adjusted(-8, -8, 8, 8).intersected(viewportRect);
             if (obstruction.isEmpty()) return;
 
-            // Re-map after the ordinary reveal, including the fixed-size creation arrow.
+            // Re-map after the ordinary reveal, including the external create-link button.
             const QRectF mappedNode = viewportTransform().mapRect(nodeBounds);
             QRectF envelope = mappedNode;
             if (linkCreationHandle && linkCreationHandle->parentItem() == node) {
@@ -1597,14 +1635,7 @@ void MindMapView::fitContents() {
         return;
     }
     pendingFit = false;
-    QRectF bounds = scene()->sceneRect();
-    if (!bounds.isEmpty()) {
-        // Reserve device-pixel space for the external arrow at every zoom.
-        const qreal scale = std::min(qMax(1, viewport()->width() - 48) / bounds.width(),
-                                     qMax(1, viewport()->height() - 48) / bounds.height());
-        const qreal padding = 24 / scale;
-        bounds.adjust(-padding, -padding, padding, padding);
-    }
+    const QRectF bounds = scene()->sceneRect();
     const qreal previous = transform().m11();
     setSceneRect(bounds);
     fitInView(bounds, Qt::KeepAspectRatio);

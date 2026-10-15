@@ -175,6 +175,10 @@ static QGraphicsItem *ownerItem(QGraphicsTextItem *text) {
 static QRectF topicRect(Editor &editor, const QString &topic) {
     return ownerItem(textItem(editor, topic))->sceneBoundingRect();
 }
+static QPoint expansionPoint(Editor &editor, const QString &topic) {
+    const QRectF rect = topicRect(editor, topic).adjusted(2, 2, -2, -2);
+    return graphics(editor).mapFromScene(QPointF(rect.right() - 22, rect.center().y()));
+}
 static QRectF emptyNodeRect(Editor &editor) {
     for (auto *text : texts(editor, QString())) {
         auto *owner = ownerItem(text);
@@ -2776,8 +2780,7 @@ static void hyperlinks_case() {
         clickLabel(editor, alpha, true);
         CHECK(activeTopicInput(editor) != nullptr && activated.size() == 2);
         topicKey(editor, Qt::Key_Escape);
-        const QRectF nodeRect = topicRect(editor, alpha);
-        const QPoint expansion = view.mapFromScene(QPointF(nodeRect.right() - 15, nodeRect.center().y()));
+        const QPoint expansion = expansionPoint(editor, alpha);
         QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, expansion);
         pump();
         CHECK(texts(editor, QStringLiteral("Delta")).isEmpty() && indicator(editor, alpha) != nullptr);
@@ -3356,7 +3359,7 @@ static void properties_visibility_case() {
         auto *node = ownerItem(textItem(editor, topic));
         QRectF bounds = mappedNode(topic);
         for (auto *child : node->childItems()) {
-            if (child->isVisible() && child->flags().testFlag(QGraphicsItem::ItemIgnoresTransformations))
+            if (child->isVisible())
                 bounds = bounds.united(child->deviceTransform(view.viewportTransform()).mapRect(child->boundingRect()));
         }
         return bounds;
@@ -6431,7 +6434,7 @@ static QPoint linkHandlePoint(Editor &editor, const QString &topic) {
     auto *node = ownerItem(textItem(editor, topic));
     const QRectF bounds = node->deviceTransform(view.viewportTransform()).mapRect(node->boundingRect());
     for (auto *child : node->childItems()) {
-        if (!child->isVisible() || !child->flags().testFlag(QGraphicsItem::ItemIgnoresTransformations)) continue;
+        if (!child->isVisible() || child->cursor().shape() != Qt::CrossCursor) continue;
         const QRectF rect = child->deviceTransform(view.viewportTransform()).mapRect(child->boundingRect());
         if (rect.center().x() > bounds.right() && rect.center().y() < bounds.top()) {
             const QPoint point = rect.center().toPoint();
@@ -6443,7 +6446,7 @@ static QPoint linkHandlePoint(Editor &editor, const QString &topic) {
 }
 static void link_interaction_case() {
     {
-        // Scene padding alone shrinks below a device-sized arrow on a tall fitted map.
+        // The create-link button stays visible at either end of a tall fitted map.
         Json children = Json::array(), nodes = Json::array();
         for (int i = 0; i < 90; ++i) {
             const std::string id = "n" + std::to_string(i);
@@ -7156,8 +7159,7 @@ static void read_only_case() {
     clickLabel(editor, QStringLiteral("Alpha"), true);
     CHECK(editor.selectedNodeId() == a && !activeTopicInput(editor));
     auto &view = graphics(editor);
-    const QRectF parent = topicRect(editor, QStringLiteral("Alpha"));
-    const QPoint expansion = view.mapFromScene(QPointF(parent.right() - 15, parent.center().y()));
+    const QPoint expansion = expansionPoint(editor, QStringLiteral("Alpha"));
     QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, expansion);
     pump();
     CHECK(texts(editor, QStringLiteral("Delta")).isEmpty());
@@ -7368,8 +7370,7 @@ static void inline_edit_case() {
         CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") == utf8(draft));
         CHECK(editor.selectedNodeId() == QStringLiteral("d") && changed.size() == 1);
         CHECK((labelPoint(editor, QStringLiteral("Delta")) - target).manhattanLength() > 10);
-        const QRectF parent = topicRect(editor, draft);
-        const QPoint circle = graphics(editor).mapFromScene(QPointF(parent.right() - 15, parent.center().y()));
+        const QPoint circle = expansionPoint(editor, draft);
         QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, circle);
         pump();
         CHECK(texts(editor, QStringLiteral("Delta")).isEmpty());
@@ -8330,7 +8331,7 @@ static void node_shortcuts_case() {
             auto *node = ownerItem(textItem(editor, QStringLiteral("Alpha")));
             QRectF envelope = view.viewportTransform().mapRect(node->sceneBoundingRect());
             for (auto *child : node->childItems()) {
-                if (child->isVisible() && child->flags().testFlag(QGraphicsItem::ItemIgnoresTransformations))
+                if (child->isVisible())
                     envelope = envelope.united(child->deviceTransform(view.viewportTransform()).mapRect(child->boundingRect()));
             }
             const bool occluded = envelope.intersects(expandedPanel);
@@ -9282,13 +9283,9 @@ static void controls_case() {
     CHECK(record(collapsedDoc, "nodes", newChild).at("topic") == "Added while collapsed");
     CHECK(collapsed.selectedNodeId() == newChild && collapsedChanges.size() == 2);
     CHECK(!texts(collapsed, QStringLiteral("Added while collapsed")).isEmpty());
-    const QRectF affordance = topicRect(collapsed, QStringLiteral("Alpha"));
-    for (qreal x : {affordance.right() - 9, affordance.left() + 9}) {
-        if (texts(collapsed, QStringLiteral("Added while collapsed")).isEmpty()) break;
-        const QPoint point = graphics(collapsed).mapFromScene(QPointF(x, affordance.center().y()));
-        QTest::mouseClick(graphics(collapsed).viewport(), Qt::LeftButton, Qt::NoModifier, point);
-        pump();
-    }
+    QTest::mouseClick(graphics(collapsed).viewport(), Qt::LeftButton, Qt::NoModifier,
+                      expansionPoint(collapsed, QStringLiteral("Alpha")));
+    pump();
     CHECK(texts(collapsed, QStringLiteral("Added while collapsed")).isEmpty());
     rejectUnchanged(collapsed, [&] { return collapsed.removeNode(QStringLiteral("r")); });
     const QString shownError = collapsed.lastError();
@@ -10171,7 +10168,7 @@ static void folding_positions() {
     auto &view = graphics(editor);
     const QRectF parent = topicRect(editor, branchIcon);
     const QPointF before = view.viewportTransform().map(parent.center());
-    const QPoint circle = view.mapFromScene(QPointF(parent.right() - 15, parent.center().y()));
+    const QPoint circle = expansionPoint(editor, branchIcon);
     CHECK(view.viewport()->rect().contains(circle));
     QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, circle);
     pump();
@@ -10392,8 +10389,7 @@ static void multi_selection_case() {
         // Nested URL and expansion hits are selection toggles, not actions.
         QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ControlModifier, urlPoint());
         CHECK(editor.selectedNodeIds() == QStringList({b}));
-        const QRectF rect = topicRect(editor, alpha);
-        const QPoint expand = view.mapFromScene(QPointF(rect.right() - 15, rect.center().y()));
+        const QPoint expand = expansionPoint(editor, alpha);
         QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ShiftModifier, expand);
         CHECK(editor.selectedNodeIds() == QStringList({b, a}));
         CHECK(exported(editor) == original && activated.isEmpty());
