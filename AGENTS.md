@@ -241,6 +241,34 @@ teardown; do not defer the property commit itself.
 - **Atomic children:** `addNodes(parentId, nodesJson, index)` inserts a nonempty array of complete native property records in one transaction/history step, preserving selection. Require string topics; caller-supplied `id`, `children` and `expanded` are forbidden. Generated IDs and children retain input order; invalid entries abort the whole candidate. Main-branch colors use the same unused-color palette policy as `addNode`, including colors assigned earlier in the batch.
 - **Images:** the example intentionally supplies no image I/O, so image nodes keep placeholders. Connect `imageRequested(url, requestId)` before loading (or call `reloadImages()` after connecting). The host fetches/decodes and calls `provideImage(url, requestId, pixels)` on the GUI thread with the original URL/ID; null `QImage` means unavailable. Stale/duplicate responses are ignored. Use QObject contexts/`QPointer` for asynchronous lifetime safety and enforce scheme, path, size and network limits in the host. `examples/qt_demo_window.cpp` illustrates one loader; Qt Network is demo/host policy, not an editor dependency.
 
+## HTML/SVG export boundary
+
+`MindMapController::toHtml()` prepares committed visible content and asks `MindMapView` for an
+`HtmlMap`. The optional collector in the existing detached `buildScene()` records the same node
+rectangles, routed curves, leader lines, arrowheads and label positions used by the editor. Do not
+introduce another router or read the live scene's selection/drag/camera geometry. Ordinary live
+scene construction has no HTML-record allocation. The public `toHtml()` API remains a copied string.
+
+`html_export.cpp` emits selectable HTML topic/icon/tag/link-label text at Qt-measured line positions,
+including paragraph direction, and inline SVG paths/polygons behind the nodes (`pointer-events:none`).
+Only supplied node-image pixels are PNG-encoded, with shared image encodings reused per export.
+There is no whole-map image, canvas, foreignObject or raster-size/downsampling fallback. Invalid or
+non-finite map bounds fail. Retain the existing complete articles and safe http/https/mailto policy;
+escape text, attributes and CSS strings rather than interpolating raw document/style values.
+
+Host-visible geometry contract: `#map-viewport` reserves flow space and contains absolute-positioned
+`#mindmap`, whose positive `data-width`/`data-height` describe natural CSS-pixel dimensions. Node CSS
+rectangles and SVG viewBox/path/polygon coordinates are map-local, translated by the detached bounds.
+Visual node IDs use `m3-map-node-<UTF8 hex>`; article IDs remain `m3-node-<UTF8 hex>`. Keep these namespaces
+separate. Responsive fitting must ignore hidden/zero-width containers and yield to host `!important`
+styles. Print hosts must scale layout, not only paint: a transformed natural-width map can trigger
+Chromium's document-wide shrink-to-fit. VNote uses a fixed scaled viewport and CSS layout zoom.
+
+Coverage in `m3_qt_html` / `m3_qt_html_edges` compares parsed DOM/SVG with actual scene geometry and
+paint primitives, including large maps, images, safe content, all layout directions and self/parallel/
+bidirectional links. Image-resize and demo export cases retain nonmutation/snapshot ownership checks.
+Windows offscreen tests use the installed Windows font directory so line measurements are real.
+
 ## Code Conventions & Common Patterns
 - Match nearby compact C++ formatting: four spaces, same-line braces, header guards. C API functions use `m3_*`, core helpers use snake_case, Qt types use PascalCase and methods/signals camelCase; namespaces are `m3` and `m3::qt`.
 - Use RAII (`std::unique_ptr`, Qt parent ownership). C inputs are borrowed NUL-terminated UTF-8; release output snapshots with `m3_string_free`, layout results with `m3_layout_result_free`, and handles with `m3_mindmap_destroy`. Output slots are nulled on failure.

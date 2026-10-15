@@ -1,4 +1,5 @@
 #include "mindmap_view.h"
+#include "html_export.h"
 #include <QAction>
 #include <QApplication>
 #include <QCursor>
@@ -22,6 +23,8 @@
 #include <QResizeEvent>
 #include <QScrollBar>
 #include <limits>
+#include <QTextBlock>
+#include <QTextLayout>
 #include <QTimer>
 #include <QWheelEvent>
 #include <algorithm>
@@ -239,6 +242,26 @@ private:
     QPalette colors;
     bool failed;
 };
+HtmlText htmlText(QTextDocument &document, const QPointF &position, const QColor &color) {
+    HtmlText result;
+    result.rectangle = QRectF(position, document.size());
+    result.font = document.defaultFont();
+    result.color = color;
+    result.tabStopDistance = document.defaultTextOption().tabStopDistance();
+    result.lines.reserve(document.lineCount());
+    for (auto block = document.begin(); block.isValid(); block = block.next()) {
+        const auto *layout = block.layout();
+        const QString text = block.text();
+        for (int i = 0; i < layout->lineCount(); ++i) {
+            const auto line = layout->lineAt(i);
+            QString value = text.mid(line.textStart(), line.textLength());
+            if (i + 1 == layout->lineCount() && block.next().isValid()) value += QLatin1Char('\n');
+            result.lines.push_back({std::move(value), QRectF(layout->position() + line.naturalTextRect().topLeft(),
+                                    QSizeF(line.naturalTextWidth(), line.height())), block.textDirection()});
+        }
+    }
+    return result;
+}
 class NodeItem final : public QGraphicsItem {
 public:
     QString id, hyperlink;
@@ -251,11 +274,43 @@ public:
     QGraphicsTextItem *label;
     std::optional<NodeImage> image;
     NodeImageItem *imageItem = nullptr;
-    NodeItem(NodePresentation node, const QPalette &palette)
+    NodeItem(NodePresentation node, const QPalette &palette, HtmlNode *html = nullptr)
         : id(node.id), hyperlink(node.hyperlink), expanded(node.expanded), hasChildren(node.hasChildren),
           rect(QPointF(), node.rectangle.size()), colors(palette),
           backgroundColor(node.style.backgroundColor.isValid() ? node.style.backgroundColor : palette.color(QPalette::Button)),
           branchColor(node.style.branchColor) {
+        if (html) {
+            html->id = id;
+            html->hyperlink = hyperlink;
+            html->rectangle = node.rectangle;
+            html->background = backgroundColor;
+            html->border = branchColor.isValid() ? branchColor : colors.color(QPalette::Mid);
+            html->hasChildren = hasChildren;
+            html->expanded = expanded;
+            html->foldRectangle = QRectF(affordance().center() - QPointF(6, 6), QSizeF(12, 12));
+            if (node.image && !node.image->url.isEmpty()) {
+                html->image.emplace();
+                auto &visualImage = *html->image;
+                visualImage.rectangle = node.imageRectangle;
+                visualImage.pixels = node.imagePixels;
+                visualImage.failed = node.imageFailed;
+                if (visualImage.pixels.isNull()) {
+                    QTextDocument placeholder;
+                    placeholder.setDocumentMargin(0);
+                    placeholder.setDefaultFont(node.text->defaultFont());
+                    QTextOption option(Qt::AlignCenter);
+                    option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+                    placeholder.setDefaultTextOption(option);
+                    placeholder.setPlainText(visualImage.failed
+                        ? QCoreApplication::translate("m3::qt::MindMapView", "Image unavailable")
+                        : QCoreApplication::translate("m3::qt::MindMapView", "Loading image"));
+                    placeholder.setTextWidth(qMax(qreal(1), visualImage.rectangle.width() - 8));
+                    visualImage.placeholder = htmlText(placeholder,
+                        QPointF(4, (visualImage.rectangle.height() - placeholder.size().height()) / 2),
+                        colors.color(QPalette::Text));
+                }
+            }
+        }
         image = node.image;
         if (image && !image->url.isEmpty()) imageItem = new NodeImageItem(node, palette, this);
         setPos(node.rectangle.topLeft());
@@ -263,7 +318,9 @@ public:
         setFlag(ItemIsSelectable);
         setAcceptHoverEvents(hasChildren);
         setFiltersChildEvents(hasChildren);
-        auto addText = [this](std::unique_ptr<QTextDocument> text, const QPointF &position, const QColor &color) {
+        auto addText = [this](std::unique_ptr<QTextDocument> text, const QPointF &position,
+                              const QColor &color, HtmlText *htmlTextBlock = nullptr) {
+            if (htmlTextBlock) *htmlTextBlock = htmlText(*text, position, color);
             auto *item = new QGraphicsTextItem(this);
             // setDocument borrows; QObject parenting makes the text item sole owner.
             text->setParent(item);
@@ -277,12 +334,18 @@ public:
         qreal topicTop = 8;
         if (node.iconText) {
             topicTop += node.iconText->size().height() + 4;
-            addText(std::move(node.iconText), QPointF(12, 8), textColor);
+            if (html) html->icons.emplace();
+            addText(std::move(node.iconText), QPointF(12, 8), textColor, html ? &*html->icons : nullptr);
         }
-        label = addText(std::move(node.text), QPointF(12, topicTop), textColor);
+        label = addText(std::move(node.text), QPointF(12, topicTop), textColor, html ? &html->topic : nullptr);
         tagRectangles.reserve(node.tags.size());
+        if (html) html->tags.reserve(node.tags.size());
         for (auto &tag : node.tags) {
             tagRectangles.push_back(tag.rectangle);
+            if (html) {
+                html->tags.push_back({tag.rectangle, htmlText(*tag.text,
+                    QPointF(tagHorizontalPadding, tagVerticalPadding), colors.color(QPalette::Text))});
+            }
             auto *item = addText(std::move(tag.text),
                                  tag.rectangle.topLeft() + QPointF(tagHorizontalPadding, tagVerticalPadding),
                                  colors.color(QPalette::Text));
@@ -293,6 +356,7 @@ public:
             indicator->setPos(rect.right() - 12 - nodeControlSize -
                                   (hasChildren ? nodeControlSize + nodeControlGap : 0),
                               rect.center().y() - nodeControlSize / 2);
+            if (html) html->linkRectangle = indicator->mapRectToParent(indicator->boundingRect());
         }
     }
     QVariant itemChange(GraphicsItemChange change, const QVariant &value) override {
@@ -563,17 +627,24 @@ public:
     }
     QRectF boundingRect() const override { return hit.boundingRect().adjusted(-2, -2, 2, 2); }
     QPainterPath shape() const override { return hit; }
+    QPen curvePen() const {
+        return QPen(colors.color(isSelected() ? QPalette::Highlight : QPalette::Dark),
+                    isSelected() ? 2 : 1, Qt::DashLine);
+    }
+    QPen leaderPen() const {
+        return QPen(colors.color(isSelected() ? QPalette::Highlight : QPalette::Dark), 1, Qt::DotLine);
+    }
     void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
-        const QColor color = colors.color(isSelected() ? QPalette::Highlight : QPalette::Dark);
+        const QPen pen = curvePen();
         p->setBrush(Qt::NoBrush);
-        p->setPen(QPen(color, isSelected() ? 2 : 1, Qt::DashLine));
+        p->setPen(pen);
         p->drawPath(curve);
         if (!leader.isEmpty()) {
-            p->setPen(QPen(color, 1, Qt::DotLine));
+            p->setPen(leaderPen());
             p->drawPath(leader);
         }
         p->setPen(Qt::NoPen);
-        p->setBrush(color);
+        p->setBrush(pen.color());
         if (!sourceArrow.isEmpty()) p->drawPolygon(sourceArrow);
         if (!targetArrow.isEmpty()) p->drawPolygon(targetArrow);
     }
@@ -607,8 +678,14 @@ QPointF boundary(const QRectF &rect, const QPointF &towards) {
     const qreal y = delta.y() == 0 ? std::numeric_limits<qreal>::infinity() : rect.height() / (2 * std::abs(delta.y()));
     return rect.center() + delta * std::min(x, y);
 }
-std::unique_ptr<QGraphicsScene> buildScene(Presentation presentation, const QFont &font, const QPalette &palette) {
+std::unique_ptr<QGraphicsScene> buildScene(Presentation presentation, const QFont &font,
+                                           const QPalette &palette, HtmlMap *html = nullptr) {
     auto replacement = std::make_unique<QGraphicsScene>();
+    if (html) {
+        html->nodes.reserve(presentation.nodes.size());
+        html->treeEdges.reserve(presentation.treeEdges.size());
+        html->links.reserve(presentation.links.size());
+    }
     QHash<QString, const NodePresentation *> nodePresentations;
     std::vector<QRectF> nodes;
     nodes.reserve(presentation.nodes.size());
@@ -639,6 +716,7 @@ std::unique_ptr<QGraphicsScene> buildScene(Presentation presentation, const QFon
         const QColor color = target->style.branchColor.isValid() ? target->style.branchColor : palette.color(QPalette::Mid);
         auto *item = replacement->addPath(path, QPen(color, 1));
         item->setAcceptedMouseButtons(Qt::NoButton);
+        if (html) html->treeEdges.push_back({edge.source, edge.target, path, item->pen()});
     }
     const LinkRouter router(nodes);
     using Pair = std::pair<QString, QString>;
@@ -670,12 +748,30 @@ std::unique_ptr<QGraphicsScene> buildScene(Presentation presentation, const QFon
                 path.quadTo((from + to) / 2 + normal * offset, to);
             }
             path = router.route(path, source, target, i);
-            replacement->addItem(new LinkItem(link, std::move(path), font, palette, occupied, router, source, target));
+            auto *item = new LinkItem(link, std::move(path), font, palette, occupied, router, source, target);
+            replacement->addItem(item);
+            if (html) {
+                HtmlLink visual;
+                visual.id = item->id;
+                visual.source = item->source;
+                visual.target = item->target;
+                visual.curve = item->curve;
+                visual.leader = item->leader;
+                visual.pen = item->curvePen();
+                visual.leaderPen = item->leaderPen();
+                visual.sourceArrow = item->sourceArrow;
+                visual.targetArrow = item->targetArrow;
+                if (item->label->isVisible())
+                    visual.label = htmlText(*item->label->document(), item->label->pos(),
+                                            item->label->defaultTextColor());
+                html->links.push_back(std::move(visual));
+            }
         }
     }
     // The index above borrows stable presentation nodes; do not read it after moving them.
     for (auto &node : presentation.nodes) {
-        auto *item = new NodeItem(std::move(node), palette);
+        if (html) html->nodes.emplace_back();
+        auto *item = new NodeItem(std::move(node), palette, html ? &html->nodes.back() : nullptr);
         replacement->addItem(item);
     }
     replacement->setSceneRect(replacement->itemsBoundingRect().adjusted(-32, -32, 32, 32));
@@ -1438,28 +1534,16 @@ void MindMapView::install(Presentation presentation, bool resetCamera) {
     }
     if (cameraChanged) emit zoomChanged(1.0, false);
 }
-QImage MindMapView::renderImage(Presentation presentation) const {
-    auto detached = buildScene(std::move(presentation), font(), palette());
-    const QRectF bounds = detached->sceneRect();
-    if (!std::isfinite(bounds.x()) || !std::isfinite(bounds.y()) ||
-        !std::isfinite(bounds.width()) || !std::isfinite(bounds.height()) ||
-        bounds.width() <= 0 || bounds.height() <= 0)
+HtmlMap MindMapView::renderHtmlMap(Presentation presentation) const {
+    HtmlMap map;
+    map.palette = palette();
+    auto detached = buildScene(std::move(presentation), font(), map.palette, &map);
+    map.bounds = detached->sceneRect();
+    if (!std::isfinite(map.bounds.x()) || !std::isfinite(map.bounds.y()) ||
+        !std::isfinite(map.bounds.width()) || !std::isfinite(map.bounds.height()) ||
+        map.bounds.width() <= 0 || map.bounds.height() <= 0)
         throw std::runtime_error("Invalid map bounds for HTML export");
-    const qreal width = std::ceil(bounds.width()), height = std::ceil(bounds.height());
-    // Divide before multiplying: even finite scene dimensions can overflow an area.
-    const qreal scale = std::min({qreal(1), 16384 / width, 16384 / height,
-                                 std::sqrt(16777216 / width) / std::sqrt(height)});
-    const QSize size(std::max(1, static_cast<int>(std::floor(width * scale))),
-                     std::max(1, static_cast<int>(std::floor(height * scale))));
-    QImage image(size, QImage::Format_ARGB32_Premultiplied);
-    if (image.isNull()) throw std::runtime_error("Could not allocate HTML map image");
-    image.fill(palette().color(QPalette::Base));
-    QPainter painter;
-    if (!painter.begin(&image)) throw std::runtime_error("Could not render HTML map image");
-    painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
-    detached->render(&painter, QRectF(QPointF(), QSizeF(size)), bounds, Qt::KeepAspectRatio);
-    if (!painter.end()) throw std::runtime_error("Could not render HTML map image");
-    return image;
+    return map;
 }
 void MindMapView::showError(const QString &message) {
     selectedNodes.clear();

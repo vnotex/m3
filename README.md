@@ -12,7 +12,7 @@ A C++17 mind-map library with a public C API and an optional Qt Widgets editor. 
 
 - **Structured maps:** a main tree and independent orphan trees, ordered node hierarchies, cross-links, notes, hyperlinks, tags, icons and styles.
 - **Portable documents:** native JSON preserves the semantic map. Import also accepts simple nested trees and compatible Mind Elixir documents.
-- **Export:** Markdown and a six-level outline JSON projection in the core; standalone HTML export in the Qt editor. These exports are not full-fidelity round-trip formats.
+- **Export:** Markdown and outline JSON projections in the core; standalone HTML with selectable node text and SVG connectors in the Qt editor. These exports are not full-fidelity round-trip formats.
 - **Layout:** balanced, left, right and outline layouts, with collapsed branches retained in the document.
 - **Interactive editing:** inline node/link topics, drag-to-link creation, drag-and-drop moving, node properties, configurable shortcuts, zoom and pan.
 
@@ -99,6 +99,22 @@ A node with a URL shows a chain-link indicator (Lucide `link`) beside its topic.
 Right-click a node's URL indicator and choose **Copy Link** to copy its stored URL verbatim, including relative paths, without opening it. This works in read-only maps and does not depend on which node is selected. Node bodies, empty canvas, cross-links and multi-selections retain their usual context menus.
 
 The link context menu contains **Rename/Edit**, a separator, the exclusive direction choices `---`, `<---`, `--->`, `<--->`, another separator, and **Delete**. Arrows refer to stored source/target order, not left/right screen positions. **Link properties** remains in the toolbar. Direction choices preserve endpoint order and unrelated metadata. Native JSON retains reverse/both arrows in `style.arrowDirection` (`"backward"`/`"both"`) with `directed: true`; without either recognized value, `directed` retains its usual forward/undirected rendering. The Qt view and HTML export honor this style; core projections do not interpret Qt styles. Endpoint squares are selection UI only and are never saved or exported.
+
+### HTML export
+
+`MindMapEditor::toHtml()` exports real HTML nodes and inline SVG branches/cross-links, not an
+image of the whole map. Text can be selected and searched, while arrows, labels, colors, tags,
+icons and the current layout are retained. The map/articles switch reveals complete node details
+for every tree, including descendants hidden by the editor's local folding.
+
+Styles, the small view/fit script and supplied node-image pixels are embedded for offline use.
+Images alone remain PNGs; pending or failed host image requests have explicit placeholders.
+The library does not fetch image URLs during export. Fonts are referenced by their resolved
+families rather than redistributed, so another machine may substitute its available fonts.
+
+The map fits proportionally to the available width; without JavaScript its natural-size content
+remains scrollable. This is an export of committed content, not another editable mind-map UI:
+selection, zoom, pan, hover and uncommitted drafts do not change the output or the source document.
 
 For shared-library builds, make the m3 runtime libraries available to your application; the Qt editor also needs its matching Qt runtime and plugins. See the installed-package [core consumer](tests/consumer/CMakeLists.txt) and [Qt consumer](tests/qt_consumer/CMakeLists.txt) examples for linking and Windows DLL copying.
 

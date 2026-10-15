@@ -4,7 +4,6 @@
 #include "presentation.h"
 #include <QGraphicsView>
 #include <QHash>
-#include <QImage>
 #include <QKeySequence>
 #include <QPointer>
 #include <QSet>
@@ -16,6 +15,7 @@ class QGraphicsTextItem;
 class QPlainTextEdit;
 
 namespace m3::qt {
+struct HtmlMap;
 class MindMapView : public QGraphicsView {
     Q_OBJECT
 public:
@@ -33,7 +33,7 @@ public:
     void setReadOnly(bool value);
     void prepare(NodePresentation &node) const;
     void install(Presentation presentation, bool resetCamera);
-    QImage renderImage(Presentation presentation) const;
+    HtmlMap renderHtmlMap(Presentation presentation) const;
     void showError(const QString &message);
     void setSelection(const QStringList &nodes, const QString &link);
     void ensureNodeVisible(const QString &id, const QRect &occlusion = {});

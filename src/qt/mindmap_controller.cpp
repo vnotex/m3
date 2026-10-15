@@ -585,8 +585,8 @@ QString MindMapController::toHtml() {
     try {
         const auto document = currentSnapshot;
         auto presentation = prepare(document, direction, collapsedNodes);
-        const auto image = view.renderImage(std::move(presentation));
-        return encodeHtml(document, image);
+        const auto map = view.renderHtmlMap(std::move(presentation));
+        return encodeHtml(document, map);
     } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
 Presentation MindMapController::prepare(const QByteArray &json,

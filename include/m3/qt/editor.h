@@ -358,10 +358,13 @@ public:
     // Empty on error. No selection,
     // layout, or document changes; an active inline draft remains uncommitted.
     QString toMarkdown() const;
-    // Copied standalone HTML: top-left switch between the current-layout visible
-    // map (shown initially) and full articles for all trees, each root at level 1.
-    // The main root supplies the title. Committed data only; no editor state
-    // changes. Empty on error; the snapshot survives edits and widget destruction.
+    // Copied standalone HTML: selectable node text and inline SVG connectors for
+    // the current-layout visible map, plus full articles for all trees. The map
+    // is shown initially; a switch reveals articles with each root at level 1.
+    // Supplied node images are embedded; this performs no resource I/O and does
+    // not rasterize the diagram. The main root supplies the title. Committed data
+    // only; no editor state changes. Empty on error; the snapshot survives edits
+    // and widget destruction.
     QString toHtml() const;
     QString lastError() const;
     // Empty parentId creates an orphan tree; otherwise inserts a child. -1 appends.

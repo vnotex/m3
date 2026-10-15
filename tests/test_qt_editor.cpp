@@ -29,6 +29,7 @@
 #include <QFileInfo>
 #include <QFont>
 #include <QFontDatabase>
+#include <QFontInfo>
 #include <QFocusEvent>
 #include <QGraphicsItem>
 #include <QGraphicsPathItem>
@@ -49,6 +50,8 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPaintEngine>
+#include <QRegularExpression>
 #include <QPalette>
 #include <QPointer>
 #include <QPlainTextEdit>
@@ -63,6 +66,8 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTextDocument>
+#include <QTextBlock>
+#include <QTextLayout>
 #include <QTextBrowser>
 #include <QTimer>
 #include <QToolBar>
@@ -627,20 +632,300 @@ struct HtmlPage {
         for (const int i : tags(tag)) result.append(elements[i].text);
         return result;
     }
-    QImage image() const {
-        const auto images = tags(QStringLiteral("img"));
-        CHECK(images.size() == 1);
-        const auto &attributes = elements[images.front()].attributes;
-        const QString source = attributes.value(QStringLiteral("src"));
+    std::vector<int> classes(const QString &name, int ancestor = -1) const {
+        std::vector<int> matches;
+        for (size_t i = 0; i < elements.size(); ++i) {
+            if (!elements[i].attributes.value(QStringLiteral("class")).split(u' ').contains(name)) continue;
+            int parent = static_cast<int>(i);
+            while (parent >= 0 && parent != ancestor) parent = elements[parent].parent;
+            if (ancestor < 0 || parent == ancestor) matches.push_back(static_cast<int>(i));
+        }
+        return matches;
+    }
+    int identified(const QString &attribute, const QString &value) const {
+        int match = -1;
+        for (size_t i = 0; i < elements.size(); ++i) if (elements[i].attributes.value(attribute) == value) {
+            CHECK(match == -1);
+            match = static_cast<int>(i);
+        }
+        CHECK(match >= 0);
+        return match;
+    }
+    int node(const QString &id) const { return identified(QStringLiteral("data-node-id"), id); }
+    QSizeF size() const {
+        const auto &attributes = elements[identified(QStringLiteral("id"), QStringLiteral("mindmap"))].attributes;
+        bool widthOk = false, heightOk = false;
+        const double width = attributes.value(QStringLiteral("data-width")).toDouble(&widthOk);
+        const double height = attributes.value(QStringLiteral("data-height")).toDouble(&heightOk);
+        CHECK(widthOk && heightOk && std::isfinite(width) && std::isfinite(height) && width > 0 && height > 0);
+        return QSizeF(width, height);
+    }
+    QImage nodeImage(int index) const {
+        CHECK(elements[index].tag == QStringLiteral("img"));
+        const QString source = elements[index].attributes.value(QStringLiteral("src"));
         const QString prefix = QStringLiteral("data:image/png;base64,");
         CHECK(source.startsWith(prefix));
         const QImage image = QImage::fromData(QByteArray::fromBase64(source.mid(prefix.size()).toLatin1()), "PNG");
         CHECK(!image.isNull());
-        CHECK(image.width() == attributes.value(QStringLiteral("width")).toInt());
-        CHECK(image.height() == attributes.value(QStringLiteral("height")).toInt());
         return image;
     }
 };
+static QMap<QString, QString> htmlStyle(const HtmlElement &element) {
+    QMap<QString, QString> result;
+    const QString style = element.attributes.value(QStringLiteral("style"));
+    QString declaration;
+    QChar quote;
+    bool escaped = false;
+    auto append = [&] {
+        const int colon = declaration.indexOf(u':');
+        if (colon >= 0) {
+            const QString key = declaration.left(colon).trimmed();
+            CHECK(!result.contains(key));
+            result.insert(key, declaration.mid(colon + 1).trimmed());
+        } else CHECK(declaration.trimmed().isEmpty());
+        declaration.clear();
+    };
+    for (const QChar c : style) {
+        if (escaped) escaped = false;
+        else if (c == u'\\') escaped = true;
+        else if (!quote.isNull()) { if (c == quote) quote = QChar(); }
+        else if (c == u'\'' || c == u'"') quote = c;
+        else if (c == u';') { append(); continue; }
+        declaration += c;
+    }
+    CHECK(quote.isNull() && !escaped);
+    append();
+    return result;
+}
+static QString htmlCssString(const QString &value) {
+    CHECK(value.size() >= 2 && (value.front() == u'\'' || value.front() == u'"') && value.back() == value.front());
+    QString result;
+    for (qsizetype i = 1; i + 1 < value.size(); ++i) {
+        if (value[i] != u'\\') { result += value[i]; continue; }
+        CHECK(++i + 1 < value.size());
+        QString digits;
+        while (i + 1 < value.size() && digits.size() < 6 &&
+               ((value[i] >= u'0' && value[i] <= u'9') ||
+                (value[i].toLower() >= u'a' && value[i].toLower() <= u'f'))) digits += value[i++];
+        if (digits.isEmpty()) result += value[i];
+        else {
+            bool ok = false;
+            const char32_t code = digits.toUInt(&ok, 16);
+            CHECK(ok && code > 0 && code <= 0x10ffff);
+            result += QString::fromUcs4(&code, 1);
+            if (!value[i].isSpace()) --i;
+        }
+    }
+    return result;
+}
+static qreal htmlNumber(const QString &text) {
+    bool ok = false;
+    const qreal value = text.toDouble(&ok);
+    CHECK(ok && std::isfinite(value));
+    return value;
+}
+static qreal htmlPixels(const QMap<QString, QString> &style, const QString &property) {
+    const QString value = style.value(property);
+    CHECK(value.endsWith(QStringLiteral("px")));
+    return htmlNumber(value.chopped(2));
+}
+static QRectF htmlRect(const HtmlElement &element) {
+    const auto style = htmlStyle(element);
+    return QRectF(htmlPixels(style, QStringLiteral("left")), htmlPixels(style, QStringLiteral("top")),
+                  htmlPixels(style, QStringLiteral("width")), htmlPixels(style, QStringLiteral("height")));
+}
+static void nearHtml(qreal actual, qreal expected) {
+    if (std::abs(actual - expected) > 0.02)
+        std::cerr << "HTML geometry: actual=" << actual << ", expected=" << expected << '\n';
+    CHECK(std::abs(actual - expected) <= 0.02);
+}
+static void nearHtml(QPointF actual, QPointF expected) {
+    nearHtml(actual.x(), expected.x()); nearHtml(actual.y(), expected.y());
+}
+static void nearHtml(QRectF actual, QRectF expected) {
+    nearHtml(actual.topLeft(), expected.topLeft());
+    nearHtml(actual.width(), expected.width()); nearHtml(actual.height(), expected.height());
+}
+static std::vector<qreal> htmlNumbers(const QString &value) {
+    const auto tokens = value.split(QRegularExpression(QStringLiteral("[\\s,]+")), Qt::SkipEmptyParts);
+    std::vector<qreal> result;
+    for (const auto &token : tokens) result.push_back(htmlNumber(token));
+    return result;
+}
+static QPainterPath htmlPath(const QString &value) {
+    QString separated = value;
+    separated.replace(QRegularExpression(QStringLiteral("([MLCZ])")), QStringLiteral(" \\1 "));
+    const auto tokens = separated.split(QRegularExpression(QStringLiteral("[\\s,]+")), Qt::SkipEmptyParts);
+    QPainterPath path;
+    qsizetype i = 0;
+    auto point = [&] {
+        CHECK(i + 1 < tokens.size());
+        const qreal x = htmlNumber(tokens[i++]), y = htmlNumber(tokens[i++]);
+        return QPointF(x, y);
+    };
+    while (i < tokens.size()) {
+        const QString command = tokens[i++];
+        if (command == QStringLiteral("M")) path.moveTo(point());
+        else if (command == QStringLiteral("L")) path.lineTo(point());
+        else if (command == QStringLiteral("C")) {
+            const QPointF first = point(), second = point(), end = point();
+            path.cubicTo(first, second, end);
+        } else { CHECK(command == QStringLiteral("Z")); path.closeSubpath(); }
+    }
+    CHECK(!path.isEmpty());
+    return path;
+}
+static void nearHtml(const QPainterPath &actual, const QPainterPath &expected) {
+    CHECK(actual.elementCount() == expected.elementCount());
+    for (int i = 0; i < actual.elementCount(); ++i) {
+        const auto a = actual.elementAt(i), b = expected.elementAt(i);
+        CHECK(a.type == b.type);
+        nearHtml(QPointF(a.x, a.y), QPointF(b.x, b.y));
+    }
+}
+static void checkHtmlText(const HtmlPage &page, int index, QGraphicsTextItem &item) {
+    const auto &element = page.elements[index];
+    CHECK(element.text == item.toPlainText());
+    const auto style = htmlStyle(element);
+    const QFontInfo font(item.document()->defaultFont());
+    CHECK(htmlCssString(style.value(QStringLiteral("font-family"))) == font.family());
+    nearHtml(htmlPixels(style, QStringLiteral("font-size")), font.pixelSize());
+    const qreal cssWeight = htmlNumber(style.value(QStringLiteral("font-weight")));
+    CHECK(cssWeight >= 100 && cssWeight <= 900 && (cssWeight >= 600) == font.bold());
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    nearHtml(cssWeight, font.weight());
+#endif
+    CHECK(style.value(QStringLiteral("font-style")) == (font.italic() ? QStringLiteral("italic") : QStringLiteral("normal")));
+    CHECK(QColor(style.value(QStringLiteral("color"))) == item.defaultTextColor());
+    const auto lines = page.classes(QStringLiteral("m3-text-line"), index);
+    size_t indexInLines = 0;
+    for (auto block = item.document()->begin(); block.isValid(); block = block.next()) {
+        const auto *layout = block.layout();
+        for (int i = 0; i < layout->lineCount(); ++i) {
+            CHECK(indexInLines < lines.size());
+            const auto line = layout->lineAt(i);
+            const auto &actual = page.elements[lines[indexInLines++]];
+            nearHtml(htmlRect(actual), QRectF(layout->position() + line.naturalTextRect().topLeft(),
+                                              QSizeF(line.naturalTextWidth(), line.height())));
+            QString text = block.text().mid(line.textStart(), line.textLength());
+            if (i + 1 == layout->lineCount() && block.next().isValid()) text += u'\n';
+            CHECK(actual.text == text);
+        }
+    }
+    CHECK(indexInLines == lines.size());
+}
+// Record the scene item's actual vector paint primitives, without rasterizing or reimplementing routing.
+struct HtmlPaintEngine final : QPaintEngine {
+    struct Stroke { QPainterPath path; QPen pen; QBrush brush; };
+    std::vector<Stroke> strokes;
+    std::vector<QPolygonF> arrows;
+    std::vector<QColor> fills;
+    QPen pen;
+    QBrush brush;
+    HtmlPaintEngine() : QPaintEngine(QPaintEngine::AllFeatures) {}
+    bool begin(QPaintDevice *) override { setActive(true); return true; }
+    bool end() override { setActive(false); return true; }
+    Type type() const override { return QPaintEngine::User; }
+    void updateState(const QPaintEngineState &updated) override {
+        if (updated.state() & DirtyPen) pen = updated.pen();
+        if (updated.state() & DirtyBrush) brush = updated.brush();
+    }
+    void drawPixmap(const QRectF &, const QPixmap &, const QRectF &) override { CHECK(false); }
+    void drawPath(const QPainterPath &path) override { strokes.push_back({path, pen, brush}); }
+    void drawPolygon(const QPointF *points, int count, PolygonDrawMode) override {
+        QPolygonF polygon;
+        for (int i = 0; i < count; ++i) polygon.append(points[i]);
+        arrows.push_back(std::move(polygon)); fills.push_back(brush.color());
+    }
+};
+struct HtmlPaintDevice final : QPaintDevice {
+    mutable HtmlPaintEngine engine;
+    QPaintEngine *paintEngine() const override { return &engine; }
+    int metric(PaintDeviceMetric metric) const override {
+        switch (metric) {
+        case PdmWidth: case PdmHeight: return 4096;
+        case PdmWidthMM: case PdmHeightMM: return 1084;
+        case PdmDepth: return 32;
+        case PdmNumColors: return 0;
+        case PdmDevicePixelRatio: return 1;
+        case PdmDevicePixelRatioScaled: return 65536;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+        case PdmDevicePixelRatioF_EncodedA: case PdmDevicePixelRatioF_EncodedB:
+            return QPaintDevice::encodeMetricF(metric, 1.0);
+#endif
+        default: return 96;
+        }
+    }
+};
+static void checkHtmlPen(const HtmlElement &element, const QPen &pen) {
+    const auto &attributes = element.attributes;
+    CHECK(QColor(attributes.value(QStringLiteral("stroke"))) == pen.color());
+    nearHtml(htmlNumber(attributes.value(QStringLiteral("stroke-width"))), pen.widthF());
+    CHECK(attributes.value(QStringLiteral("stroke-linecap")) ==
+          (pen.capStyle() == Qt::RoundCap ? QStringLiteral("round") :
+           pen.capStyle() == Qt::FlatCap ? QStringLiteral("butt") : QStringLiteral("square")));
+    CHECK(attributes.value(QStringLiteral("stroke-linejoin")) ==
+          (pen.joinStyle() == Qt::RoundJoin ? QStringLiteral("round") :
+           pen.joinStyle() == Qt::BevelJoin ? QStringLiteral("bevel") : QStringLiteral("miter")));
+    const QString dash = attributes.value(QStringLiteral("stroke-dasharray"));
+    if (pen.style() == Qt::SolidLine) CHECK(dash.isEmpty() || dash == QStringLiteral("none"));
+    else {
+        const auto actual = htmlNumbers(dash);
+        const auto expected = pen.dashPattern();
+        CHECK(actual.size() == static_cast<size_t>(expected.size()));
+        for (size_t i = 0; i < actual.size(); ++i) nearHtml(actual[i], expected[static_cast<qsizetype>(i)] * pen.widthF());
+        const QString offset = attributes.value(QStringLiteral("stroke-dashoffset"));
+        nearHtml(offset.isEmpty() ? 0 : htmlNumber(offset), pen.dashOffset() * pen.widthF());
+    }
+}
+static void sameHtmlMap(const HtmlPage &actual, const HtmlPage &expected) {
+    nearHtml(actual.size().width(), expected.size().width());
+    nearHtml(actual.size().height(), expected.size().height());
+    for (const QString &name : {QStringLiteral("m3-node"), QStringLiteral("m3-topic"), QStringLiteral("m3-icons"),
+                              QStringLiteral("m3-tag"), QStringLiteral("m3-link-label"), QStringLiteral("m3-node-image"),
+                              QStringLiteral("m3-image-placeholder"), QStringLiteral("m3-tree-edge"),
+                              QStringLiteral("m3-cross-link"), QStringLiteral("m3-link-curve"),
+                              QStringLiteral("m3-link-leader"), QStringLiteral("m3-link-arrow"),
+                              QStringLiteral("m3-text-line"), QStringLiteral("m3-tag-text"),
+                              QStringLiteral("m3-node-link"), QStringLiteral("m3-fold-indicator"),
+                              QStringLiteral("m3-image-message")}) {
+        const auto a = actual.classes(name), b = expected.classes(name);
+        CHECK(a.size() == b.size());
+        for (size_t i = 0; i < a.size(); ++i) {
+            const auto &left = actual.elements[a[i]], &right = expected.elements[b[i]];
+            CHECK(left.tag == right.tag && left.text == right.text);
+            for (const QString &key : {QStringLiteral("data-node-id"), QStringLiteral("data-link-id"),
+                                      QStringLiteral("data-source"), QStringLiteral("data-target"),
+                                      QStringLiteral("data-end"), QStringLiteral("data-image-state"), QStringLiteral("href"),
+                                      QStringLiteral("stroke"), QStringLiteral("fill"),
+                                      QStringLiteral("stroke-linecap"), QStringLiteral("stroke-linejoin")})
+                CHECK(left.attributes.value(key) == right.attributes.value(key));
+            if (left.attributes.contains(QStringLiteral("d")))
+                nearHtml(htmlPath(left.attributes.value(QStringLiteral("d"))), htmlPath(right.attributes.value(QStringLiteral("d"))));
+            if (left.attributes.contains(QStringLiteral("points"))) {
+                const auto x = htmlNumbers(left.attributes.value(QStringLiteral("points"))),
+                           y = htmlNumbers(right.attributes.value(QStringLiteral("points")));
+                CHECK(x.size() == y.size());
+                for (size_t j = 0; j < x.size(); ++j) nearHtml(x[j], y[j]);
+            }
+            const auto leftStyle = htmlStyle(left), rightStyle = htmlStyle(right);
+            CHECK(leftStyle.keys() == rightStyle.keys());
+            for (auto it = leftStyle.begin(); it != leftStyle.end(); ++it) {
+                const QString other = rightStyle.value(it.key());
+                if (it.value().endsWith(QStringLiteral("px"))) nearHtml(htmlNumber(it.value().chopped(2)), htmlNumber(other.chopped(2)));
+                else if (it.key() == QStringLiteral("font-family")) CHECK(htmlCssString(it.value()) == htmlCssString(other));
+                else if (it.key() == QStringLiteral("font-weight")) nearHtml(htmlNumber(it.value()), htmlNumber(other));
+                else CHECK(it.value().simplified() == other.simplified());
+            }
+            for (const QString &key : {QStringLiteral("stroke-width"), QStringLiteral("stroke-dashoffset"), QStringLiteral("stroke-dasharray")}) {
+                const auto x = htmlNumbers(left.attributes.value(key)), y = htmlNumbers(right.attributes.value(key));
+                CHECK(x.size() == y.size());
+                for (size_t j = 0; j < x.size(); ++j) nearHtml(x[j], y[j]);
+            }
+            if (name == QStringLiteral("m3-node-image")) CHECK(actual.nodeImage(a[i]) == expected.nodeImage(b[i]));
+        }
+    }
+}
 static Json imageDocument(const QString &url = QStringLiteral("memory:picture"), double width = 0, double height = 0) {
     Json input = editorFixture();
     setTopic(input, "r", QStringLiteral("Image root"));
@@ -763,20 +1048,137 @@ static void htmlAppearance(Editor &editor) {
     palette.setColor(QPalette::Dark, QColor(55, 65, 80));
     editor.setPalette(palette);
 }
-static QRect htmlImageRegion(const QImage &image, const QRectF &bounds, const QRectF &region) {
-    const qreal scale = std::min(image.width() / bounds.width(), image.height() / bounds.height());
-    return QRectF((region.topLeft() - bounds.topLeft()) * scale, region.size() * scale).toAlignedRect();
-}
-static void compareHtmlScene(Editor &editor, const QImage &image) {
-    auto &view = graphics(editor);
-    const QRectF source = view.scene()->itemsBoundingRect().adjusted(-32, -32, 32, 32);
-    QImage live(image.size(), QImage::Format_ARGB32_Premultiplied);
-    live.fill(view.palette().color(QPalette::Base));
-    QPainter painter(&live);
-    painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
-    view.scene()->render(&painter, QRectF(QPointF(), QSizeF(image.size())), source, Qt::KeepAspectRatio);
-    CHECK(painter.end());
-    CHECK(live.convertToFormat(QImage::Format_RGB32) == image.convertToFormat(QImage::Format_RGB32));
+static void compareHtmlScene(Editor &editor, const HtmlPage &page) {
+    auto *scene = graphics(editor).scene();
+    const QRectF bounds = scene->itemsBoundingRect().adjusted(-32, -32, 32, 32);
+    const QPointF offset = -bounds.topLeft();
+    nearHtml(page.size().width(), bounds.width()); nearHtml(page.size().height(), bounds.height());
+    const int map = page.identified(QStringLiteral("id"), QStringLiteral("mindmap"));
+    nearHtml(htmlRect(page.elements[map]), QRectF(QPointF(), bounds.size()));
+    const auto svg = page.classes(QStringLiteral("m3-connectors"));
+    CHECK(svg.size() == 1 && page.elements[svg.front()].tag == QStringLiteral("svg"));
+    const auto viewBox = htmlNumbers(page.elements[svg.front()].attributes.value(QStringLiteral("viewBox")));
+    CHECK(viewBox.size() == 4);
+    nearHtml(viewBox[0], 0); nearHtml(viewBox[1], 0);
+    nearHtml(viewBox[2], bounds.width()); nearHtml(viewBox[3], bounds.height());
+    const Json document = exported(editor);
+    std::set<QString> visible;
+    for (const int index : page.classes(QStringLiteral("m3-node"))) {
+        const auto &node = page.elements[index];
+        const QString id = node.attributes.value(QStringLiteral("data-node-id"));
+        CHECK(visible.insert(id).second);
+        CHECK(node.attributes.value(QStringLiteral("id")) == QStringLiteral("m3-map-node-") + QString::fromLatin1(id.toUtf8().toHex()));
+        const QString topic = qs(record(document, "nodes", id).at("topic"));
+        const auto topics = page.classes(QStringLiteral("m3-topic"), index);
+        CHECK(topics.size() == 1 && page.elements[topics.front()].text == topic);
+        auto *label = textItem(editor, topic);
+        auto *owner = ownerItem(label);
+        const QRectF rectangle = owner->mapToScene(owner->shape()).boundingRect();
+        nearHtml(htmlRect(node), rectangle.translated(offset));
+        CHECK(QRectF(QPointF(), page.size()).contains(htmlRect(node)));
+        nearHtml(htmlRect(page.elements[topics.front()]), label->sceneBoundingRect().translated(-rectangle.topLeft()));
+        checkHtmlText(page, topics.front(), *label);
+        HtmlPaintDevice nodePaint;
+        QPainter nodePainter(&nodePaint);
+        owner->paint(&nodePainter, nullptr, nullptr);
+        CHECK(nodePainter.end() && !nodePaint.engine.strokes.empty());
+        const auto appearance = htmlStyle(node);
+        CHECK(QColor(appearance.value(QStringLiteral("background"))) == nodePaint.engine.strokes.front().brush.color());
+        const auto outline = appearance.value(QStringLiteral("outline")).split(u' ', Qt::SkipEmptyParts);
+        CHECK(outline.size() == 3 && outline[1] == QStringLiteral("solid"));
+        CHECK(QColor(outline[2]) == nodePaint.engine.strokes.front().pen.color());
+        const auto images = page.classes(QStringLiteral("m3-node-image"), index);
+        if (!images.empty()) {
+            CHECK(images.size() == 1);
+            const QString url = qs(record(document, "nodes", id).at("image").at("url"));
+            nearHtml(htmlRect(page.elements[images.front()]), nodeImageRect(editor, topic, url).translated(-rectangle.topLeft()));
+            CHECK(!page.elements[images.front()].attributes.contains(QStringLiteral("data-image-state")));
+            page.nodeImage(images.front());
+        }
+    }
+    std::vector<QGraphicsPathItem *> treePaths;
+    for (auto *item : scene->items()) if (auto *path = dynamic_cast<QGraphicsPathItem *>(item)) treePaths.push_back(path);
+    const auto edges = page.classes(QStringLiteral("m3-tree-edge"));
+    CHECK(edges.size() == treePaths.size());
+    std::set<QGraphicsPathItem *> matched;
+    for (const int index : edges) {
+        const auto &edge = page.elements[index];
+        const QString source = edge.attributes.value(QStringLiteral("data-source")), target = edge.attributes.value(QStringLiteral("data-target"));
+        CHECK(visible.count(source) == 1 && visible.count(target) == 1);
+        const auto &children = record(document, "nodes", source).at("children");
+        CHECK(std::find(children.begin(), children.end(), utf8(target)) != children.end());
+        const QPainterPath actual = htmlPath(edge.attributes.value(QStringLiteral("d")));
+        QGraphicsPathItem *match = nullptr;
+        for (auto *path : treePaths) {
+            const auto expected = path->mapToScene(path->path()).translated(offset);
+            if (QLineF(actual.pointAtPercent(0), expected.pointAtPercent(0)).length() < 0.02 &&
+                QLineF(actual.pointAtPercent(1), expected.pointAtPercent(1)).length() < 0.02) {
+                CHECK(!match); match = path;
+            }
+        }
+        CHECK(match && matched.insert(match).second);
+        nearHtml(actual, match->mapToScene(match->path()).translated(offset));
+        checkHtmlPen(edge, match->pen());
+    }
+    size_t visibleLinks = 0;
+    for (const auto &link : document.at("crossLinks"))
+        if (visible.count(qs(link.at("source"))) && visible.count(qs(link.at("target")))) ++visibleLinks;
+    const auto links = page.classes(QStringLiteral("m3-cross-link"));
+    CHECK(links.size() == visibleLinks);
+    for (const int index : links) {
+        const auto &group = page.elements[index];
+        const QString id = group.attributes.value(QStringLiteral("data-link-id"));
+        const auto &link = record(document, "crossLinks", id);
+        CHECK(group.attributes.value(QStringLiteral("data-source")) == qs(link.at("source")));
+        CHECK(group.attributes.value(QStringLiteral("data-target")) == qs(link.at("target")));
+        const auto labels = page.classes(QStringLiteral("m3-link-label"));
+        int labelIndex = -1;
+        for (const int candidate : labels)
+            if (page.elements[candidate].attributes.value(QStringLiteral("data-link-id")) == id) labelIndex = candidate;
+        CHECK(labelIndex >= 0);
+        auto *label = textItem(editor, page.elements[labelIndex].text);
+        auto *owner = ownerItem(label);
+        nearHtml(htmlRect(page.elements[labelIndex]), label->sceneBoundingRect().translated(offset));
+        checkHtmlText(page, labelIndex, *label);
+        HtmlPaintDevice device;
+        QPainter painter(&device);
+        owner->paint(&painter, nullptr, nullptr);
+        CHECK(painter.end());
+        const auto curves = page.classes(QStringLiteral("m3-link-curve"), index),
+                   leaders = page.classes(QStringLiteral("m3-link-leader"), index),
+                   arrows = page.classes(QStringLiteral("m3-link-arrow"), index);
+        CHECK(curves.size() == 1 && leaders.size() <= 1);
+        CHECK(device.engine.strokes.size() == 1 + leaders.size());
+        const auto checkStroke = [&](int element, size_t stroke) {
+            nearHtml(htmlPath(page.elements[element].attributes.value(QStringLiteral("d"))),
+                     owner->mapToScene(device.engine.strokes[stroke].path).translated(offset));
+            checkHtmlPen(page.elements[element], device.engine.strokes[stroke].pen);
+        };
+        checkStroke(curves.front(), 0);
+        if (!leaders.empty()) checkStroke(leaders.front(), 1);
+        CHECK(arrows.size() == device.engine.arrows.size());
+        const std::string direction = link.at("style").value("arrowDirection", std::string("forward"));
+        const bool directed = link.at("directed").get<bool>();
+        const bool sourceArrow = directed && (direction == "backward" || direction == "both");
+        const bool targetArrow = directed && direction != "backward";
+        CHECK(arrows.size() == static_cast<size_t>(sourceArrow) + static_cast<size_t>(targetArrow));
+        QStringList ends;
+        for (const int arrow : arrows) ends.append(page.elements[arrow].attributes.value(QStringLiteral("data-end")));
+        CHECK(ends.count(QStringLiteral("source")) == (sourceArrow ? 1 : 0));
+        CHECK(ends.count(QStringLiteral("target")) == (targetArrow ? 1 : 0));
+        const auto curve = htmlPath(page.elements[curves.front()].attributes.value(QStringLiteral("d")));
+        for (size_t i = 0; i < arrows.size(); ++i) {
+            const auto &arrow = page.elements[arrows[i]];
+            const auto points = htmlNumbers(arrow.attributes.value(QStringLiteral("points")));
+            const auto expected = owner->mapToScene(device.engine.arrows[i]).translated(offset);
+            CHECK(points.size() == static_cast<size_t>(expected.size()) * 2);
+            for (qsizetype j = 0; j < expected.size(); ++j) nearHtml(QPointF(points[2 * j], points[2 * j + 1]), expected[j]);
+            CHECK(QColor(arrow.attributes.value(QStringLiteral("fill"))) == device.engine.fills[i]);
+            const QString end = arrow.attributes.value(QStringLiteral("data-end"));
+            CHECK(end == QStringLiteral("source") || end == QStringLiteral("target"));
+            nearHtml(QPointF(points[0], points[1]), curve.pointAtPercent(end == QStringLiteral("source") ? 0 : 1));
+        }
+    }
 }
 static void html_case() {
     QString retained;
@@ -786,11 +1188,14 @@ static void html_case() {
         htmlAppearance(editor);
         Json input = editorFixture();
         setTopic(input, "r", root);
+        setTopic(input, "c", QStringLiteral("Gamma"));
         for (auto &node : input.at("nodes")) {
             if (node.at("id") == "r") {
                 node["tags"] = Json::array({"x", "", "x"});
                 node["icons"] = Json::array({"star", "", "star"});
                 node["hyperLink"] = "https://example.com/?a=1&b=%22quoted%22";
+                node["style"] = {{"fontSize", 23}, {"fontWeight", "bold"}, {"fontStyle", "italic"},
+                                 {"color", "#123456"}, {"background", "#cde8fa"}, {"branchColor", "#654321"}};
             }
         }
         for (auto &link : input.at("crossLinks")) {
@@ -805,8 +1210,21 @@ static void html_case() {
         pump();
         retained = editor.toHtml();
         const HtmlPage page(retained);
-        const QImage image = page.image();
-        compareHtmlScene(editor, image);
+        compareHtmlScene(editor, page);
+        CHECK(page.classes(QStringLiteral("m3-node")).size() == 4);
+        const auto topic = page.classes(QStringLiteral("m3-topic"), page.node(QStringLiteral("r")));
+        CHECK(topic.size() == 1 && page.elements[topic.front()].text == root);
+        const auto style = htmlStyle(page.elements[topic.front()]);
+        nearHtml(htmlPixels(style, QStringLiteral("font-size")), 23);
+        CHECK(htmlNumber(style.value(QStringLiteral("font-weight"))) == 700);
+        CHECK(style.value(QStringLiteral("font-style")) == QStringLiteral("italic"));
+        CHECK(QColor(style.value(QStringLiteral("color"))) == textItem(editor, root)->defaultTextColor());
+        CHECK(QColor(htmlStyle(page.elements[page.node(QStringLiteral("r"))]).value(QStringLiteral("background"))) == QColor("#cde8fa"));
+        const auto visibleTags = page.classes(QStringLiteral("m3-tag"), page.node(QStringLiteral("r")));
+        CHECK(visibleTags.size() == 2); // Empty tags remain metadata, not visible chips.
+        for (const int tag : visibleTags) CHECK(page.elements[tag].text.simplified() == QStringLiteral("x"));
+        CHECK(!page.classes(QStringLiteral("m3-icons"), page.node(QStringLiteral("r"))).empty());
+        CHECK(!page.classes(QStringLiteral("m3-fold-indicator"), page.node(QStringLiteral("a"))).empty());
         CHECK(page.values(QStringLiteral("title")) == QStringList{root});
         CHECK(page.articleIds() == QStringList({"m3-node-72", "m3-node-61", "m3-node-64", "m3-node-62", "m3-node-63"}));
         CHECK(page.values(QStringLiteral("h3")).contains(QStringLiteral("Delta")));
@@ -835,10 +1253,12 @@ static void html_case() {
             }
         CHECK(hiddenEndpoint && texts(editor, QStringLiteral("Delta")).isEmpty());
         const QRectF bounds = graphics(editor).scene()->itemsBoundingRect().adjusted(-32, -32, 32, 32);
-        for (const QString &label : {root, QStringLiteral("Alpha"), QStringLiteral("Beta"),
-                                     QStringLiteral("Related"), QStringLiteral("Self"), QStringLiteral("Parallel")})
-            CHECK(paintedPixels(image, htmlImageRegion(image, bounds, textItem(editor, label)->sceneBoundingRect())) > 5);
-        CHECK(image.width() > graphics(editor).viewport()->width());
+        for (const QString &label : {QStringLiteral("Related"), QStringLiteral("Self"), QStringLiteral("Parallel")}) {
+            bool present = false;
+            for (const int index : page.classes(QStringLiteral("m3-link-label"))) present |= page.elements[index].text == label;
+            CHECK(present);
+        }
+        CHECK(page.size().width() > graphics(editor).viewport()->width());
         const QByteArray baseline = editor.toJson();
         QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
         auto unchangedExport = [&] {
@@ -849,7 +1269,7 @@ static void html_case() {
             const int horizontal = view.horizontalScrollBar()->value(), vertical = view.verticalScrollBar()->value();
             const QString node = editor.selectedNodeId(), link = editor.selectedLinkId();
             const auto selections = selected.size();
-            CHECK(HtmlPage(editor.toHtml()).image() == image);
+            sameHtmlMap(HtmlPage(editor.toHtml()), page);
             CHECK(view.scene() == scene && view.transform() == transform && view.sceneRect() == sceneRect);
             CHECK(view.horizontalScrollBar()->value() == horizontal && view.verticalScrollBar()->value() == vertical);
             CHECK(editor.selectedNodeId() == node && editor.selectedLinkId() == link);
@@ -868,18 +1288,61 @@ static void html_case() {
         auto *draft = &topicInput(editor);
         draft->setPlainText(QStringLiteral("UNCOMMITTED DRAFT"));
         unchangedExport();
-        CHECK(editor.toHtml() == retained);
+        sameHtmlMap(HtmlPage(editor.toHtml()), page);
         CHECK(activeTopicInput(editor) == draft && draft->hasFocus());
         CHECK(draft->toPlainText() == QStringLiteral("UNCOMMITTED DRAFT"));
         topicKey(editor, Qt::Key_Escape);
         CHECK(editor.setExpanded(QStringLiteral("a"), true));
         CHECK(!texts(editor, QStringLiteral("Delta")).isEmpty());
-        CHECK(HtmlPage(editor.toHtml()).image() != image);
+        const HtmlPage expanded(editor.toHtml());
+        CHECK(expanded.classes(QStringLiteral("m3-node")).size() == 5);
+        CHECK(expanded.elements[expanded.classes(QStringLiteral("m3-topic"), expanded.node(QStringLiteral("d"))).front()].text == QStringLiteral("Delta"));
         CHECK(editor.renameNode(QStringLiteral("r"), QStringLiteral("Later edit")));
     }
     const HtmlPage saved(retained);
     CHECK(saved.values(QStringLiteral("title")) == QStringList{root});
     CHECK(!saved.values(QStringLiteral("h3")).contains(QStringLiteral("Later edit")));
+    {
+        Editor editor;
+        htmlAppearance(editor);
+        const QString topic = QString::fromUtf8("Image <b>世界</b>\n  second\tline");
+        Json input = imageDocument();
+        input["crossLinks"] = Json::array();
+        setTopic(input, "r", topic);
+        QSignalSpy requested(&editor, &Editor::imageRequested);
+        CHECK(editor.loadJson(encoded(input)));
+        showEditor(editor);
+        editor.clearSelection();
+        CHECK(QTest::qWaitFor([&] { return requested.size() == 1; }, 5000));
+        const HtmlPage loading(editor.toHtml());
+        const auto pending = loading.classes(QStringLiteral("m3-image-placeholder"), loading.node(QStringLiteral("r")));
+        CHECK(pending.size() == 1);
+        CHECK(loading.elements[pending.front()].attributes.value(QStringLiteral("data-image-state")) == QStringLiteral("loading"));
+        CHECK(loading.classes(QStringLiteral("m3-node-image")).empty());
+        editor.provideImage(requested.front()[0].toString(), requested.front()[1].toULongLong(), QImage());
+        pump();
+        const HtmlPage failed(editor.toHtml());
+        const auto unavailable = failed.classes(QStringLiteral("m3-image-placeholder"), failed.node(QStringLiteral("r")));
+        CHECK(unavailable.size() == 1);
+        CHECK(failed.elements[unavailable.front()].attributes.value(QStringLiteral("data-image-state")) == QStringLiteral("unavailable"));
+        CHECK(failed.elements[unavailable.front()].text.contains(QStringLiteral("Image unavailable")));
+        requested.clear();
+        editor.reloadImages();
+        CHECK(QTest::qWaitFor([&] { return requested.size() == 1; }, 5000));
+        const QImage pixels = imagePixels();
+        editor.provideImage(requested.front()[0].toString(), requested.front()[1].toULongLong(), pixels);
+        pump();
+        const HtmlPage loaded(editor.toHtml());
+        compareHtmlScene(editor, loaded);
+        const auto images = loaded.classes(QStringLiteral("m3-node-image"));
+        CHECK(images.size() == 1 && loaded.tags(QStringLiteral("img")).size() == 1);
+        CHECK(loaded.nodeImage(images.front()).convertToFormat(QImage::Format_RGB32) == pixels);
+        CHECK(loaded.classes(QStringLiteral("m3-image-placeholder")).empty());
+        const auto topics = loaded.classes(QStringLiteral("m3-topic"), loaded.node(QStringLiteral("r")));
+        CHECK(topics.size() == 1 && loaded.elements[topics.front()].text == topic);
+        CHECK(loaded.classes(QStringLiteral("m3-text-line"), topics.front()).size() >= 2);
+        CHECK(loaded.classes(QStringLiteral("m3-tag"), loaded.node(QStringLiteral("r"))).size() == 2);
+    }
 }
 
 static void html_edges_case() {
@@ -887,26 +1350,38 @@ static void html_edges_case() {
     config.initialVisibleLevels = 0;
     Editor editor(config);
     htmlAppearance(editor);
-    CHECK(editor.loadJson(encoded(editorFixture())));
+    Json linked = editorFixture();
+    setTopic(linked, "c", QStringLiteral("Gamma"));
+    linked["crossLinks"] = Json::array({
+        {{"id", "forward"}, {"source", "a"}, {"target", "b"}, {"topic", "Forward"}, {"directed", true}},
+        {{"id", "parallel"}, {"source", "a"}, {"target", "b"}, {"topic", "Parallel"}, {"directed", false}},
+        {{"id", "reverse"}, {"source", "b"}, {"target", "a"}, {"topic", "Reverse"}, {"directed", true}},
+        {{"id", "backward"}, {"source", "a"}, {"target", "b"}, {"topic", "Backward"}, {"directed", true}, {"style", {{"arrowDirection", "backward"}}}},
+        {{"id", "both"}, {"source", "a"}, {"target", "b"}, {"topic", "Both"}, {"directed", true}, {"style", {{"arrowDirection", "both"}}}},
+        {{"id", "self"}, {"source", "b"}, {"target", "b"}, {"topic", "Self"}, {"directed", true}}
+    });
+    CHECK(editor.loadJson(encoded(linked)));
     showEditor(editor);
     editor.clearSelection();
     const auto hierarchy = HtmlPage(editor.toHtml()).articleIds();
-    QImage previous;
-    for (const auto direction : {Editor::LayoutDirection::Left, Editor::LayoutDirection::Right, Editor::LayoutDirection::Outline}) {
+    bool hasLeader = false;
+    for (const auto direction : {Editor::LayoutDirection::Balanced, Editor::LayoutDirection::Left,
+                                 Editor::LayoutDirection::Right, Editor::LayoutDirection::Outline}) {
         CHECK(editor.setLayoutDirection(direction));
         QTest::mouseMove(graphics(editor).viewport(), QPoint(1, 1));
         pump();
         const HtmlPage page(editor.toHtml());
-        const QImage image = page.image();
-        compareHtmlScene(editor, image);
-        CHECK(page.articleIds() == hierarchy && image != previous);
+        compareHtmlScene(editor, page);
+        CHECK(page.articleIds() == hierarchy);
+        CHECK(page.classes(QStringLiteral("m3-link-arrow")).size() == 6);
+        hasLeader |= !page.classes(QStringLiteral("m3-link-leader")).empty();
         const QRectF root = topicRect(editor, QString::fromUtf8("Racine 世界 🌍"));
         const QRectF alpha = topicRect(editor, QStringLiteral("Alpha"));
         if (direction == Editor::LayoutDirection::Left) CHECK(alpha.right() < root.left());
         else if (direction == Editor::LayoutDirection::Right) CHECK(alpha.left() > root.right());
-        else CHECK(alpha.top() > root.bottom() && alpha.left() > root.left());
-        previous = image;
+        else if (direction == Editor::LayoutDirection::Outline) CHECK(alpha.top() > root.bottom() && alpha.left() > root.left());
     }
+    CHECK(hasLeader);
     auto chain = [](int count) {
         Json result{{"schemaVersion", 1}, {"rootId", "n0"}, {"nodes", Json::array()}};
         for (int i = 0; i < count; ++i) {
@@ -923,18 +1398,21 @@ static void html_edges_case() {
     CHECK(ids.size() == 1024 && ids.back() == QStringLiteral("m3-node-6e31303233"));
     CHECK(texts(editor, QStringLiteral("Node 1023")).isEmpty());
     CHECK(deep.values(QStringLiteral("h3")).contains(QStringLiteral("Node 1023")));
+    CHECK(deep.classes(QStringLiteral("m3-node")).size() == 1);
+    CHECK(deep.elements[deep.node(QStringLiteral("n0"))].text.contains(QStringLiteral("Node 0")));
     CHECK(editor.loadJson(encoded(chain(400))));
     CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Outline));
+    editor.clearSelection();
     const QRectF source = graphics(editor).scene()->itemsBoundingRect().adjusted(-32, -32, 32, 32);
     CHECK(source.height() > 16384);
-    const QImage bounded = HtmlPage(editor.toHtml()).image();
-    CHECK(bounded.width() > 0 && bounded.height() > 0);
-    CHECK(bounded.width() <= 16384 && bounded.height() <= 16384);
-    CHECK(qint64(bounded.width()) * bounded.height() <= 16777216);
-    CHECK(bounded.height() < source.height());
-    const QRect last = htmlImageRegion(bounded, source, topicRect(editor, QStringLiteral("Node 399")));
-    CHECK(bounded.rect().contains(last));
-    CHECK(paintedPixels(bounded, last) > 5);
+    const HtmlPage full(editor.toHtml());
+    CHECK(full.size().height() > 16384);
+    CHECK(full.classes(QStringLiteral("m3-node")).size() == 400);
+    CHECK(full.classes(QStringLiteral("m3-tree-edge")).size() == 399);
+    compareHtmlScene(editor, full);
+    const QRectF last = htmlRect(full.elements[full.node(QStringLiteral("n399"))]);
+    CHECK(QRectF(QPointF(), full.size()).contains(last));
+    nearHtml(last, topicRect(editor, QStringLiteral("Node 399")).adjusted(2, 2, -2, -2).translated(-source.topLeft()));
 
     const QString literal = QString::fromUtf8("</article><script>window.injected=1</script> & 世界\r\nnext\rlast\tend");
     const QStringList urls{
@@ -947,17 +1425,27 @@ static void html_edges_case() {
     Json root{{"id", "root"}, {"topic", ""}, {"children", Json::array()},
               {"note", utf8(literal)}, {"tags", Json::array({"<b>tag</b>", "", "<b>tag</b>"})}};
     for (qsizetype i = 0; i < urls.size(); ++i) {
-        const auto id = QString::fromUtf8("世界-") + QString::number(i);
+        const auto id = QString::fromUtf8("世界-\"<&") + QString::number(i);
         root["children"].push_back(utf8(id));
         unsafe["nodes"].push_back({{"id", utf8(id)}, {"topic", "Duplicate"}, {"hyperLink", utf8(urls[i])},
                                    {"image", {{"url", utf8(urls[i])}, {"width", 0}, {"height", 0}}}});
+        unsafe["nodes"].back()["style"] = {{"fontFamily", "Bad';--injected:1;/*\\\""},
+                                          {"color", "red;--injected:1"}, {"background", "url(https://evil.invalid/)"}};
     }
     unsafe["nodes"].push_back(std::move(root));
-    unsafe["crossLinks"].push_back({{"id", "quoted\"<id>"}, {"source", "世界-0"}, {"target", "世界-1"},
+    unsafe["crossLinks"].push_back({{"id", "quoted\"<id>"}, {"source", "世界-\"<&0"}, {"target", "世界-\"<&1"},
                                   {"directed", true}, {"topic", utf8(literal)}, {"icon", "<svg onload='x'>"}});
+    QFont hostileFont(QStringLiteral("Missing'\\\";--injected:1;/*"));
+    hostileFont.setPixelSize(16);
+    editor.setFont(hostileFont);
     CHECK(editor.loadJson(encoded(unsafe)));
-    CHECK(editor.setExpanded(QStringLiteral("root"), false));
+    editor.clearSelection();
     const HtmlPage safe(editor.toHtml());
+    const auto groups = safe.classes(QStringLiteral("m3-cross-link"));
+    CHECK(groups.size() == 1);
+    CHECK(safe.elements[groups.front()].attributes.value(QStringLiteral("data-link-id")) == QStringLiteral("quoted\"<id>"));
+    CHECK(safe.elements[groups.front()].attributes.value(QStringLiteral("data-source")) == QString::fromUtf8("世界-\"<&0"));
+    CHECK(safe.elements[groups.front()].attributes.value(QStringLiteral("data-target")) == QString::fromUtf8("世界-\"<&1"));
     CHECK(safe.values(QStringLiteral("title")) == QStringList{QStringLiteral("(untitled)")});
     CHECK(safe.values(QStringLiteral("h3")).count(QStringLiteral("Duplicate")) == urls.size());
     QString normalized = literal;
@@ -969,6 +1457,18 @@ static void html_edges_case() {
     CHECK(paragraphs.count(QStringLiteral("Tag: <b>tag</b>")) == 2);
     CHECK(paragraphs.contains(QStringLiteral("Icon: <svg onload='x'>")));
     CHECK(paragraphs.contains(QStringLiteral("ID: quoted\"<id>")));
+    CHECK(safe.classes(QStringLiteral("m3-node")).size() == static_cast<size_t>(urls.size() + 1));
+    CHECK(safe.classes(QStringLiteral("m3-link-label")).size() == 1);
+    CHECK(safe.elements[safe.classes(QStringLiteral("m3-link-label")).front()].text == normalized);
+    for (const int index : safe.classes(QStringLiteral("m3-node"))) {
+        const QString id = safe.elements[index].attributes.value(QStringLiteral("data-node-id"));
+        CHECK(safe.elements[index].attributes.value(QStringLiteral("id")) == QStringLiteral("m3-map-node-") + QString::fromLatin1(id.toUtf8().toHex()));
+    }
+    for (const int index : safe.classes(QStringLiteral("m3-topic"))) {
+        const auto style = htmlStyle(safe.elements[index]);
+        CHECK(htmlCssString(style.value(QStringLiteral("font-family"))) == QFontInfo(hostileFont).family());
+        CHECK(!style.contains(QStringLiteral("--injected")));
+    }
     const auto anchors = safe.articleIds();
     CHECK(std::set<QString>(anchors.begin(), anchors.end()).size() == static_cast<size_t>(urls.size() + 1));
     QStringList activated;
@@ -978,18 +1478,26 @@ static void html_edges_case() {
         if (href.startsWith(u'#')) CHECK(anchors.contains(href.mid(1)));
         else activated.append(href);
     }
-    CHECK(activated.size() == 6);
+    CHECK(activated.size() == 9);
     for (qsizetype i = 0; i < urls.size(); ++i) {
         CHECK(paragraphs.contains(QStringLiteral("URL: ") + urls[i]));
         CHECK(paragraphs.contains(QStringLiteral("Image URL: ") + urls[i]));
-        if (i >= 6) CHECK(activated.count(QUrl(urls[i], QUrl::StrictMode).toString(QUrl::FullyEncoded)) == 2);
+        if (i >= 6) CHECK(activated.count(QUrl(urls[i], QUrl::StrictMode).toString(QUrl::FullyEncoded)) == 3);
     }
     CHECK(safe.tags(QStringLiteral("script")).size() == 1);
-    for (const QString &tag : {QStringLiteral("iframe"), QStringLiteral("object"), QStringLiteral("embed"), QStringLiteral("svg")})
+    CHECK(safe.tags(QStringLiteral("svg")).size() == 1 && safe.classes(QStringLiteral("m3-connectors")).size() == 1);
+    for (const QString &tag : {QStringLiteral("iframe"), QStringLiteral("object"), QStringLiteral("embed"),
+                              QStringLiteral("canvas"), QStringLiteral("foreignObject")})
         CHECK(safe.tags(tag).empty());
-    for (const auto &element : safe.elements)
-        for (auto it = element.attributes.begin(); it != element.attributes.end(); ++it)
+    for (const auto &element : safe.elements) {
+        const auto style = htmlStyle(element);
+        CHECK(!style.contains(QStringLiteral("--injected")) && !style.contains(QStringLiteral("background-image")));
+        for (auto it = element.attributes.begin(); it != element.attributes.end(); ++it) {
             CHECK(!it.key().startsWith(QStringLiteral("on"), Qt::CaseInsensitive));
+            if (it.key() == QStringLiteral("href")) CHECK(element.tag == QStringLiteral("a"));
+            if (it.key() == QStringLiteral("src")) CHECK(element.tag == QStringLiteral("img") && it.value().startsWith(QStringLiteral("data:image/png;base64,")));
+        }
+    }
 }
 
 static void markdown_case() {
@@ -2119,9 +2627,9 @@ static void images_case() {
         CHECK(activated.size() == 1 && activated.front().at(1).toString() == QStringLiteral("opaque:anything"));
         QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
         Json expected = exported(editor);
-        const QImage htmlBefore = HtmlPage(editor.toHtml()).image();
+        const HtmlPage htmlBefore(editor.toHtml());
         editor.clearSelection();
-        CHECK(HtmlPage(editor.toHtml()).image() == htmlBefore);
+        sameHtmlMap(HtmlPage(editor.toHtml()), htmlBefore);
         CHECK(editor.selectNode(root));
         selected.clear();
         const QPoint from = imageHandlePoint(editor);
@@ -2134,7 +2642,7 @@ static void images_case() {
         CHECK(imageHasColors(editor, topic, url));
         CHECK(exported(editor) == expected && changed.isEmpty() && selected.isEmpty());
         CHECK(view.transform() == zoom && view.mapToScene(view.viewport()->rect().center()) == center);
-        CHECK(HtmlPage(editor.toHtml()).image() == htmlBefore);
+        sameHtmlMap(HtmlPage(editor.toHtml()), htmlBefore);
         releaseImageResize(editor, to);
         for (auto &node : expected.at("nodes")) if (node.at("id") == "r") {
             node["image"]["width"] = 180;
@@ -2143,7 +2651,12 @@ static void images_case() {
         CHECK(exported(editor) == expected && changed.size() == 1 && selected.isEmpty());
         CHECK(editor.selectedNodeId() == root && view.transform() == zoom);
         checkImageLayout(editor, QSizeF(180, 90));
-        CHECK(HtmlPage(editor.toHtml()).image() != htmlBefore);
+        const HtmlPage htmlAfter(editor.toHtml());
+        const int beforeImage = htmlBefore.classes(QStringLiteral("m3-node-image"), htmlBefore.node(root)).front();
+        const int afterImage = htmlAfter.classes(QStringLiteral("m3-node-image"), htmlAfter.node(root)).front();
+        checkImageSize(htmlRect(htmlBefore.elements[beforeImage]), QSizeF(120, 60));
+        checkImageSize(htmlRect(htmlAfter.elements[afterImage]), QSizeF(180, 90));
+        CHECK(htmlBefore.nodeImage(beforeImage) == htmlAfter.nodeImage(afterImage));
         Editor restored;
         serve(restored);
         CHECK(restored.loadJson(editor.toJson()));
@@ -4641,7 +5154,7 @@ static void branch_color_case() {
         const QTransform zoom = view.transform();
         const QPointF camera = view.mapToScene(view.viewport()->rect().center());
         const HtmlPage html(editor.toHtml());
-        compareHtmlScene(editor, html.image());
+        compareHtmlScene(editor, html);
         CHECK(exported(editor) == finalDocument && editor.selectedNodeId().isEmpty() && editor.selectedLinkId().isEmpty());
         CHECK(view.transform() == zoom && view.mapToScene(view.viewport()->rect().center()) == camera);
     }
@@ -9050,14 +9563,14 @@ static void configuration_case() {
             unchanged();
         };
         configuredFonts();
-        const QSize largeImage = HtmlPage(editor.toHtml()).image().size();
+        const QSizeF largeMap = HtmlPage(editor.toHtml()).size();
         const qreal largeHeight = topicRect(editor, QStringLiteral("Inherited text\nSecond line")).height();
         const QSizeF pixelSize = topicRect(editor, QStringLiteral("Pixel override")).size();
         editor.setStyle({fallback, 9});
         pump();
         CHECK(topicRect(editor, QStringLiteral("Inherited text\nSecond line")).height() < largeHeight);
         CHECK(topicRect(editor, QStringLiteral("Pixel override")).size() == pixelSize);
-        CHECK(HtmlPage(editor.toHtml()).image().height() < largeImage.height());
+        CHECK(HtmlPage(editor.toHtml()).size().height() < largeMap.height());
         unchanged();
         editor.setStyle(config.style);
         QFont hostFont = editor.font();
@@ -10791,7 +11304,7 @@ static void demo_html_case() {
     const HtmlPage page(QString::fromUtf8(bytes));
     CHECK(page.values(QStringLiteral("title")) == QStringList{QString::fromUtf8("HTML saved 世界")});
     CHECK(page.values(QStringLiteral("h3")).contains(QStringLiteral("Delta")));
-    CHECK(page.image() == HtmlPage(editor.toHtml()).image());
+    sameHtmlMap(page, HtmlPage(editor.toHtml()));
     unchanged();
     const QString status = window.statusBar()->currentMessage();
     dialogs({fileResponse(QString(), false)}, [&] { action.trigger(); });
@@ -12369,6 +12882,9 @@ static void orphans_case() {
     const HtmlPage html(editor.toHtml());
     CHECK(html.values(QStringLiteral("title")) == QStringList{QStringLiteral("Main tree")});
     CHECK(html.tags(QStringLiteral("article")).size() == 5);
+    CHECK(html.classes(QStringLiteral("m3-node")).size() == 3);
+    CHECK(html.elements[html.node(orphan)].text.contains(QStringLiteral("Orphan tree")));
+    CHECK(html.classes(QStringLiteral("m3-cross-link")).empty());
     const auto articles = html.tags(QStringLiteral("article"));
     const int mainList = html.elements[html.elements[articles[0]].parent].parent;
     const int orphanList = html.elements[html.elements[articles[2]].parent].parent;
@@ -12378,6 +12894,12 @@ static void orphans_case() {
     editor.findText(QStringLiteral("Deep orphan leaf"), Qt::CaseSensitive);
     CHECK(editor.selectedNodeId() == leaf && !texts(editor, QStringLiteral("Deep orphan leaf")).isEmpty());
     CHECK(exported(editor) == forest && changed.isEmpty());
+    const HtmlPage revealed(editor.toHtml());
+    CHECK(revealed.classes(QStringLiteral("m3-node")).size() == 5);
+    CHECK(revealed.articleIds() == html.articleIds());
+    CHECK(revealed.classes(QStringLiteral("m3-cross-link")).size() == 1);
+    CHECK(revealed.elements[revealed.classes(QStringLiteral("m3-topic"), revealed.node(leaf)).front()].text == QStringLiteral("Deep orphan leaf"));
+    CHECK(htmlRect(revealed.elements[revealed.node(orphan)]).top() > htmlRect(revealed.elements[revealed.node(main)]).bottom());
 
     CHECK(editor.selectNode(child));
     CHECK(editAction(editor, "detachNode").isEnabled());
@@ -12512,6 +13034,10 @@ static void history_case() {
 int main(int argc, char **argv) {
     try {
         if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) qputenv("QT_QPA_PLATFORM", QByteArray("offscreen"));
+#ifdef Q_OS_WIN
+        if (qgetenv("QT_QPA_PLATFORM") == QByteArray("offscreen") && qEnvironmentVariableIsEmpty("QT_QPA_FONTDIR"))
+            qputenv("QT_QPA_FONTDIR", qgetenv("WINDIR") + QByteArray("/Fonts"));
+#endif
         QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
         QApplication application(argc, argv);
         QApplication::setQuitOnLastWindowClosed(false);
