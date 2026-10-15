@@ -492,6 +492,10 @@
         <translation>画像を追加</translation>
     </message>
     <message>
+        <source>Duplicate</source>
+        <translation>複製</translation>
+    </message>
+    <message>
         <source>Copy Link</source>
         <translation>リンクをコピー</translation>
     </message>

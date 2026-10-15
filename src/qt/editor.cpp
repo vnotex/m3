@@ -1640,6 +1640,9 @@ public:
                 const auto node = controller->nodeProperties(nodeId);
                 if (!guard || node.id.isEmpty()) return;
                 menu.addActions({addChild, addSibling, addSiblingBefore});
+                menu.addAction(tr("Duplicate"), host, [this, binding] {
+                    if (validBinding(binding)) controller->duplicateNode(binding.node);
+                })->setEnabled(canFormat());
                 menu.addSeparator();
                 menu.addActions({copySelection, pasteSelection});
                 menu.addSeparator();

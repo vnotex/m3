@@ -492,6 +492,10 @@
         <translation>이미지 추가</translation>
     </message>
     <message>
+        <source>Duplicate</source>
+        <translation>복제</translation>
+    </message>
+    <message>
         <source>Copy Link</source>
         <translation>링크 복사</translation>
     </message>

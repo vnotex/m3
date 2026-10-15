@@ -42,6 +42,7 @@ public:
     QString lastError() const { return error; }
     QString addNode(const QString &parent, const QString &topic, int index);
     QStringList addNodes(const QString &parent, const QByteArray &nodesJson, int index);
+    bool duplicateNode(const QString &id);
     bool renameNode(const QString &id, const QString &topic);
     bool commitTopicEdit(const QString &id, const QString &draft, const QString &previousDraft);
     bool updateNodeProperties(const QString &id, const QByteArray &patch);

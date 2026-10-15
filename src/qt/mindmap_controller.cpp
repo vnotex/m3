@@ -990,6 +990,67 @@ QStringList MindMapController::addNodes(const QString &parent, const QByteArray 
         return ids;
     } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
+bool MindMapController::duplicateNode(const QString &id) {
+    if (!writable() || !strings({id})) return false;
+    try {
+        auto data = Json::parse(currentSnapshot.constData(), currentSnapshot.constData() + currentSnapshot.size());
+        auto &nodes = data.at("nodes");
+        const auto key = utf8(id);
+        const auto source = std::find_if(nodes.begin(), nodes.end(),
+            [&](const Json &node) { return node.at("id") == key; });
+        if (source == nodes.end()) return fail(tr("Node not found"));
+        std::string parent;
+        size_t position = 0;
+        if (data.at("rootId") != key) {
+            for (const auto &node : nodes) {
+                const auto &children = node.at("children");
+                const auto child = std::find(children.begin(), children.end(), key);
+                if (child == children.end()) continue;
+                parent = node.at("id").get<std::string>();
+                position = size_t(std::distance(children.begin(), child)) + 1;
+                break;
+            }
+            if (parent.empty()) {
+                const auto &orphans = data.at("orphanIds");
+                position = size_t(std::distance(orphans.begin(), std::find(orphans.begin(), orphans.end(), key))) + 1;
+            }
+        }
+        const QString created = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        std::unordered_map<std::string, std::string> ids;
+        struct Frame { const std::string *parent; size_t remaining; };
+        std::vector<Frame> pending{{&parent, 1}};
+        return transact([&](M3Mindmap *candidate) {
+            bool first = true;
+            // Canonical snapshots are preorder; child counts bound this subtree.
+            for (auto node = source; !pending.empty(); ++node) {
+                auto &record = *node;
+                const auto children = record.at("children").size();
+                const QString nextId = first ? created : QUuid::createUuid().toString(QUuid::WithoutBraces);
+                const auto &newId = ids.emplace(record.at("id").get<std::string>(), utf8(nextId)).first->second;
+                record["id"] = newId;
+                record["children"] = Json::array();
+                const auto serialized = record.dump();
+                requireStatus(m3_mindmap_insert_node(candidate, pending.back().parent->c_str(),
+                    first ? position : M3_APPEND, serialized.c_str()));
+                if (--pending.back().remaining == 0) pending.pop_back();
+                // References to owned unordered_map values survive rehashing.
+                if (children) pending.push_back({&newId, children});
+                first = false;
+            }
+            for (auto &link : data.at("crossLinks")) {
+                const auto from = ids.find(link.at("source").get_ref<const std::string &>());
+                const auto to = ids.find(link.at("target").get_ref<const std::string &>());
+                if (from == ids.end() || to == ids.end()) continue;
+                link["id"] = utf8(QUuid::createUuid().toString(QUuid::WithoutBraces));
+                link["source"] = from->second;
+                link["target"] = to->second;
+                const auto serialized = link.dump();
+                requireStatus(m3_mindmap_add_link(candidate, serialized.c_str()));
+            }
+            return M3_OK;
+        }, created);
+    } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
+}
 bool MindMapController::renameNode(const QString &id, const QString &topic) {
     if (!writable()) return false;
     if (!strings({id, topic})) return false;
