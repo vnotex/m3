@@ -1573,7 +1573,19 @@ public:
         view->setContextMenuPolicy(Qt::CustomContextMenu);
         QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this, zoomIn, zoomOut, resetZoom, fit, helpAction](const QPoint &point) {
             const QPointer<MindMapEditor> guard(host);
+            const QString linkUrl = view->nodeLinkAt(point);
+            const quint64 linkEpoch = formattingEpoch;
             if (!view->finishTopicEdit(true) || !guard) return;
+            if (!linkUrl.isEmpty()) {
+                if (linkEpoch != formattingEpoch || !host->isEnabled()) return;
+                QMenu menu(host);
+                menu.addAction(tr("Copy Link Address"), host, [this, linkUrl, linkEpoch] {
+                    if (linkEpoch == formattingEpoch && host->isEnabled())
+                        QApplication::clipboard()->setText(linkUrl);
+                });
+                menu.exec(view->viewport()->mapToGlobal(point));
+                return;
+            }
             const QString nodeId = controller->selectedNodeId();
             const bool hasNode = nodeId.isEmpty() == false;
             const QString linkId = controller->selectedLinkId();

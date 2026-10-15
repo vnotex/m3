@@ -1697,6 +1697,12 @@ void MindMapView::resetZoom() {
     zoomFit = false;
     if (wasFit || !qFuzzyCompare(previous, transform().m11())) emit zoomChanged(transform().m11(), false);
 }
+QString MindMapView::nodeLinkAt(const QPoint &position) const {
+    if (selectedNodes.size() > 1) return {};
+    if (auto *indicator = dynamic_cast<NodeLinkItem *>(itemAt(position)))
+        return static_cast<NodeItem *>(indicator->parentItem())->hyperlink;
+    return {};
+}
 QGraphicsItem *MindMapView::targetAt(const QPoint &position) const {
     for (auto *item = itemAt(position); item; item = item->parentItem()) {
         if (auto *handle = dynamic_cast<LinkEndpointHandle *>(item)) return handle->link;
@@ -1975,6 +1981,8 @@ void MindMapView::mousePressEvent(QMouseEvent *event) {
         if (!url.isEmpty()) {
             const QPoint position = event->pos();
             event->accept();
+            // Let the context-menu handler snapshot the hit before a commit moves it.
+            if (event->button() == Qt::RightButton) return;
             // Committing can rebuild the scene; keep only values from the original hit.
             QPointer<MindMapView> guard(this);
             if (!finishTopicEdit(true) || !guard) return;

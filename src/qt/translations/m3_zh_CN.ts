@@ -492,6 +492,10 @@
         <translation>添加图像</translation>
     </message>
     <message>
+        <source>Copy Link Address</source>
+        <translation>复制链接地址</translation>
+    </message>
+    <message>
         <source>Add Icons</source>
         <translation>添加图标</translation>
     </message>

@@ -492,6 +492,10 @@
         <translation>画像を追加</translation>
     </message>
     <message>
+        <source>Copy Link Address</source>
+        <translation>リンクのアドレスをコピー</translation>
+    </message>
+    <message>
         <source>Add Icons</source>
         <translation>アイコンを追加</translation>
     </message>

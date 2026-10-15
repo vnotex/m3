@@ -88,6 +88,8 @@ The expand/collapse circle and create-link button highlight on hover using the c
 
 A node with a URL shows a chain-link indicator (Lucide `link`) beside its topic. Clicking it emits `nodeLinkActivated`; the host decides how to open the URL. The expansion button, create-link button and URL indicator share a 20×20 logical-pixel box at 100% zoom and scale together with the node.
 
+Right-click a node's URL indicator and choose **Copy Link Address** to copy its stored URL verbatim, including relative paths, without opening it. This works in read-only maps and does not depend on which node is selected. Node bodies, empty canvas, cross-links and multi-selections retain their usual context menus.
+
 The link context menu contains **Rename/Edit**, a separator, the exclusive direction choices `---`, `<---`, `--->`, `<--->`, another separator, and **Delete**. Arrows refer to stored source/target order, not left/right screen positions. **Link properties** remains in the toolbar. Direction choices preserve endpoint order and unrelated metadata. Native JSON retains reverse/both arrows in `style.arrowDirection` (`"backward"`/`"both"`) with `directed: true`; without either recognized value, `directed` retains its usual forward/undirected rendering. The Qt view and HTML export honor this style; core projections do not interpret Qt styles. Endpoint squares are selection UI only and are never saved or exported.
 
 For shared-library builds, make the m3 runtime libraries available to your application; the Qt editor also needs its matching Qt runtime and plugins. See the installed-package [core consumer](tests/consumer/CMakeLists.txt) and [Qt consumer](tests/qt_consumer/CMakeLists.txt) examples for linking and Windows DLL copying.
