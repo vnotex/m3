@@ -1600,6 +1600,8 @@ public:
                 if (!guard || node.id.isEmpty()) return;
                 menu.addActions({addChild, addSibling, addSiblingBefore});
                 menu.addSeparator();
+                menu.addActions({copySelection, pasteSelection});
+                menu.addSeparator();
                 menu.addAction(editSelection);
                 menu.addAction(tr("Add URL"), host, [this, nodeId] {
                     if (!controller->isReadOnly()) host->onAddUrl(nodeId);
@@ -1679,10 +1681,9 @@ public:
                 menu.addSeparator();
                 menu.addAction(helpAction);
             }
-            if (hasNode || !linkId.isEmpty() || controller->selectedNodeIds().size() > 1) {
+            if (!linkId.isEmpty() || controller->selectedNodeIds().size() > 1) {
                 menu.addSeparator();
                 menu.addAction(copySelection);
-                if (hasNode) menu.addAction(pasteSelection);
             }
             const auto *chosen = menu.exec(globalPoint);
             if (guard && chosen && validBinding(binding)) {
