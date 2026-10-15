@@ -253,6 +253,10 @@ struct EditorConfig {
     // Enabled by default. Creation only: loading/moving nodes never recolors them.
     // The setting is copied, not persisted; each assigned branchColor is persisted.
     bool autoRandomBranchColor = true;
+    // Display-only hierarchy numbers; every tree root remains unnumbered.
+    bool autoSectionNumbering = true;
+    // Supported patterns: "1.1", "1.1.", "1.1)"; other values use "1.1.".
+    QString sectionNumberPattern = QStringLiteral("1.1.");
     // Construction-time placement of the editor's sole node-properties panel.
     // False embeds an initially collapsed card; true leaves presentation to the host.
     // Not persisted in the document and not changeable on an existing editor.
@@ -270,6 +274,8 @@ public:
     ~MindMapEditor() override;
     // GUI-thread appearance/policy changes; no document edit or draft commit.
     void setStyle(const EditorConfig::Style &style);
+    // Applies both numbering preferences in one refresh; unchanged normalized values are a no-op.
+    void setSectionNumbering(bool enabled, const QString &pattern);
     // Lowering a positive limit discards excess undo/redo states; 0 is unlimited.
     void setUndoLimit(int limit);
     void setConfirmSubtreeDeletion(bool enabled);

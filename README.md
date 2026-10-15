@@ -78,6 +78,12 @@ target_link_libraries(my_app PRIVATE m3::qt_editor)
 
 Right-click empty canvas and choose **Add Orphan Node** to start an independent tree. Add children normally, or use **Detach Subtree** on an attached node to make its whole branch independent. Drag an orphan root onto a node, or use **Move**, to reattach it. All trees support folding, properties, cross-links, undo/redo and save/reopen. Layout arranges the trees independently in a vertical stack; **Focus Main Node** still targets the main tree. Only that main root is protected from moving or deletion.
 
+Automatic section numbering is enabled by default. Main and orphan roots remain unnumbered;
+each tree starts its children at `1.`, with nested labels such as `1.1. Topic`. Hosts can disable
+`EditorConfig::autoSectionNumbering` or choose `sectionNumberPattern` (`1.1`, `1.1.`, `1.1)`).
+`setSectionNumbering(enabled, pattern)` changes both live. Numbers are display-only, including
+in the HTML visual map: stored topics, inline edits and semantic exports remain unchanged.
+
 Shift-click or Ctrl-click nodes to toggle them in a multi-selection. A plain click selects one node; Escape or an empty-space click clears the selection. With multiple nodes selected, **Delete** is the only mutating action: properties and editing handles are hidden, and right-clicking a selected member offers Delete and Copy. Deletion asks once, removes selected subtrees and their incident links, and counts overlapping ancestor/descendant selections once. Delete is disabled if the root is selected. Hosts can query `selectedNodeIds()`; `selectedNodeId()` is empty for a multi-selection, and `selectionChanged` still fires for every membership change.
 
 The single-node context menu groups creation (including **Duplicate**) first, **Copy/Paste** second, then editing/appearance, folding, and structural operations. Clipboard actions retain their shortcuts and enablement rules; Paste is disabled in read-only maps.

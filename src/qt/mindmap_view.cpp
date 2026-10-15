@@ -264,7 +264,7 @@ HtmlText htmlText(QTextDocument &document, const QPointF &position, const QColor
 }
 class NodeItem final : public QGraphicsItem {
 public:
-    QString id, hyperlink;
+    QString id, topic, hyperlink;
     bool expanded, hasChildren;
     bool dropTarget = false;
     QRectF rect;
@@ -275,7 +275,8 @@ public:
     std::optional<NodeImage> image;
     NodeImageItem *imageItem = nullptr;
     NodeItem(NodePresentation node, const QPalette &palette, HtmlNode *html = nullptr)
-        : id(node.id), hyperlink(node.hyperlink), expanded(node.expanded), hasChildren(node.hasChildren),
+        : id(node.id), topic(std::move(node.topic)), hyperlink(node.hyperlink),
+          expanded(node.expanded), hasChildren(node.hasChildren),
           rect(QPointF(), node.rectangle.size()), colors(palette),
           backgroundColor(node.style.backgroundColor.isValid() ? node.style.backgroundColor : palette.color(QPalette::Button)),
           branchColor(node.style.branchColor) {
@@ -411,6 +412,11 @@ private:
     }
     bool expansionHovered = false;
 };
+QString semanticTopic(const QGraphicsTextItem *label) {
+    // Node labels may include display-only numbering; link labels remain authored text.
+    if (const auto *node = dynamic_cast<const NodeItem *>(label->parentItem())) return node->topic;
+    return label->toPlainText();
+}
 QRectF placeLabel(const QRectF &initial, const std::vector<QRectF> &occupied) {
     auto collision = [&](const QRectF &candidate) {
         return std::find_if(occupied.begin(), occupied.end(), [&](const QRectF &obstacle) {
@@ -864,7 +870,7 @@ void MindMapView::beginTopicEdit(TopicKind kind, const QString &id, const QList<
     editedKind = kind;
     topicLabel = label;
     topicLabelVisible = label->isVisible();
-    originalTopic = topicLabel->toPlainText();
+    originalTopic = semanticTopic(topicLabel);
     originalTopicDraft = originalTopic;
     if (kind == TopicKind::Node) originalTopicDraft.replace(QChar('#'), QStringLiteral("##"));
     auto *input = new QPlainTextEdit(viewport());
@@ -941,7 +947,7 @@ bool MindMapView::finishTopicEdit(bool commit, bool restoreFocus, bool keepEditi
                 return accepted;
             }
             if (accepted) {
-                originalTopic = topicLabel->toPlainText();
+                originalTopic = semanticTopic(topicLabel);
                 originalTopicDraft = draft;
             }
             topicLabelVisible = topicLabel->isVisible();
@@ -1424,7 +1430,8 @@ void MindMapView::prepare(NodePresentation &node) const {
         text->setTextWidth(qMin(maximumWidth, qMax(qreal(1), text->idealWidth())));
         return text;
     };
-    node.text = prepareText(node.topic, textFont, 240);
+    node.text = prepareText(node.sectionNumber.isEmpty() ? node.topic : node.sectionNumber + node.topic,
+                            textFont, 240);
     const QString icons = node.icons.join(QLatin1Char(' '));
     node.iconText = icons.trimmed().isEmpty() ? nullptr : prepareText(icons, textFont, 240);
     const QSizeF textSize = node.text->size();
@@ -1495,7 +1502,7 @@ void MindMapView::install(Presentation presentation, bool resetCamera) {
     QGraphicsTextItem *replacementLabel = topicEditor ? findTopicLabel(replacement.get(), editedId, editedKind) : nullptr;
     const QPointF center = sceneCenter(*this, viewport()->size());
     if (topicEditor && (!finishingTopicEdit || resetCamera)) {
-        if (resetCamera || !replacementLabel || replacementLabel->toPlainText() != originalTopic) {
+        if (resetCamera || !replacementLabel || semanticTopic(replacementLabel) != originalTopic) {
             QPointer<MindMapView> guard(this);
             finishTopicEdit(false);
             if (!guard) return;

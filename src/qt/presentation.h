@@ -52,6 +52,8 @@ struct NodeTagPresentation {
 };
 struct NodePresentation {
     QString id, topic, hyperlink;
+    // Visual prefix only, including its trailing space; topic stays authored text.
+    QString sectionNumber;
     QStringList icons;
     std::vector<NodeTagPresentation> tags;
     // root protects the main node; treeRoot gives every independent root its appearance.

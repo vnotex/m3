@@ -1833,6 +1833,11 @@ void MindMapEditor::setStyle(const EditorConfig::Style &style) {
     d->config.style = style;
     d->view->setStyle(style);
 }
+void MindMapEditor::setSectionNumbering(bool enabled, const QString &pattern) {
+    d->config.autoSectionNumbering = enabled;
+    d->config.sectionNumberPattern = pattern;
+    d->controller->setSectionNumbering(enabled, pattern);
+}
 void MindMapEditor::setUndoLimit(int limit) {
     d->config.undoLimit = qMax(0, limit);
     d->controller->setUndoLimit(d->config.undoLimit);

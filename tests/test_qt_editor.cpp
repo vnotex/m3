@@ -91,6 +91,17 @@
 
 using Editor = m3::qt::MindMapEditor;
 
+// Existing rendering fixtures exercise authored labels, not automatic decoration.
+struct RawLabelConfig : m3::qt::EditorConfig {
+    RawLabelConfig() { autoSectionNumbering = false; }
+};
+class RawLabelEditor : public Editor {
+public:
+    explicit RawLabelEditor(QWidget *parent = nullptr) : Editor(RawLabelConfig{}, parent) {}
+    explicit RawLabelEditor(const m3::qt::EditorConfig &config, QWidget *parent = nullptr)
+        : Editor(config, parent) {}
+};
+
 static QString qs(const Json &value) {
     const auto &text = value.get_ref<const std::string &>();
     return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
@@ -98,9 +109,9 @@ static QString qs(const Json &value) {
 static std::string utf8(const QString &text) { return text.toUtf8().toStdString(); }
 static QByteArray encoded(const Json &value) { return QByteArray::fromStdString(value.dump()); }
 // A real host override reached only through the native action/drag boundary.
-class MimeEditor : public Editor {
+class MimeEditor : public RawLabelEditor {
 public:
-    using Editor::Editor;
+    using RawLabelEditor::RawLabelEditor;
     QStringList targets;
     QList<MimeInsertionSource> origins;
     std::function<void()> insertion;
@@ -543,6 +554,7 @@ static QPoint curvePoint(Editor &editor, const QString &label, const std::vector
 static Editor &embedded(DemoWindow &window) {
     auto *editor = qobject_cast<Editor *>(window.centralWidget());
     CHECK(editor != nullptr);
+    editor->setSectionNumbering(false, QStringLiteral("1.1."));
     return *editor;
 }
 static void writeFile(const QString &path, const QByteArray &bytes) {
@@ -1316,7 +1328,7 @@ static void html_case() {
     QString retained;
     const QString root = QString::fromUtf8("Literal <script>世界</script>");
     {
-        Editor editor;
+        RawLabelEditor editor;
         htmlAppearance(editor);
         Json input = editorFixture();
         setTopic(input, "r", root);
@@ -1463,7 +1475,7 @@ static void html_case() {
     CHECK(saved.values(QStringLiteral("title")) == QStringList{root});
     CHECK(saved.classValues(QStringLiteral("m3-article-topic"), saved.article(QStringLiteral("r"))) == QStringList{root});
     {
-        Editor editor;
+        RawLabelEditor editor;
         htmlAppearance(editor);
         const QString topic = QString::fromUtf8("Image <b>世界</b>\n  second\tline");
         Json input = imageDocument();
@@ -1518,9 +1530,9 @@ static void html_case() {
     }
     QString retainedImages;
     {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.initialVisibleLevels = 2;
-        Editor editor(config);
+        RawLabelEditor editor(config);
         const Json input{{"schemaVersion", 1}, {"rootId", "r"}, {"nodes", Json::array({
             {{"id", "r"}, {"topic", "Visible image"}, {"children", Json::array({"a"})},
              {"image", {{"url", "memory:shared"}, {"width", 48}, {"height", 32}}}},
@@ -1594,9 +1606,9 @@ static void html_case() {
 }
 
 static void html_edges_case() {
-    m3::qt::EditorConfig config;
+    RawLabelConfig config;
     config.initialVisibleLevels = 0;
-    Editor editor(config);
+    RawLabelEditor editor(config);
     htmlAppearance(editor);
     Json linked = editorFixture();
     setTopic(linked, "c", QStringLiteral("Gamma"));
@@ -1898,7 +1910,7 @@ static void html_edges_case() {
 static void markdown_case() {
     QString retained;
     {
-        Editor editor;
+        RawLabelEditor editor;
         Json input = editorFixture();
         setTopic(input, "r", QString::fromUtf8("Literal *世界* <br>"));
         CHECK(editor.loadJson(encoded(input)));
@@ -1967,7 +1979,7 @@ static void visibleLevels(Editor &editor, int levels) {
 
 static void document_case() {
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(fiveLevelFixture())));
         showEditor(editor);
         visibleLevels(editor, 3);
@@ -2039,7 +2051,7 @@ static void document_case() {
         }
     }
     {
-        Editor edgeToEdge;
+        RawLabelEditor edgeToEdge;
         // Host themes may style all scroll areas, independently of QFrame::NoFrame.
         edgeToEdge.setStyleSheet(QStringLiteral(
             "QAbstractScrollArea { border: 5px solid palette(mid); padding: 7px; }"));
@@ -2048,7 +2060,7 @@ static void document_case() {
         CHECK(view.geometry() == edgeToEdge.rect());
         CHECK(view.viewport()->geometry().topLeft() == QPoint(0, 0));
     }
-    Editor editor;
+    RawLabelEditor editor;
     CHECK(editor.findChildren<QToolBar *>().isEmpty());
     CHECK(!editor.findChild<QComboBox *>(QStringLiteral("layoutDirection")));
     CHECK(!editor.commandAction(QString()) && !editor.commandAction(QStringLiteral("missingCommand")));
@@ -2069,7 +2081,7 @@ static void document_case() {
     CHECK(selected.size() == 1);
     CHECK(selected.back().at(0).toString() == QStringLiteral("r"));
     CHECK(selected.back().at(1).toString().isEmpty());
-    Editor second;
+    RawLabelEditor second;
     CHECK(second.loadJson(editor.toJson()));
     CHECK(exported(second) == expected);
     CHECK(record(exported(second), "nodes", QStringLiteral("r")).at("tags") == Json({"x", "y", "x"}));
@@ -2131,7 +2143,7 @@ static void document_case() {
     CHECK(changed.size() == 4);
 
     for (const auto &blank : {QByteArray(), QByteArray(" \t\r\n")}) {
-        Editor emptyInput;
+        RawLabelEditor emptyInput;
         CHECK(emptyInput.loadJson(encoded(input)));
         showEditor(emptyInput);
         CHECK(emptyInput.renameNode(QStringLiteral("a"), QStringLiteral("First edit")));
@@ -2155,14 +2167,14 @@ static void document_case() {
         const auto *rootLabel = textItem(emptyInput, QStringLiteral("Central topic"));
         const auto rootRect = view.mapFromScene(rootLabel->sceneBoundingRect()).boundingRect();
         CHECK(view.viewport()->rect().contains(rootRect));
-        Editor reopened;
+        RawLabelEditor reopened;
         CHECK(reopened.loadJson(emptyInput.toJson()));
         CHECK(exported(reopened) == initial);
         CHECK(!emptyInput.addNode(QStringLiteral("root"), QStringLiteral("Child")).isEmpty());
         CHECK(emptyInput.undo() && exported(emptyInput) == initial);
     }
     {
-        Editor readOnly;
+        RawLabelEditor readOnly;
         CHECK(readOnly.loadJson(encoded(input)));
         readOnly.setReadOnly(true);
         CHECK(readOnly.loadJson(QByteArray()));
@@ -2179,7 +2191,7 @@ static void document_case() {
         host.resize(1000, 700);
         host.show();
         pump();
-        Editor embedded(&host);
+        RawLabelEditor embedded(&host);
         CHECK(embedded.loadJson(QByteArray()));
         embedded.show();
         // The host attaches the already-shown child before returning to the event loop.
@@ -2229,7 +2241,7 @@ static void document_case() {
         host.resize(1000, 700);
         host.show();
         pump();
-        Editor embedded(&host);
+        RawLabelEditor embedded(&host);
         embedded.resize(0, 0);
         CHECK(embedded.setLayoutDirection(direction));
         embedded.zoom(2.0);
@@ -2271,7 +2283,7 @@ static void tree_edits_case() {
         entry["style"] = Json::parse(R"({"custom":{"nested":[true,3,"世界"]}})");
         entry["icons"] = Json({"bookmark"});
     }
-    Editor editor;
+    RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(input)));
     const Json original = exported(editor);
     QSignalSpy changed(&editor, &Editor::documentChanged);
@@ -2324,7 +2336,7 @@ static void tree_edits_case() {
     CHECK(editor.lastError().isEmpty());
 
     for (int index : {-1, 0}) {
-        Editor batch;
+        RawLabelEditor batch;
         CHECK(batch.loadJson(encoded(input)) && batch.selectNode(QStringLiteral("b")));
         const Json before = exported(batch);
         const Json records = Json::parse(R"([{"topic":"First","hyperLink":"docs/a%20b%23%25.txt",
@@ -2351,7 +2363,7 @@ static void tree_edits_case() {
         CHECK(batch.redo() && exported(batch) == observed && !batch.canRedo());
     }
     for (int selectionKind = 0; selectionKind < 3; ++selectionKind) {
-        Editor batch;
+        RawLabelEditor batch;
         CHECK(batch.loadJson(encoded(input)));
         showEditor(batch);
         CHECK(batch.setExpanded(QStringLiteral("a"), false));
@@ -2375,7 +2387,7 @@ static void tree_edits_case() {
         CHECK(texts(batch, QStringLiteral("Hidden second")).isEmpty());
     }
     {
-        Editor batch;
+        RawLabelEditor batch;
         CHECK(batch.loadJson(encoded(input)) && batch.selectNode(QStringLiteral("b")));
         const QByteArray valid = R"([{"topic":"First"},{"topic":"Second"}])";
         const QList<QByteArray> invalid{
@@ -2403,7 +2415,7 @@ static void tree_edits_case() {
         CHECK(exported(batch).at("orphanIds") == Json({utf8(orphans[0]), utf8(orphans[1])}));
     }
     {
-        Editor batch;
+        RawLabelEditor batch;
         QStringList palette;
         for (auto *button : batch.findChildren<QToolButton *>())
             if (button->property("color").isValid()) palette.append(button->property("color").toString());
@@ -2444,7 +2456,7 @@ static void tree_edits_case() {
 }
 
 static void collapse_case() {
-    Editor editor;
+    RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(editorFixture())));
     const Json original = exported(editor);
     QSignalSpy changed(&editor, &Editor::documentChanged);
@@ -2499,7 +2511,7 @@ static void collapse_case() {
     CHECK(changed.size() == 2 && editor.selectNode(hidden));
     rejectUnchanged(editor, [&] { return editor.setExpanded(QStringLiteral("absent"), false); });
     {
-        Editor cursor;
+        RawLabelEditor cursor;
         CHECK(cursor.loadJson(encoded(editorFixture())));
         CHECK(cursor.renameNode(QStringLiteral("r"), QStringLiteral("Current")));
         CHECK(cursor.renameNode(QStringLiteral("r"), QStringLiteral("Future")));
@@ -2539,9 +2551,9 @@ static void collapse_case() {
         {"id":"ox","topic":"Deep Orphan"}],"crossLinks":[
         {"id":"cross","source":"ax","target":"bx","directed":false,"topic":"Cross branch"}]})");
     for (bool readOnly : {false, true}) {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.initialVisibleLevels = 0;
-        Editor subtree(config);
+        RawLabelEditor subtree(config);
         CHECK(subtree.loadJson(encoded(forest)));
         CHECK(subtree.renameNode(QStringLiteral("r"), QStringLiteral("Current root")));
         CHECK(subtree.renameNode(QStringLiteral("r"), QStringLiteral("Future root")));
@@ -2633,7 +2645,7 @@ static void collapse_case() {
 }
 
 static void graph_edits_case() {
-    Editor editor;
+    RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(editorFixture())));
     const Json original = exported(editor);
     QSignalSpy changed(&editor, &Editor::documentChanged);
@@ -2705,7 +2717,7 @@ static void graph_edits_case() {
 }
 
 static void lifetime_case() {
-    Editor survivor;
+    RawLabelEditor survivor;
     CHECK(survivor.newDocument(QStringLiteral("Independent survivor")));
     const Json untouched = exported(survivor);
     QSignalSpy survivorChanges(&survivor, &Editor::documentChanged);
@@ -2713,7 +2725,7 @@ static void lifetime_case() {
     Json retainedDocument;
     for (int iteration = 0; iteration < 24; ++iteration) {
         auto parent = std::make_unique<QWidget>();
-        auto *editor = new Editor(parent.get());
+        auto *editor = new RawLabelEditor(parent.get());
         QPointer<Editor> observer(editor);
         CHECK(editor->loadJson(encoded(editorFixture())));
         const QString id = editor->addNode(QStringLiteral("a"), QStringLiteral("Owned %1").arg(iteration));
@@ -2745,7 +2757,7 @@ static void lifetime_case() {
     CHECK(survivorChanges.size() == 1);
     const Json snapshot = exported(survivor);
     {
-        Editor other;
+        RawLabelEditor other;
         CHECK(other.loadJson(retained));
         CHECK(other.renameNode(QStringLiteral("r"), QStringLiteral("Other editor only")));
         CHECK(other.removeNode(QStringLiteral("a")));
@@ -2753,7 +2765,7 @@ static void lifetime_case() {
     }
     CHECK(survivor.renameNode(QStringLiteral("r"), QStringLiteral("Still alive")));
     CHECK(survivorChanges.size() == 2);
-    Editor restored;
+    RawLabelEditor restored;
     CHECK(restored.loadJson(retained));
     CHECK(exported(restored) == retainedDocument);
 }
@@ -2770,7 +2782,7 @@ static void image_activation_case() {
         CHECK(editor.selectNode(root));
     };
     for (bool readOnly : {false, true}) {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor);
         CHECK(editor.renameNode(QStringLiteral("a"), QStringLiteral("First history entry")));
         CHECK(editor.renameNode(QStringLiteral("a"), QStringLiteral("Second history entry")));
@@ -2796,7 +2808,7 @@ static void image_activation_case() {
         checkImageSize(nodeImageRect(editor), QSizeF(120, 60));
     }
     for (bool failed : {false, true}) {
-        Editor editor;
+        RawLabelEditor editor;
         if (failed) QObject::connect(&editor, &Editor::imageRequested, &editor,
             [&editor](const QString &source, quint64 id) { editor.provideImage(source, id, QImage()); });
         CHECK(editor.loadJson(encoded(imageDocument())));
@@ -2811,7 +2823,7 @@ static void image_activation_case() {
         CHECK(!activeTopicInput(editor) && !editor.canUndo() && !editor.canRedo());
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor);
         auto &view = graphics(editor);
         const Json before = exported(editor);
@@ -2851,7 +2863,7 @@ static void image_activation_case() {
         checkImageSize(nodeImageRect(editor), QSizeF(120, 60));
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor);
         // Qt's default right-button double-click handling can change scene selection;
         // keep it separate from the selected-image handle scenarios above.
@@ -2864,7 +2876,7 @@ static void image_activation_case() {
         CHECK(!activeTopicInput(editor) && !editor.canUndo() && !editor.canRedo());
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor);
         bool replaced = false;
         QObject::connect(&editor, &Editor::nodeImageActivated, &editor, [&](const QString &id, const QImage &image) {
@@ -2912,7 +2924,7 @@ static void images_case() {
             [&editor, pixels](const QString &source, quint64 id) { editor.provideImage(source, id, pixels); });
     };
     {
-        Editor editor;
+        RawLabelEditor editor;
         std::vector<std::pair<QString, quint64>> requests;
         QObject::connect(&editor, &Editor::imageRequested, &editor,
             [&](const QString &source, quint64 id) { requests.emplace_back(source, id); });
@@ -2954,7 +2966,7 @@ static void images_case() {
     for (const auto &sizes : std::vector<std::pair<QSizeF, QSizeF>>{
              {QSizeF(90, 0), QSizeF(90, 67.5)}, {QSizeF(0, 60), QSizeF(80, 60)},
              {QSizeF(90, 90), QSizeF(90, 90)}, {QSizeF(1e300, 1e300), QSizeF(4096, 4096)}}) {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(imageDocument(url, sizes.first.width(), sizes.first.height()))));
         showEditor(editor);
         const Json before = exported(editor);
@@ -2962,7 +2974,7 @@ static void images_case() {
         CHECK(imageHandle(editor) == nullptr && exported(editor) == before);
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         const QImage large = imagePixels(QColor(231, 37, 53), QColor(29, 71, 223), QSize(480, 240));
         QObject::connect(&editor, &Editor::imageRequested, &editor, [&](const QString &source, quint64 id) {
             editor.provideImage(source, id, large);
@@ -2975,7 +2987,7 @@ static void images_case() {
               Json({{"url", utf8(url)}, {"width", 0}, {"height", 0}}));
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(imageDocument())));
         showEditor(editor);
         checkImageSize(nodeImageRect(editor), QSizeF(120, 90));
@@ -2990,7 +3002,7 @@ static void images_case() {
     }
     // Metadata is a proportional box, never a stretch or a semantic default-size write.
     for (const QSizeF stored : {QSizeF(90, 0), QSizeF(90, 90), QSizeF(0, 45), QSizeF(1e300, 1e300)}) {
-        Editor editor;
+        RawLabelEditor editor;
         serve(editor);
         CHECK(editor.loadJson(encoded(imageDocument(url, stored.width(), stored.height()))));
         showEditor(editor);
@@ -3001,7 +3013,7 @@ static void images_case() {
         CHECK(exported(editor) == before && changed.isEmpty());
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         serve(editor);
         Json input = imageDocument();
         for (auto &node : input.at("nodes")) if (node.at("id") == "a")
@@ -3052,7 +3064,7 @@ static void images_case() {
         checkImageSize(htmlRect(htmlBefore.elements[beforeImage]), QSizeF(120, 60));
         checkImageSize(htmlRect(htmlAfter.elements[afterImage]), QSizeF(180, 90));
         CHECK(htmlBefore.nodeImage(beforeImage) == htmlAfter.nodeImage(afterImage));
-        Editor restored;
+        RawLabelEditor restored;
         serve(restored);
         CHECK(restored.loadJson(editor.toJson()));
         showEditor(restored);
@@ -3080,7 +3092,7 @@ static void images_case() {
         CHECK(view.mapToScene(view.viewport()->rect().center()) != panCenter && exported(editor) == beforePan);
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         serve(editor);
         CHECK(editor.loadJson(encoded(imageDocument())));
         showEditor(editor, QSize(1200, 900));
@@ -3120,7 +3132,7 @@ static void images_case() {
     enum class Cancel { Escape, Url, Replace, Focus, NoButtons, Ungrab, Hide, Selection, Reload };
     for (auto cancel : {Cancel::Escape, Cancel::Url, Cancel::Replace, Cancel::Focus, Cancel::NoButtons,
                         Cancel::Ungrab, Cancel::Hide, Cancel::Selection, Cancel::Reload}) {
-        Editor editor;
+        RawLabelEditor editor;
         serve(editor);
         CHECK(editor.loadJson(encoded(imageDocument())));
         showEditor(editor, QSize(1200, 900));
@@ -3168,7 +3180,7 @@ static void images_case() {
         if (cancel == Cancel::Escape) CHECK(editor.selectedNodeId() == root);
     }
     {
-        QPointer<Editor> editor = new Editor;
+        QPointer<Editor> editor = new RawLabelEditor;
         serve(*editor);
         CHECK(editor->loadJson(encoded(imageDocument())));
         showEditor(*editor, QSize(1200, 900));
@@ -3186,7 +3198,7 @@ static void images_case() {
         CHECK(committed && editor.isNull());
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         std::vector<std::pair<QString, quint64>> requests;
         QObject::connect(&editor, &Editor::imageRequested, &editor,
             [&](const QString &source, quint64 id) { requests.emplace_back(source, id); });
@@ -3226,7 +3238,7 @@ static void images_case() {
         CHECK(exported(editor) == retained && changed.isEmpty());
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         Json input = imageDocument();
         for (auto &node : input.at("nodes")) if (node.at("id") == "a")
             node["image"] = Json{{"url", utf8(url)}, {"width", 0}, {"height", 0}};
@@ -3242,7 +3254,7 @@ static void images_case() {
         CHECK(requests.size() == 1 && imageHasColors(editor, QStringLiteral("Alpha"), url));
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         Json input = imageDocument();
         for (auto &node : input.at("nodes")) if (node.at("id") == "d")
             node["image"] = Json{{"url", "memory:hidden"}, {"width", 0}, {"height", 0}};
@@ -3262,7 +3274,7 @@ static void images_case() {
         CHECK(requests.size() == 2 && imageHasColors(editor, QStringLiteral("Delta"), QStringLiteral("memory:hidden")));
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         Json input = imageDocument(QStringLiteral("memory:old-root"));
         for (auto &node : input.at("nodes")) if (node.at("id") == "a")
             node["image"] = Json{{"url", "memory:old-child"}, {"width", 0}, {"height", 0}};
@@ -3279,7 +3291,7 @@ static void images_case() {
         CHECK(exported(editor) == nativeDocument(imageDocument(QStringLiteral("memory:current"))));
     }
     {
-        QPointer<Editor> editor = new Editor;
+        QPointer<Editor> editor = new RawLabelEditor;
         Json input = imageDocument();
         for (auto &node : input.at("nodes")) if (node.at("id") == "a")
             node["image"] = Json{{"url", "memory:second"}, {"width", 0}, {"height", 0}};
@@ -3311,7 +3323,7 @@ static void render_case() {
     }
     input["crossLinks"].push_back({{"id", "reverse"}, {"source", "b"}, {"target", "a"},
                                    {"directed", true}, {"topic", "Reverse route"}});
-    Editor editor;
+    RawLabelEditor editor;
     QFont font(QStringLiteral("Arial"));
     font.setPixelSize(15);
     editor.setFont(font);
@@ -3498,7 +3510,7 @@ static void render_case() {
 
     // A directed endpoint must add painted arrow geometry, not merely retain
     // the directed boolean in the document. Compare only a loose endpoint area.
-    Editor arrowEditor;
+    RawLabelEditor arrowEditor;
     arrowEditor.setFont(font);
     arrowEditor.setPalette(palette);
     CHECK(arrowEditor.loadJson(QByteArray(R"({"schemaVersion":1,"rootId":"r","nodes":[{"id":"r","topic":"Arrow root","children":["n"]},{"id":"n","topic":"Arrow target"}],"crossLinks":[]})")));
@@ -3544,7 +3556,7 @@ static void routing_case() {
         {"id":"loop2","source":"c","target":"c","directed":true,"topic":"Middle loop"},
         {"id":"loop3","source":"c","target":"c","directed":true,"topic":"Outer loop"},
         {"id":"child","source":"f","target":"a","directed":false,"topic":"Child link"}]})");
-    Editor editor;
+    RawLabelEditor editor;
     QFont font(QStringLiteral("Arial"));
     font.setPixelSize(15);
     editor.setFont(font);
@@ -3599,7 +3611,7 @@ static void routing_case() {
 }
 
 static void empty_space_panning_case() {
-    Editor editor;
+    RawLabelEditor editor;
     showEditor(editor);
     auto &view = graphics(editor);
     const Json original = exported(editor);
@@ -3715,7 +3727,7 @@ static void node_drag_case() {
         pump();
     };
     {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor);
         CHECK(editor.moveNode(QStringLiteral("c"), b));
         assertFit(editor);
@@ -3755,7 +3767,7 @@ static void node_drag_case() {
     enum class Invalid { RootSource, Descendant, Self, Parent, Blank, Link, Outside };
     for (auto invalid : {Invalid::RootSource, Invalid::Descendant, Invalid::Self, Invalid::Parent,
                          Invalid::Blank, Invalid::Link, Invalid::Outside}) {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor);
         auto &view = graphics(editor);
         const Json before = exported(editor);
@@ -3785,7 +3797,7 @@ static void node_drag_case() {
         CHECK(editor.selectedNodeId() == sourceId);
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor);
         auto &view = graphics(editor);
         Json expected = exported(editor);
@@ -3819,7 +3831,7 @@ static void node_drag_case() {
         CHECK(changed.size() == 1 && errors.isEmpty());
     }
     for (bool jitter : {false, true}) {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor);
         auto &view = graphics(editor);
         const Json before = exported(editor);
@@ -3836,7 +3848,7 @@ static void node_drag_case() {
     enum class Cancel { EscapeViewport, EscapeView, NoButtons, FocusView, FocusViewport, Ungrab, Hide, Replace };
     for (auto cancel : {Cancel::EscapeViewport, Cancel::EscapeView, Cancel::NoButtons, Cancel::FocusView,
                         Cancel::FocusViewport, Cancel::Ungrab, Cancel::Hide, Cancel::Replace}) {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor);
         auto &view = graphics(editor);
         Json expected = exported(editor);
@@ -3885,7 +3897,7 @@ static void node_drag_case() {
         }
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor);
         CHECK(editor.setExpanded(b, false));
         assertFit(editor);
@@ -3904,7 +3916,7 @@ static void node_drag_case() {
         CHECK(!texts(editor, alpha).isEmpty() && !texts(editor, delta).isEmpty());
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor);
         auto &view = graphics(editor);
         Json expected = exported(editor);
@@ -3927,7 +3939,7 @@ static void node_drag_case() {
         CHECK(changed.size() == 2 && errors.isEmpty() && activeTopicInput(editor) == nullptr);
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor);
         CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Left));
         assertFit(editor);
@@ -3947,7 +3959,7 @@ static void node_drag_case() {
         CHECK(changed.size() == 1 && errors.isEmpty());
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor);
         auto &view = graphics(editor);
         const Json before = exported(editor);
@@ -3988,20 +4000,22 @@ static void clipboard_case() {
         "crossLinks":[{"id":"inside","source":"a","target":"x","directed":true,"topic":"Internal","style":{"arrowDirection":"both"}},
         {"id":"outside","source":"x","target":"b","directed":false,"topic":"External"},
         {"id":"bridge","source":"x","target":"oc","directed":false,"topic":"Across roots"}]})");
-    m3::qt::EditorConfig config;
+    RawLabelConfig config;
     config.initialVisibleLevels = 0;
-    Editor source(config), destination(config);
+    RawLabelEditor source(config), destination(config);
     CHECK(source.loadJson(encoded(input)));
     showEditor(source);
     CHECK(source.setExpanded(QStringLiteral("a"), false));
     CHECK(source.selectNode(QStringLiteral("a")));
     source.setReadOnly(true);
+    source.setSectionNumbering(true, QStringLiteral("1.1."));
     const QByteArray sourceBefore = source.toJson();
     shortcut(source, Qt::Key_C, Qt::ControlModifier);
     CHECK(source.toJson() == sourceBefore);
     CHECK(QApplication::clipboard()->text() == QStringLiteral("Alpha"));
     const QByteArray payload = QApplication::clipboard()->mimeData()->data(format);
     CHECK(!payload.isEmpty());
+    source.setSectionNumbering(false, QStringLiteral("1.1."));
     const auto setNative = [&](const QByteArray &bytes) {
         auto *mime = new QMimeData;
         mime->setText(QStringLiteral("https://example.test/must-not-fallback"));
@@ -4017,6 +4031,7 @@ static void clipboard_case() {
     CHECK(destination.selectNode(QStringLiteral("root")));
     const QByteArray before = destination.toJson();
     const qreal zoom = destination.zoomFactor();
+    destination.setSectionNumbering(true, QStringLiteral("1.1."));
     QSignalSpy changed(&destination, &Editor::documentChanged);
     shortcut(destination, Qt::Key_V, Qt::ControlModifier);
     const Json pasted = exported(destination);
@@ -4035,6 +4050,7 @@ static void clipboard_case() {
     CHECK(link.at("id") != "inside" && link.at("source") == utf8(root) && link.at("target") == utf8(child));
     CHECK(link.at("topic") == "Internal" && link.at("style").at("arrowDirection") == "both");
     CHECK(destination.selectedNodeId() == root && destination.zoomFactor() == zoom);
+    destination.setSectionNumbering(false, QStringLiteral("1.1."));
     CHECK(!texts(destination, QStringLiteral("Deep child")).isEmpty());
     CHECK(changed.size() == 1 && destination.canUndo() && !destination.canRedo());
     const QByteArray after = destination.toJson();
@@ -4086,7 +4102,7 @@ static void clipboard_case() {
                       labelPoint(source, QStringLiteral("Orphan")));
     CHECK(source.selectedNodeIds().size() == 3);
     shortcut(source, Qt::Key_C, Qt::ControlModifier);
-    Editor group(config);
+    RawLabelEditor group(config);
     showEditor(group);
     shortcut(group, Qt::Key_V, Qt::ControlModifier);
     const Json forest = exported(group);
@@ -4125,7 +4141,7 @@ static void clipboard_case() {
 
     // Host callbacks may close or replace the destination during publication.
     for (bool destroy : {false, true}) {
-        QPointer<Editor> closing = new Editor(config);
+        QPointer<Editor> closing = new RawLabelEditor(config);
         CHECK(closing->addNode(QStringLiteral("root"), QStringLiteral("Existing")) != QString());
         CHECK(closing->setExpanded(QStringLiteral("root"), false));
         CHECK(closing->selectNode(QStringLiteral("root")));
@@ -4169,7 +4185,7 @@ static void clipboard_case() {
         }
     };
     for (bool destroy : {false, true}) {
-        QPointer<Editor> target = new Editor(config);
+        QPointer<Editor> target = new RawLabelEditor(config);
         showEditor(*target);
         auto *provider = new ClipboardProvider;
         provider->setData(format, payload);
@@ -4233,7 +4249,7 @@ static void hyperlinks_case() {
         pump();
     };
     {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor, false);
         auto &view = graphics(editor);
         QSignalSpy activated(&editor, &Editor::nodeLinkActivated);
@@ -4315,7 +4331,7 @@ static void hyperlinks_case() {
         CHECK(activated.size() == 2 && activeTopicInput(editor) == nullptr);
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor);
         CHECK(editor.selectNode(a));
         auto &view = graphics(editor);
@@ -4372,7 +4388,7 @@ static void hyperlinks_case() {
         CHECK(activated.size() == 2 && activated.back().at(1).toString() == rawUrl);
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor);
         auto &view = graphics(editor);
         QSignalSpy activated(&editor, &Editor::nodeLinkActivated);
@@ -4399,7 +4415,7 @@ static void hyperlinks_case() {
         CHECK(indicator(editor, QStringLiteral("Reentrant replacement")) == nullptr);
     }
     {
-        auto editor = std::make_unique<Editor>();
+        auto editor = std::make_unique<RawLabelEditor>();
         QPointer<Editor> alive(editor.get());
         prepare(*editor);
         QSignalSpy activated(editor.get(), &Editor::nodeLinkActivated);
@@ -4458,9 +4474,9 @@ static void hyperlinks_case() {
         for (auto &entry : doc.at("nodes")) if (entry.at("id") == utf8(id)) entry["hyperLink"] = utf8(url);
         return doc;
     };
-    class RelativeEditor : public Editor {
+    class RelativeEditor : public RawLabelEditor {
     public:
-        using Editor::Editor;
+        using RawLabelEditor::RawLabelEditor;
         QStringList received;
         bool veto = false;
     protected:
@@ -4475,7 +4491,7 @@ static void hyperlinks_case() {
         }
     };
     {
-        Editor standalone;
+        RawLabelEditor standalone;
         prepare(standalone, false);
         auto *clipboard = new QMimeData;
         clipboard->setUrls({QUrl::fromLocalFile(path)});
@@ -4611,7 +4627,7 @@ static void hyperlinks_case() {
         CHECK(editor.origins.size() == 2 && editor.origins.back() == Editor::MimeInsertionSource::Drop);
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor, false);
         CHECK(editor.selectNode(b));
         auto &view = graphics(editor);
@@ -4647,7 +4663,7 @@ static void hyperlinks_case() {
         CHECK(editor.selectedNodeId() == a && view.transform() == transform);
     }
     {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.resourceBasePath = directory.path();
         RelativeEditor editor(config);
         prepare(editor, false);
@@ -4683,7 +4699,7 @@ static void hyperlinks_case() {
         CHECK(changed.isEmpty() && selected.isEmpty() && errors.isEmpty() && activated.size() == 1);
     }
     {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.resourceBasePath = directory.path();
         RelativeEditor editor(config);
         prepare(editor, false);
@@ -4754,7 +4770,7 @@ static void hyperlinks_case() {
         CHECK(selected.isEmpty() && activated.isEmpty() && errors.isEmpty());
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         prepare(editor, false);
         clickLabel(editor, QStringLiteral("Beta"), true);
         const QString draft = QStringLiteral("Beta draft not yet accepted");
@@ -4779,7 +4795,7 @@ static void hyperlinks_case() {
 }
 
 static void emoji_category_popup_case() {
-    Editor editor;
+    RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(editorFixture())));
     showEditor(editor, QSize(1100, 900));
     CHECK(editor.selectNode(QStringLiteral("a")));
@@ -4804,7 +4820,7 @@ static void emoji_category_popup_case() {
     pump();
     CHECK(popup->isVisible() && !navigationTipVisible());
     {
-        Editor other;
+        RawLabelEditor other;
         showEditor(other);
         expandProperties(other);
         auto *otherIcons = other.findChild<QLineEdit *>(QStringLiteral("nodeIcons"));
@@ -5005,7 +5021,7 @@ static void emoji_category_popup_case() {
 }
 
 static void emoji_productivity_case() {
-    Editor editor;
+    RawLabelEditor editor;
     showEditor(editor, QSize(1100, 900));
     expandProperties(editor);
     auto *panel = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
@@ -5113,7 +5129,7 @@ static void emoji_productivity_case() {
     pump();
     const QString glyph = QString::fromUtf8("\xE2\x98\x91\xEF\xB8\x8F");
     CHECK(record(exported(editor), "nodes", QStringLiteral("root")).at("icons") == Json::array({utf8(glyph)}));
-    Editor reopened;
+    RawLabelEditor reopened;
     CHECK(reopened.loadJson(editor.toJson()));
     CHECK(record(exported(reopened), "nodes", QStringLiteral("root")).at("icons") == Json::array({utf8(glyph)}));
     icons->setText(glyph);
@@ -5125,7 +5141,7 @@ static void emoji_productivity_case() {
 }
 
 static void properties_visibility_case() {
-    Editor editor;
+    RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(editorFixture())));
     CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
     showEditor(editor, QSize(1100, 900));
@@ -5285,10 +5301,10 @@ static void branch_color_case() {
         {"id":"a1x","topic":"Leaf"},{"id":"a2","topic":"Sibling"},
         {"id":"b","topic":"Beta"}],"crossLinks":[
         {"id":"cross","source":"a2","target":"b","directed":false,"topic":"Cross"}]})");
-    m3::qt::EditorConfig config;
+    RawLabelConfig config;
     config.autoRandomBranchColor = false;
     config.initialVisibleLevels = 0;
-    Editor editor(config);
+    RawLabelEditor editor(config);
     htmlAppearance(editor);
     CHECK(editor.loadJson(encoded(input)));
     CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
@@ -5557,10 +5573,10 @@ static void branch_color_case() {
 }
 
 static void auto_branch_color_case() {
-    m3::qt::EditorConfig config;
-    Editor editor(config);
+    RawLabelConfig config;
+    RawLabelEditor editor(config);
     config.autoRandomBranchColor = false;
-    Editor disabled(config);
+    RawLabelEditor disabled(config);
     const QString plain = disabled.addNode("root", "Uncolored");
     CHECK(!plain.isEmpty() && !record(exported(disabled), "nodes", plain).at("style").contains("branchColor"));
     QStringList palette;
@@ -5687,7 +5703,7 @@ static void formatting_toolbar_case() {
     node(fixture, a)["image"] = Json{{"url", "memory:retained"}, {"width", 31}, {"height", 19}};
 
     QMainWindow host;
-    auto *editor = new Editor;
+    auto *editor = new RawLabelEditor;
     auto *surface = new QWidget;
     auto *surfaceLayout = new QVBoxLayout(surface);
     surfaceLayout->setContentsMargins(0, 0, 0, 0);
@@ -6009,7 +6025,7 @@ static void formatting_toolbar_case() {
     // Immediate host deletion from a successful command or its inline-commit prerequisite is safe.
     for (int operation : {0, 1, 2, 3, 4}) {
         QMainWindow closingHost;
-        QPointer<Editor> closing = new Editor;
+        QPointer<Editor> closing = new RawLabelEditor;
         closingHost.setCentralWidget(closing);
         auto *closingToolbar = closingHost.addToolBar(QStringLiteral("Formatting"));
         for (const char *name : names) closingToolbar->addAction(&editAction(*closing, name));
@@ -6273,12 +6289,12 @@ static void formatting_toolbar_case() {
 }
 
 static void separated_properties_case() {
-    m3::qt::EditorConfig config;
+    RawLabelConfig config;
     config.separateNodePropertiesPanel = true;
     const QString a = QStringLiteral("a"), b = QStringLiteral("b");
     {
         QMainWindow window;
-        auto *editor = new Editor(config, &window);
+        auto *editor = new RawLabelEditor(config, &window);
         window.setCentralWidget(editor);
         auto *panel = editor->nodePropertiesPanel();
         CHECK(panel && panel == editor->nodePropertiesPanel() && panel->parentWidget() == editor);
@@ -6452,7 +6468,7 @@ static void separated_properties_case() {
     }
     for (bool editorFirst : {false, true}) for (bool deferred : {false, true}) {
         QWidget external;
-        QPointer<Editor> editor = new Editor(config);
+        QPointer<Editor> editor = new RawLabelEditor(config);
         QPointer<QWidget> panel = editor->nodePropertiesPanel();
         panel->setParent(&external);
         int destroyed = 0;
@@ -6483,7 +6499,7 @@ static void separated_properties_case() {
     for (bool hostFirst : {false, true}) {
         auto *parent = new QWidget;
         QPointer<QWidget> external = hostFirst ? new QWidget(parent) : nullptr;
-        QPointer<Editor> editor = new Editor(config, parent);
+        QPointer<Editor> editor = new RawLabelEditor(config, parent);
         if (!external) external = new QWidget(parent);
         QPointer<QWidget> panel = editor->nodePropertiesPanel();
         panel->setParent(external);
@@ -6495,7 +6511,7 @@ static void separated_properties_case() {
     // Direct commands allow immediate teardown; QLineEdit::setText must finish first.
     for (bool viaInput : {false, true}) for (bool closeEditor : {false, true}) {
         QWidget external;
-        QPointer<Editor> editor = new Editor(config);
+        QPointer<Editor> editor = new RawLabelEditor(config);
         QPointer<QWidget> panel = editor->nodePropertiesPanel();
         panel->setParent(&external);
         QPointer<QLineEdit> tags = panel->findChild<QLineEdit *>(QStringLiteral("nodeTags"));
@@ -6535,7 +6551,7 @@ static void properties_case() {
     emoji_productivity_case();
     separated_properties_case();
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor);
         auto &view = graphics(editor);
@@ -6571,7 +6587,7 @@ static void properties_case() {
         CHECK(editor.isReadOnly() && exported(editor) == before && changed.isEmpty());
     }
     {
-        Editor imageEditor;
+        RawLabelEditor imageEditor;
         CHECK(imageEditor.loadJson(encoded(editorFixture())));
         showEditor(imageEditor, QSize(1100, 900));
         expandProperties(imageEditor);
@@ -6627,7 +6643,7 @@ static void properties_case() {
         CHECK(field->text() == QStringLiteral("memory:loaded") && changed.size() == 5);
         CHECK(exported(imageEditor) == expected);
     }
-    Editor editor;
+    RawLabelEditor editor;
     Json input = editorFixture();
     for (auto &entry : input.at("nodes")) if (entry.at("id") == "a")
         entry["style"] = Json{{"custom", {{"integer", UINT64_C(9007199254740993)}, {"nested", Json::array({true, "opaque"})}}}};
@@ -6777,7 +6793,7 @@ static void properties_case() {
     CHECK(record(styled, "nodes", QStringLiteral("a")).at("style").at("background") == "#e74c3c");
     CHECK(record(styled, "nodes", QStringLiteral("a")).at("style").at("custom") ==
           record(expected, "nodes", QStringLiteral("a")).at("style").at("custom"));
-    Editor roundtrip;
+    RawLabelEditor roundtrip;
     CHECK(roundtrip.loadJson(editor.toJson()) && exported(roundtrip) == styled);
     CHECK(textItem(roundtrip, QStringLiteral("Alpha"))->font().italic());
     CHECK(editor.selectedNodeId() == QStringLiteral("a") && view.transform() == zoom);
@@ -7044,7 +7060,7 @@ static void properties_case() {
     }
     // Auto removes only the active color override, never typography or opaque data.
     {
-        Editor colorsEditor;
+        RawLabelEditor colorsEditor;
         Json colorsInput = editorFixture();
         jsonNode(colorsInput, "a")["style"] = Json{
             {"fontSize", 24}, {"fontWeight", "bold"}, {"fontStyle", "italic"},
@@ -7117,7 +7133,7 @@ static void properties_case() {
     }
     // Clearing the last badges restores the untagged shape without moving the camera.
     {
-        Editor tagged, untagged;
+        RawLabelEditor tagged, untagged;
         Json emptyTags = editorFixture();
         jsonNode(emptyTags, "r")["tags"] = Json::array();
         CHECK(tagged.loadJson(encoded(editorFixture())) && untagged.loadJson(encoded(emptyTags)));
@@ -7161,7 +7177,7 @@ static void properties_case() {
 }
 
 static void focus_root_case() {
-    Editor editor;
+    RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(editorFixture())));
     CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
     showEditor(editor);
@@ -7219,7 +7235,7 @@ static void shift_scroll_case() {
                      {"nodes", Json::array({{{"id", "r"}, {"topic", "Root"}, {"children", {"a"}}},
                                             {{"id", "a"}, {"topic", "Alpha"}}})},
                      {"crossLinks", Json::array()}};
-    Editor editor;
+    RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(input)));
     showEditor(editor);
     trigger(editor, "resetZoom");
@@ -7428,7 +7444,7 @@ static void outline_navigation_case() {
     const QString root = QStringLiteral("root-z"), outer = QStringLiteral("chain-2");
     const QString deep = QStringLiteral("chain-9"), deepTopic = QString::fromUtf8("Deep target 世界");
     const Json input = outlineFixture();
-    Editor editor;
+    RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(input)));
     CHECK(editor.setExpanded(QStringLiteral("other-parent"), false));
     CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
@@ -7620,7 +7636,7 @@ static void find_case() {
     const QString endpoint = QStringLiteral("other-leaf"), link = QStringLiteral("a-link");
     const Json input = findFixture();
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(input)));
         CHECK(editor.setExpanded(QStringLiteral("other-parent"), false));
         CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
@@ -7675,7 +7691,7 @@ static void find_case() {
         CHECK(!editor.canUndo() && !editor.canRedo() && undo.isEmpty() && redo.isEmpty());
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(input)));
         CHECK(editor.setExpanded(QStringLiteral("other-parent"), false));
         showEditor(editor);
@@ -7739,7 +7755,7 @@ static void find_case() {
         checkFind(editor, editor.findText(query, Qt::CaseSensitive), 7, 0, QStringLiteral("root-z"));
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(input)));
         CHECK(editor.setExpanded(QStringLiteral("other-parent"), false));
         showEditor(editor);
@@ -7815,7 +7831,7 @@ static void navigation_case() {
         input["nodes"].push_back({{"id", id}, {"topic", "Scroll branch " + std::to_string(i)}});
         input["nodes"][0]["children"].push_back(id);
     }
-    Editor editor;
+    RawLabelEditor editor;
     QPalette palette = editor.palette();
     palette.setColor(QPalette::Base, Qt::white);
     palette.setColor(QPalette::Window, Qt::white);
@@ -8008,7 +8024,7 @@ static void navigation_case() {
 }
 
 static void inline_tags_case() {
-    Editor editor;
+    RawLabelEditor editor;
     showEditor(editor);
     const QString root = QStringLiteral("r");
     QSignalSpy changed(&editor, &Editor::documentChanged), errors(&editor, &Editor::errorOccurred);
@@ -8242,7 +8258,7 @@ static void link_interaction_case() {
             nodes.push_back(Json{{"id", id}, {"topic", "Row " + std::to_string(i)}});
         }
         nodes.push_back(Json{{"id", "r"}, {"topic", "Tall root"}, {"children", children}});
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(Json{{"schemaVersion", 1}, {"rootId", "r"}, {"nodes", nodes}})));
         CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Outline));
         showEditor(editor);
@@ -8257,7 +8273,7 @@ static void link_interaction_case() {
         CHECK(exported(editor) == before);
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
         showEditor(editor);
@@ -8307,7 +8323,7 @@ static void link_interaction_case() {
         Json data = editorFixture();
         data["crossLinks"][0]["id"] = "a";
         data["crossLinks"][0]["topic"] = "#original ##";
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(data)));
         showEditor(editor);
         CHECK(editor.selectLink(QStringLiteral("a")));
@@ -8337,7 +8353,7 @@ static void link_interaction_case() {
         CHECK(changed.size() == 2);
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor);
         trigger(editor, "resetZoom");
@@ -8383,7 +8399,7 @@ static void link_interaction_case() {
     }
     for (bool onSelection : {false, true}) {
         // Hosts may close the editor from either notification during link creation.
-        auto *editor = new Editor;
+        auto *editor = new RawLabelEditor;
         QPointer<Editor> alive(editor);
         CHECK(editor->loadJson(encoded(editorFixture())));
         showEditor(*editor);
@@ -8462,7 +8478,7 @@ static void host_commit_case() {
         CHECK(!editAction(editor, "paste").shortcuts().isEmpty());
     }
     {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.separateNodePropertiesPanel = true;
         MimeEditor editor(config);
         CHECK(editor.loadJson(encoded(editorFixture())));
@@ -8490,7 +8506,7 @@ static void host_commit_case() {
         CHECK(record(exported(editor), "nodes", a).at("topic") == "Alpha");
     }
     {
-        QPointer<Editor> editor = new Editor;
+        QPointer<Editor> editor = new RawLabelEditor;
         QObject::connect(editor.data(), &Editor::readOnlyChanged, qApp, [&](bool readOnly) {
             CHECK(readOnly);
             delete editor.data();
@@ -8499,7 +8515,7 @@ static void host_commit_case() {
         CHECK(editor.isNull());
     }
     for (bool link : {false, true}) {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor);
         editor.resetZoom(); editor.zoom(0.85);
@@ -8596,7 +8612,7 @@ static void host_commit_case() {
     }
     for (bool link : {false, true}) for (int reaction : {0, 1, 2}) {
         // Host notifications may synchronously replace the map, lock it, or remove the edited target.
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor);
         CHECK(link ? editor.selectLink(QStringLiteral("l1")) : editor.selectNode(a));
@@ -8627,7 +8643,7 @@ static void host_commit_case() {
         }
     }
     for (bool fromPending : {false, true}) {
-        QPointer<Editor> editor = new Editor;
+        QPointer<Editor> editor = new RawLabelEditor;
         CHECK(editor->loadJson(encoded(editorFixture())));
         showEditor(*editor);
         CHECK(editor->selectNode(a));
@@ -8643,7 +8659,7 @@ static void host_commit_case() {
         CHECK(editor.isNull() && record(observed, "nodes", a).at("topic") == "Host closes after capture");
     }
     for (bool link : {false, true}) {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
         showEditor(editor);
@@ -8745,7 +8761,7 @@ static void host_commit_case() {
         CHECK(pending.size() == pendingCount + 3 && !pending.back().front().toBool());
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor, QSize(1100, 900));
         CHECK(editor.selectNode(a));
@@ -8846,10 +8862,10 @@ static void host_commit_case() {
         CHECK(first.isValid() && second.isValid());
         const QString rawImage = QString::fromUtf8("images/世界.png");
         const QString rawLink = QStringLiteral("docs/read%20me.txt#section");
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.resourceBasePath = first.path();
         config.resolveRelativeUrls = resolve;
-        Editor editor(config);
+        RawLabelEditor editor(config);
         Json input = imageDocument(rawImage);
         for (auto &entry : input.at("nodes")) if (entry.at("id") == "r") entry["hyperLink"] = utf8(rawLink);
         QSignalSpy requests(&editor, &Editor::imageRequested);
@@ -8933,7 +8949,7 @@ static void host_commit_case() {
 
 static void read_only_case() {
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(fiveLevelFixture())));
         showEditor(editor);
         editor.setReadOnly(true);
@@ -8952,9 +8968,9 @@ static void read_only_case() {
         rejectUnchanged(editor, [&] { return editor.renameNode(QStringLiteral("g"), QStringLiteral("Forbidden")); });
     }
     const QString a = QStringLiteral("a"), b = QStringLiteral("b"), d = QStringLiteral("d"), root = QStringLiteral("r");
-    m3::qt::EditorConfig config;
+    RawLabelConfig config;
     config.confirmSubtreeDeletion = false;
-    Editor editor(config);
+    RawLabelEditor editor(config);
     QObject::connect(&editor, &Editor::imageRequested, &editor,
         [&editor](const QString &url, quint64 id) { editor.provideImage(url, id, imagePixels()); });
     CHECK(editor.loadJson(encoded(imageDocument())));
@@ -9206,7 +9222,7 @@ static void read_only_case() {
 
 static void inline_label_hit_case() {
     for (qreal zoom : {qreal(1), qreal(1.5)}) {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.newDocument(QString()));
         showEditor(editor);
         editor.zoom(zoom);
@@ -9236,7 +9252,7 @@ static void inline_label_hit_case() {
     }
     const QString topic = QStringLiteral("Label first line\nLabel second line");
     for (int imageState : {0, 1, 2}) for (qreal zoom : {qreal(1), qreal(1.5)}) {
-        Editor editor;
+        RawLabelEditor editor;
         if (imageState != 0) {
             QObject::connect(&editor, &Editor::imageRequested, &editor,
                 [&editor, imageState](const QString &url, quint64 id) {
@@ -9298,7 +9314,7 @@ static void inline_edit_case() {
     inline_label_hit_case();
     inline_tags_case();
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor);
         CHECK(editor.selectNode(QStringLiteral("a")));
@@ -9320,7 +9336,7 @@ static void inline_edit_case() {
         CHECK(ownerItem(textItem(editor, QStringLiteral("y"))) == ownerItem(textItem(editor, renamed)));
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
         showEditor(editor);
@@ -9350,7 +9366,7 @@ static void inline_edit_case() {
         CHECK(exported(editor) == unchanged && changed.size() == 1);
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor);
         CHECK(editor.selectNode(QStringLiteral("a")));
@@ -9383,11 +9399,11 @@ static void inline_edit_case() {
         CHECK(editor.selectedNodeId() == QStringLiteral("r"));
     }
     {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.shortcuts.acceptTopic = {QKeySequence(QStringLiteral("Return, Ctrl+S")), QKeySequence(Qt::ALT | Qt::Key_Return)};
         config.shortcuts.toggleExpanded.clear();
         config.shortcuts.selectRoot = {QKeySequence(Qt::CTRL | Qt::Key_H), QKeySequence(Qt::ALT | Qt::Key_H)};
-        Editor editor(config);
+        RawLabelEditor editor(config);
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor);
         CHECK(editor.selectNode(QStringLiteral("a")));
@@ -9411,9 +9427,9 @@ static void inline_edit_case() {
         CHECK(editor.selectedNodeId() == QStringLiteral("r"));
     }
     {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.shortcuts.acceptTopic.clear();
-        Editor editor(config);
+        RawLabelEditor editor(config);
         showEditor(editor);
         QSignalSpy changed(&editor, &Editor::documentChanged);
         shortcut(editor, Qt::Key_F2);
@@ -9427,7 +9443,7 @@ static void inline_edit_case() {
         CHECK(changed.size() == 1 && editor.selectedNodeId().isEmpty());
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor);
         CHECK(editor.selectNode(QStringLiteral("a")));
@@ -9507,7 +9523,7 @@ static void inline_edit_case() {
     {
         QWidget host;
         QVBoxLayout layout(&host);
-        Editor first(&host), second(&host);
+        RawLabelEditor first(&host), second(&host);
         layout.addWidget(&first); layout.addWidget(&second);
         CHECK(first.loadJson(encoded(editorFixture())));
         CHECK(second.loadJson(encoded(editorFixture())));
@@ -9529,7 +9545,7 @@ static void inline_edit_case() {
     }
     {
         int changes = 0;
-        auto editor = std::make_unique<Editor>();
+        auto editor = std::make_unique<RawLabelEditor>();
         showEditor(*editor);
         QObject::connect(editor.get(), &Editor::documentChanged, qApp, [&] { ++changes; });
         shortcut(*editor, Qt::Key_F2);
@@ -9546,7 +9562,7 @@ static void inline_edit_case() {
             void closeEvent(QCloseEvent *event) override { observeClose(); event->ignore(); }
         } host;
         QVBoxLayout layout(&host);
-        Editor editor(&host);
+        RawLabelEditor editor(&host);
         layout.addWidget(&editor);
         host.resize(1000, 700); host.show();
         showEditor(editor);
@@ -9621,7 +9637,7 @@ static void inline_edit_case() {
         CHECK(record(saved, "nodes", QStringLiteral("root")).at("topic") == "Host popup sees draft");
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         showEditor(editor);
         QSignalSpy changed(&editor, &Editor::documentChanged);
         shortcut(editor, Qt::Key_F2);
@@ -9719,7 +9735,7 @@ static void shortcut_help_case() {
         &Shortcuts::toggleBold, &Shortcuts::toggleItalic, &Shortcuts::resetStyle, &Shortcuts::textColor,
         &Shortcuts::fillColor, &Shortcuts::editTags, &Shortcuts::editIcons, &Shortcuts::editNote, &Shortcuts::editTopic, &Shortcuts::showHelp, &Shortcuts::toggleProperties
     };
-    m3::qt::EditorConfig config;
+    RawLabelConfig config;
     QList<QKeySequence> expectedKeys;
     for (size_t index = 0; index < std::size(members); ++index) {
         const QKeySequence binding(Qt::CTRL | Qt::ALT | (Qt::Key_F1 + int(index)));
@@ -9734,7 +9750,7 @@ static void shortcut_help_case() {
     const QKeySequence newline(Qt::SHIFT | Qt::Key_Return), keypadNewline(Qt::SHIFT | Qt::Key_Enter);
     config.shortcuts.acceptTopic.append(newline); config.shortcuts.acceptTopic.append(keypadNewline);
     {
-        Editor editor(config);
+        RawLabelEditor editor(config);
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor, QSize(760, 440));
         shortcut(editor, Qt::Key_Question);
@@ -9773,7 +9789,7 @@ static void shortcut_help_case() {
         CHECK(exported(editor) == saved && changed.isEmpty() && selected.isEmpty());
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(QStringLiteral("a")));
         showEditor(editor, QSize(760, 440));
         const Json saved = exported(editor);
@@ -9819,9 +9835,9 @@ static void shortcut_help_case() {
         CHECK(exported(editor) == typed && changed.size() == 1);
     }
     {
-        m3::qt::EditorConfig disabled;
+        RawLabelConfig disabled;
         disabled.shortcuts.showHelp.clear();
-        Editor unbound(disabled), defaults;
+        RawLabelEditor unbound(disabled), defaults;
         showEditor(unbound, QSize(760, 440));
         const Json saved = exported(unbound);
         QSignalSpy changed(&unbound, &Editor::documentChanged);
@@ -9842,9 +9858,9 @@ static void shortcut_help_case() {
         CHECK(!popup(unbound) && !popup(defaults));
     }
     {
-        m3::qt::EditorConfig partial;
+        RawLabelConfig partial;
         partial.shortcuts.toggleBold.clear(); partial.shortcuts.acceptTopic.clear();
-        Editor editor(partial);
+        RawLabelEditor editor(partial);
         showEditor(editor, QSize(760, 440));
         const auto lines = open(editor)->toPlainText().split(QLatin1Char('\n'));
         CHECK(!lines.contains(QKeySequence(Qt::Key_B).toString(QKeySequence::NativeText)));
@@ -9852,7 +9868,7 @@ static void shortcut_help_case() {
         escape(editor);
     }
     {
-        QPointer<Editor> editor = new Editor;
+        QPointer<Editor> editor = new RawLabelEditor;
         showEditor(*editor, QSize(760, 440));
         open(*editor);
         const QPointer<QDialog> dialog = popup(*editor);
@@ -9862,10 +9878,217 @@ static void shortcut_help_case() {
 }
 
 static void configuration_case() {
+    {
+        // Exercise production defaults, independently of the raw-label fixtures above.
+        Editor editor;
+        Json input = Json::parse(R"({"schemaVersion":1,"rootId":"r","orphanIds":["o","p"],"nodes":[
+            {"id":"r","topic":"Main root","children":["a","b"]},
+            {"id":"a","topic":"Alpha","children":["d1"]},
+            {"id":"b","topic":"2. Authored numeric prefix"},
+            {"id":"o","topic":"First orphan","children":["x","y"]},
+            {"id":"x","topic":"Orphan first"},{"id":"y","topic":"Orphan second"},
+            {"id":"p","topic":"Second orphan","children":["z"]},
+            {"id":"z","topic":"Other first"}],
+            "crossLinks":[{"id":"l","source":"a","target":"b","directed":false,"topic":"Authored link"}]})");
+        for (int depth = 1; depth <= 8; ++depth) {
+            Json node{{"id", "d" + std::to_string(depth)}, {"topic", "Deep " + std::to_string(depth)}};
+            if (depth < 8) node["children"] = Json::array({"d" + std::to_string(depth + 1)});
+            input["nodes"].push_back(std::move(node));
+        }
+        CHECK(editor.loadJson(encoded(input)));
+        showEditor(editor);
+        for (int depth = 1; depth <= 8; ++depth)
+            CHECK(editor.setExpanded(QStringLiteral("d%1").arg(depth), true));
+        CHECK(editor.setExpanded(QStringLiteral("b"), true));
+        const Json baseline = exported(editor);
+        const QString markdown = editor.toMarkdown();
+        auto label = [&](const QString &text) { CHECK(texts(editor, text).size() == 1); };
+        auto roots = [&] {
+            label(QStringLiteral("Main root"));
+            label(QStringLiteral("First orphan"));
+            label(QStringLiteral("Second orphan"));
+        };
+        auto numbered = [&] {
+            roots();
+            label(QStringLiteral("1. Alpha"));
+            label(QStringLiteral("2. 2. Authored numeric prefix"));
+            label(QStringLiteral("1. Orphan first"));
+            label(QStringLiteral("2. Orphan second"));
+            label(QStringLiteral("1. Other first"));
+            QString number = QStringLiteral("1.");
+            for (int depth = 1; depth <= 8; ++depth) {
+                number += QStringLiteral("1.");
+                label(number + QStringLiteral(" Deep %1").arg(depth));
+            }
+        };
+        auto semantic = [&] {
+            CHECK(exported(editor) == baseline && editor.toMarkdown() == markdown);
+            const auto outline = editor.outline();
+            CHECK(outline.size() == baseline.at("nodes").size());
+            for (const auto &entry : outline)
+                CHECK(entry.topic == qs(record(baseline, "nodes", entry.id).at("topic")));
+            CHECK(markdown.contains(QStringLiteral("## <a id=\"m3-node-61\"></a>Alpha\n")));
+            CHECK(!markdown.contains(QStringLiteral("1. Alpha")));
+        };
+        numbered(); semantic();
+        CHECK(!editor.canUndo() && !editor.canRedo());
+        const QString deep = QStringLiteral("1.1.1.1.1.1.1.1.1. Deep 8");
+        const qreal numberedWidth = topicRect(editor, deep).width();
+        CHECK(topicRect(editor, deep).contains(textItem(editor, deep)->sceneBoundingRect()));
+        const HtmlPage html(editor.toHtml());
+        CHECK(html.classValues(QStringLiteral("m3-topic"), html.node(QStringLiteral("a"))) == QStringList{QStringLiteral("1. Alpha")});
+        CHECK(html.classValues(QStringLiteral("m3-topic"), html.node(QStringLiteral("d8"))) == QStringList{deep});
+        CHECK(html.classValues(QStringLiteral("m3-article-topic"), html.article(QStringLiteral("a"))) == QStringList{QStringLiteral("Alpha")});
+        CHECK(html.classValues(QStringLiteral("m3-article-topic"), html.article(QStringLiteral("b"))) == QStringList{QStringLiteral("2. Authored numeric prefix")});
+        const auto deepTopics = html.classes(QStringLiteral("m3-topic"), html.node(QStringLiteral("d8")));
+        CHECK(deepTopics.size() == 1);
+        auto *deepLabel = textItem(editor, deep);
+        auto *deepOwner = ownerItem(deepLabel);
+        nearHtml(htmlRect(html.elements[deepTopics.front()]), deepLabel->sceneBoundingRect().translated(
+            -deepOwner->mapToScene(deepOwner->shape()).boundingRect().topLeft()));
+        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        QSignalSpy pending(&editor, &Editor::pendingEditChanged), undo(&editor, &Editor::undoAvailable), redo(&editor, &Editor::redoAvailable);
+        for (const auto &pattern : {QStringLiteral("1.1"), QStringLiteral("1.1."), QStringLiteral("1.1)"), QStringLiteral("invalid")}) {
+            editor.setSectionNumbering(true, pattern);
+            roots();
+            const QString suffix = pattern == QStringLiteral("1.1") ? QString() :
+                pattern == QStringLiteral("1.1)") ? QStringLiteral(")") : QStringLiteral(".");
+            label(QStringLiteral("1") + suffix + QStringLiteral(" Alpha"));
+            label(QStringLiteral("1.1") + suffix + QStringLiteral(" Deep 1"));
+            label(QStringLiteral("1.1.1.1.1.1.1.1.1") + suffix + QStringLiteral(" Deep 8"));
+            semantic();
+        }
+        // Invalid and canonical patterns normalize to the same state, including during a fold.
+        CHECK(editor.setExpanded(QStringLiteral("a"), false));
+        editor.setSectionNumbering(true, QStringLiteral("1.1)"));
+        CHECK(texts(editor, QStringLiteral("1.1) Deep 1")).isEmpty());
+        label(QStringLiteral("2) 2. Authored numeric prefix"));
+        CHECK(editor.setExpanded(QStringLiteral("a"), true));
+        label(QStringLiteral("1.1.1.1.1.1.1.1.1) Deep 8"));
+        editor.setSectionNumbering(false, QStringLiteral("1.1)"));
+        roots(); label(QStringLiteral("Alpha")); label(QStringLiteral("2. Authored numeric prefix"));
+        CHECK(topicRect(editor, QStringLiteral("Deep 8")).width() < numberedWidth);
+        editor.setSectionNumbering(true, QStringLiteral("invalid"));
+        numbered(); semantic();
+        auto *unchangedLabel = textItem(editor, QStringLiteral("1. Alpha"));
+        editor.setSectionNumbering(true, QStringLiteral("1.1."));
+        CHECK(textItem(editor, QStringLiteral("1. Alpha")) == unchangedLabel);
+        CHECK(changed.isEmpty() && selected.isEmpty() && pending.isEmpty() && undo.isEmpty() && redo.isEmpty());
+        CHECK(!editor.canUndo() && !editor.canRedo());
+
+        auto structural = [&](const std::function<bool()> &operation, const std::function<void()> &after) {
+            CHECK(operation());
+            const Json moved = exported(editor);
+            after();
+            CHECK(editor.undo()); numbered(); semantic();
+            CHECK(!editor.canUndo() && editor.canRedo());
+            editor.setSectionNumbering(false, QStringLiteral("1.1"));
+            editor.setSectionNumbering(true, QStringLiteral("1.1."));
+            CHECK(editor.redo() && exported(editor) == moved); after();
+            CHECK(editor.undo()); numbered(); semantic();
+        };
+        structural([&] { return editor.moveNode(QStringLiteral("b"), QStringLiteral("r"), 0); }, [&] {
+            roots(); label(QStringLiteral("1. 2. Authored numeric prefix"));
+            label(QStringLiteral("2. Alpha")); label(QStringLiteral("2.1. Deep 1"));
+        });
+        structural([&] { return editor.moveNode(QStringLiteral("a"), QStringLiteral("o"), 1); }, [&] {
+            roots(); label(QStringLiteral("1. 2. Authored numeric prefix"));
+            label(QStringLiteral("1. Orphan first")); label(QStringLiteral("2. Alpha"));
+            label(QStringLiteral("2.1. Deep 1")); label(QStringLiteral("3. Orphan second"));
+        });
+        structural([&] { return editor.moveNode(QStringLiteral("a"), {}); }, [&] {
+            roots(); label(QStringLiteral("Alpha")); label(QStringLiteral("1. Deep 1"));
+            label(QStringLiteral("1.1.1.1.1.1.1.1. Deep 8"));
+            label(QStringLiteral("1. 2. Authored numeric prefix"));
+        });
+        structural([&] { return editor.moveNode(QStringLiteral("o"), QStringLiteral("b")); }, [&] {
+            label(QStringLiteral("Main root")); label(QStringLiteral("Second orphan"));
+            label(QStringLiteral("2.1. First orphan")); label(QStringLiteral("2.1.1. Orphan first"));
+            label(QStringLiteral("2.1.2. Orphan second")); label(QStringLiteral("1. Other first"));
+        });
+
+        // Refresh must retain semantic draft seeds, local undo, focus, caret and accepted snapshots.
+        for (bool link : {false, true}) {
+            CHECK(editor.loadJson(encoded(input)));
+            CHECK(editor.renameNode(QStringLiteral("r"), QStringLiteral("History marker")));
+            CHECK(editor.renameNode(QStringLiteral("r"), QStringLiteral("Future marker")));
+            CHECK(editor.undo());
+            CHECK(editor.canUndo() && editor.canRedo());
+            CHECK(link ? editor.selectLink(QStringLiteral("l")) : editor.selectNode(QStringLiteral("b")));
+            const Json before = exported(editor);
+            const QString beforeMarkdown = editor.toMarkdown();
+            const QStringList nodeSelection = editor.selectedNodeIds();
+            const QString linkSelection = editor.selectedLinkId();
+            shortcut(editor, Qt::Key_F2);
+            QPointer<QPlainTextEdit> draft = &topicInput(editor);
+            const QString original = link ? QStringLiteral("Authored link") : QStringLiteral("2. Authored numeric prefix");
+            CHECK(draft->toPlainText() == original && !editor.hasPendingEdit());
+            editor.setSectionNumbering(false, QStringLiteral("1.1)"));
+            CHECK(activeTopicInput(editor) == draft.data() && draft->toPlainText() == original && !editor.hasPendingEdit());
+            editor.setSectionNumbering(true, QStringLiteral("1.1."));
+            const QString edited = link ? QStringLiteral("7. Link draft #literal") : QStringLiteral("8. Authored draft");
+            draft->selectAll(); draft->insertPlainText(edited);
+            auto cursor = draft->textCursor();
+            cursor.setPosition(2); cursor.setPosition(7, QTextCursor::KeepAnchor);
+            draft->setTextCursor(cursor);
+            const QTransform zoom = graphics(editor).transform();
+            const QPointF center = graphics(editor).mapToScene(graphics(editor).viewport()->rect().center());
+            changed.clear(); selected.clear(); pending.clear(); undo.clear(); redo.clear();
+            auto retained = [&] {
+                pump();
+                CHECK(draft && activeTopicInput(editor) == draft.data() && draft->hasFocus());
+                CHECK(draft->toPlainText() == edited && editor.hasPendingEdit());
+                CHECK(draft->textCursor().anchor() == 2 && draft->textCursor().position() == 7);
+                CHECK(draft->document()->isUndoAvailable() && editor.selectedText() == edited.mid(2, 5));
+                CHECK(exported(editor) == before && editor.toMarkdown() == beforeMarkdown);
+                CHECK(editor.selectedNodeIds() == nodeSelection && editor.selectedLinkId() == linkSelection);
+                CHECK(editor.canUndo() && editor.canRedo());
+                CHECK(changed.isEmpty() && selected.isEmpty() && pending.isEmpty() && undo.isEmpty() && redo.isEmpty());
+                CHECK(graphics(editor).transform() == zoom);
+                CHECK(QLineF(center, graphics(editor).mapToScene(graphics(editor).viewport()->rect().center())).length() <= 2.0 / zoom.m11());
+                CHECK(texts(editor, QStringLiteral("1.1.1. Deep 2")).isEmpty());
+            };
+            editor.setSectionNumbering(false, QStringLiteral("1.1)")); retained();
+            editor.setSectionNumbering(true, QStringLiteral("1.1)")); retained();
+            editor.setStyle({QString(), link ? 22 : 18}); retained();
+            editor.setSectionNumbering(true, QStringLiteral("1.1")); retained();
+            editor.setSectionNumbering(true, QStringLiteral("invalid")); retained();
+            editor.setSectionNumbering(true, QStringLiteral("1.1.")); retained();
+            topicKey(editor, Qt::Key_Z, Qt::ControlModifier);
+            CHECK(draft->toPlainText() == original && !editor.hasPendingEdit());
+            topicKey(editor, Qt::Key_Y, Qt::ControlModifier);
+            CHECK(draft->toPlainText() == edited && editor.hasPendingEdit());
+            cursor = draft->textCursor();
+            cursor.setPosition(2); cursor.setPosition(7, QTextCursor::KeepAnchor);
+            draft->setTextCursor(cursor);
+            CHECK(editor.commitActiveEdit(true));
+            CHECK(draft && activeTopicInput(editor) == draft.data() && draft->hasFocus());
+            CHECK(draft->toPlainText() == edited && !editor.hasPendingEdit());
+            CHECK(draft->textCursor().anchor() == 2 && draft->textCursor().position() == 7);
+            CHECK(changed.size() == 1 && editor.canUndo() && !editor.canRedo());
+            Json saved = before;
+            if (link) saved["crossLinks"][0]["topic"] = utf8(edited);
+            else setTopic(saved, "b", edited);
+            CHECK(exported(editor) == saved);
+            editor.setSectionNumbering(false, QStringLiteral("1.1)"));
+            editor.setSectionNumbering(true, QStringLiteral("1.1)"));
+            CHECK(draft && activeTopicInput(editor) == draft.data() && draft->toPlainText() == edited);
+            CHECK(draft->hasFocus() && draft->textCursor().anchor() == 2 && draft->textCursor().position() == 7);
+            CHECK(!editor.hasPendingEdit() && editor.commitActiveEdit(true) && changed.size() == 1);
+            draft->selectAll(); draft->insertPlainText(QStringLiteral("Canceled replacement"));
+            editor.setSectionNumbering(true, QStringLiteral("1.1."));
+            topicKey(editor, Qt::Key_Escape);
+            CHECK(!activeTopicInput(editor) && exported(editor) == saved && changed.size() == 1);
+            label(link ? edited : QStringLiteral("2. ") + edited);
+            CHECK(editor.undo() && exported(editor) == before);
+            CHECK(editor.undo() && exported(editor) == baseline && !editor.canUndo());
+            CHECK(editor.redo() && editor.redo() && exported(editor) == saved);
+        }
+    }
     for (int levels : {1, 2, 4, 10, 0, -1}) {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.initialVisibleLevels = levels;
-        Editor editor(config);
+        RawLabelEditor editor(config);
         config.initialVisibleLevels = 1; // Construction copies policy; later host changes are irrelevant.
         CHECK(editor.loadJson(encoded(fiveLevelFixture())));
         showEditor(editor);
@@ -9892,7 +10115,7 @@ static void configuration_case() {
             node = node->contains("children") ? &(*node)["children"][0] : nullptr;
         }
         for (const Json &input : {native, tree, mindElixir}) {
-            Editor editor;
+            RawLabelEditor editor;
             CHECK(editor.loadJson(encoded(input)));
             showEditor(editor);
             for (int level = 1; level <= 5; ++level)
@@ -9930,9 +10153,9 @@ static void configuration_case() {
     const QString family = families.front().section(QLatin1Char('['), 0, 0).trimmed();
     const QString fallback = QStringLiteral("  m3-unavailable-font-7EAF, , %1  ").arg(family.toLower());
     {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.style = {fallback, 18};
-        Editor editor(config);
+        RawLabelEditor editor(config);
         CHECK(textItem(editor, QStringLiteral("Central topic"))->font().pointSize() == 18);
         CHECK(editor.loadJson(encoded(styledDocument)));
         showEditor(editor);
@@ -10002,9 +10225,9 @@ static void configuration_case() {
         unchanged();
     }
     for (bool link : {false, true}) {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.style = {fallback, 12};
-        Editor editor(config);
+        RawLabelEditor editor(config);
         CHECK(editor.loadJson(encoded(styledDocument)));
         const Json baseline = exported(editor);
         CHECK(editor.renameNode(QStringLiteral("r"), QStringLiteral("History marker")));
@@ -10062,7 +10285,7 @@ static void configuration_case() {
         CHECK(editor.undo() && exported(editor) == baseline && !editor.canUndo());
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         showEditor(editor);
         QSignalSpy changed(&editor, &Editor::documentChanged);
         const Json before = exported(editor);
@@ -10124,10 +10347,10 @@ static void configuration_case() {
             CHECK(activated.size() == 1 && activated.front().at(0).toString() == QStringLiteral("r"));
             CHECK(activated.front().at(1).toString() == expected);
         };
-        m3::qt::EditorConfig firstConfig, secondConfig;
+        RawLabelConfig firstConfig, secondConfig;
         firstConfig.resourceBasePath = first.path();
         secondConfig.resourceBasePath = second.path();
-        Editor left(firstConfig), right(secondConfig);
+        RawLabelEditor left(firstConfig), right(secondConfig);
         QSignalSpy leftRequests(&left, &Editor::imageRequested), rightRequests(&right, &Editor::imageRequested);
         CHECK(left.loadJson(encoded(input)) && right.loadJson(encoded(input)));
         showEditor(left);
@@ -10153,10 +10376,10 @@ static void configuration_case() {
             ~RestoreDirectory() { QDir::setCurrent(path); }
         } restore;
         CHECK(QDir::setCurrent(first.path()));
-        Editor captured;
-        m3::qt::EditorConfig relativeConfig;
+        RawLabelEditor captured;
+        RawLabelConfig relativeConfig;
         relativeConfig.resourceBasePath = QStringLiteral("assets/../resources");
-        Editor relative(relativeConfig);
+        RawLabelEditor relative(relativeConfig);
         const QString capturedBase = QDir::cleanPath(first.path());
         const QString relativeBase = QDir::cleanPath(first.filePath(QStringLiteral("resources")));
         CHECK(captured.resourceBasePath() == capturedBase && relative.resourceBasePath() == relativeBase);
@@ -10204,14 +10427,14 @@ static void configuration_case() {
         }
     }
     auto configured = [] {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.shortcuts.addChild = {QKeySequence(Qt::CTRL | Qt::Key_J), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_J)};
         config.shortcuts.editSelection = {QKeySequence(Qt::CTRL | Qt::Key_R)};
         config.shortcuts.acceptTopic = {QKeySequence(Qt::ALT | Qt::Key_Return)};
         config.shortcuts.deleteSelection = {QKeySequence(Qt::CTRL | Qt::Key_D)};
         config.shortcuts.toggleExpanded.clear();
         config.confirmSubtreeDeletion = false;
-        return std::make_unique<Editor>(config);
+        return std::make_unique<RawLabelEditor>(config);
     }();
     Editor &editor = *configured;
     CHECK(editor.loadJson(encoded(editorFixture())));
@@ -10255,7 +10478,7 @@ static void configuration_case() {
     const Json retained = exported(editor);
     dialogs({}, [&] { shortcut(editor, Qt::Key_D, Qt::ControlModifier); });
     CHECK(exported(editor) == retained && changed.size() == 6);
-    Editor independent;
+    RawLabelEditor independent;
     CHECK(independent.loadJson(encoded(editorFixture())));
     showEditor(independent);
     dialogs({}, [&] { shortcut(independent, Qt::Key_J, Qt::ControlModifier); });
@@ -10286,7 +10509,7 @@ static void node_shortcuts_case() {
     const Qt::Key letters[] = {Qt::Key_B, Qt::Key_I, Qt::Key_R, Qt::Key_C, Qt::Key_F,
                                Qt::Key_T, Qt::Key_O, Qt::Key_N, Qt::Key_E, Qt::Key_P};
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(QStringLiteral("a")));
         showEditor(editor, QSize(760, 440));
         auto &view = graphics(editor);
@@ -10345,7 +10568,7 @@ static void node_shortcuts_case() {
         topicKey(editor, Qt::Key_Escape);
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         Json input = editorFixture();
         jsonNode(input, "a")["style"] = {{"fontSize", 22}, {"fontWeight", "normal"},
             {"fontStyle", "normal"}, {"color", "#2980b9"}, {"background", "#ffffff"},
@@ -10420,7 +10643,7 @@ static void node_shortcuts_case() {
         CHECK(!toggle->isChecked() && graphics(editor).hasFocus());
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(QStringLiteral("a")));
         showEditor(editor, QSize(760, 440));
         auto *toggle = button(editor, "nodePropertiesToggle");
@@ -10465,7 +10688,7 @@ static void node_shortcuts_case() {
         CHECK(editor.selectedNodeId() == QStringLiteral("a") && graphics(editor).transform() == zoom);
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(QStringLiteral("a")));
         showEditor(editor);
         expandProperties(editor);
@@ -10524,9 +10747,9 @@ static void node_shortcuts_case() {
         CHECK(exported(editor) == expected && editor.selectedLinkId() == QStringLiteral("l1"));
     }
     {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.shortcuts.zoomIn = {QKeySequence(Qt::Key_2)};
-        Editor editor(config);
+        RawLabelEditor editor(config);
         showEditor(editor);
         expandProperties(editor);
         shortcut(editor, Qt::Key_0, Qt::ControlModifier);
@@ -10538,7 +10761,7 @@ static void node_shortcuts_case() {
         CHECK(view.transform().m11() > zoom.m11() && exported(editor) == expected);
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(QStringLiteral("a")));
         showEditor(editor);
         Json expected = exported(editor);
@@ -10635,7 +10858,7 @@ static void node_shortcuts_case() {
         topicKey(editor, Qt::Key_Escape);
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         Json input = editorFixture();
         jsonNode(input, "a")["tags"] = Json::array({"seed"});
         jsonNode(input, "a")["icons"] = Json::array({"seed"});
@@ -10682,9 +10905,9 @@ static void node_shortcuts_case() {
         CHECK(selected.isEmpty() && editor.layoutDirection() == direction && graphics(editor).transform() == zoom);
     }
     {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.shortcuts.acceptTopic = {QKeySequence(Qt::ALT | Qt::Key_Return)};
-        Editor editor(config);
+        RawLabelEditor editor(config);
         CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(QStringLiteral("a")));
         showEditor(editor);
         button(editor, "nodePropertiesToggle")->setChecked(false);
@@ -10721,7 +10944,7 @@ static void node_shortcuts_case() {
         CHECK(exported(editor) == expected && changed.size() == 1);
     }
     {
-        Editor editor, independent;
+        RawLabelEditor editor, independent;
         CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(QStringLiteral("a")));
         CHECK(independent.loadJson(encoded(editorFixture())) && independent.selectNode(QStringLiteral("a")));
         showEditor(independent); showEditor(editor);
@@ -10792,13 +11015,13 @@ static void node_shortcuts_case() {
         CHECK(exported(independent) == other && otherChanged.isEmpty());
     }
     {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.shortcuts.toggleBold = {QKeySequence(Qt::CTRL | Qt::Key_B)};
         config.shortcuts.editTopic = {QKeySequence(Qt::CTRL | Qt::Key_E)};
         config.shortcuts.editNote = {QKeySequence(Qt::CTRL | Qt::Key_N)};
         config.shortcuts.toggleProperties = {QKeySequence(Qt::CTRL | Qt::Key_P)};
         config.shortcuts.toggleItalic.clear();
-        Editor editor(config), defaults;
+        RawLabelEditor editor(config), defaults;
         CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(QStringLiteral("a")));
         CHECK(defaults.loadJson(encoded(editorFixture())) && defaults.selectNode(QStringLiteral("a")));
         showEditor(defaults); showEditor(editor);
@@ -10839,10 +11062,10 @@ static void node_shortcuts_case() {
         CHECK(otherChanged.size() == 2 && exported(editor) == expected && changed.size() == 1);
     }
     {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.shortcuts.resetStyle.clear(); config.shortcuts.textColor.clear(); config.shortcuts.fillColor.clear();
         config.shortcuts.editTags.clear(); config.shortcuts.editIcons.clear(); config.shortcuts.toggleProperties.clear();
-        Editor editor(config);
+        RawLabelEditor editor(config);
         Json input = editorFixture();
         jsonNode(input, "a")["style"] = {{"fontWeight", "bold"}, {"color", "#2980b9"}};
         CHECK(editor.loadJson(encoded(input)) && editor.selectNode(QStringLiteral("a")));
@@ -10857,7 +11080,7 @@ static void node_shortcuts_case() {
         }
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor);
         Json replacement = exported(editor);
@@ -10885,7 +11108,7 @@ static void node_shortcuts_case() {
         CHECK(textItem(editor, topic)->font().bold());
     }
     {
-        QPointer<Editor> editor = new Editor;
+        QPointer<Editor> editor = new RawLabelEditor;
         CHECK(editor->loadJson(encoded(editorFixture())) && editor->selectNode(QStringLiteral("a")));
         showEditor(*editor);
         auto *viewport = graphics(*editor).viewport();
@@ -10896,7 +11119,7 @@ static void node_shortcuts_case() {
         pump();
     }
     {
-        QPointer<Editor> editor = new Editor;
+        QPointer<Editor> editor = new RawLabelEditor;
         showEditor(*editor);
         shortcut(*editor, Qt::Key_F);
         QTest::keyClick(QApplication::focusWidget(), Qt::Key_2);
@@ -10909,7 +11132,7 @@ static void node_shortcuts_case() {
 }
 
 static void shortcuts_case() {
-    Editor editor;
+    RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(editorFixture())));
     showEditor(editor);
     QSignalSpy changed(&editor, &Editor::documentChanged);
@@ -11000,7 +11223,7 @@ static void shortcuts_case() {
 }
 
 static void controls_case() {
-    Editor editor;
+    RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(editorFixture())));
     showEditor(editor);
     QSignalSpy changed(&editor, &Editor::documentChanged);
@@ -11231,7 +11454,7 @@ static void controls_case() {
     CHECK(!hasRecord(exported(editor), "nodes", added));
     CHECK(editor.selectedNodeId() == QStringLiteral("a") && changed.size() == deleteCount + 1);
 
-    Editor other;
+    RawLabelEditor other;
     CHECK(other.loadJson(encoded(editorFixture())));
     showEditor(other, QSize(720, 500));
     const Json otherBefore = exported(other);
@@ -11244,7 +11467,7 @@ static void controls_case() {
     CHECK(exported(other) == otherBefore && otherChanges.isEmpty());
     CHECK(other.selectedNodeId() == QStringLiteral("r"));
 
-    Editor collapsed;
+    RawLabelEditor collapsed;
     CHECK(collapsed.loadJson(encoded(editorFixture())));
     showEditor(collapsed);
     CHECK(collapsed.selectNode(QStringLiteral("a")));
@@ -11275,7 +11498,7 @@ static void controls_case() {
     for (auto *label : collapsed.findChildren<QLabel *>())
         CHECK(!label->isVisible() || !label->text().contains(shownError));
 
-    Editor canceled;
+    RawLabelEditor canceled;
     showEditor(canceled);
     QSignalSpy creationChanges(&canceled, &Editor::documentChanged);
     trigger(canceled, "addChild");
@@ -11289,7 +11512,7 @@ static void controls_case() {
 
 #ifdef M3_QT_TEST_DEMO
 static void demo_controls_case() {
-    m3::qt::EditorConfig config;
+    RawLabelConfig config;
     config.confirmSubtreeDeletion = false;
     DemoWindow window(config);
     auto &editor = embedded(window);
@@ -11515,7 +11738,7 @@ static void demo_images_case() {
     writeFile(first.filePath(QStringLiteral("large.png")), oversizedPixels);
     writeFile(first.filePath(QStringLiteral("long.png")), png + QByteArray(16 * 1024 * 1024, 'x'));
     const QString mapPath = first.filePath(QStringLiteral("map.json"));
-    m3::qt::EditorConfig config;
+    RawLabelConfig config;
     config.resourceBasePath = first.path();
     DemoWindow window(config);
     showDemo(window);
@@ -11550,7 +11773,7 @@ static void demo_images_case() {
     editor.reloadImages();
     CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, QStringLiteral("image.png")); }, 5000));
     CHECK(editor.resourceBasePath() == QDir::cleanPath(first.path()) && !window.isWindowModified());
-    m3::qt::EditorConfig secondConfig;
+    RawLabelConfig secondConfig;
     secondConfig.resourceBasePath = second.path();
     DemoWindow secondWindow(secondConfig);
     CHECK(secondWindow.openFile(movedMap));
@@ -12001,7 +12224,7 @@ static void demo_prompts_case() {
 #endif
 
 static void tree_edits_scene() {
-    Editor editor;
+    RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(editorFixture())));
     CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
     showEditor(editor);
@@ -12061,9 +12284,9 @@ static void folding_positions() {
     const Json input = foldingFixture();
     for (auto direction : {Editor::LayoutDirection::Balanced, Editor::LayoutDirection::Right,
                            Editor::LayoutDirection::Left, Editor::LayoutDirection::Outline}) {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.initialVisibleLevels = 0;
-        Editor editor(config);
+        RawLabelEditor editor(config);
         CHECK(editor.loadJson(encoded(input)));
         CHECK(editor.setLayoutDirection(direction));
         showEditor(editor, QSize(1101, 901));
@@ -12125,7 +12348,7 @@ static void folding_positions() {
         stable(true);
 
         // Reopening and explicitly folding reserves the same hidden geometry.
-        Editor reopened(config);
+        RawLabelEditor reopened(config);
         CHECK(reopened.loadJson(encoded(input)));
         CHECK(reopened.setExpanded(branch, false));
         CHECK(reopened.setLayoutDirection(direction));
@@ -12136,7 +12359,7 @@ static void folding_positions() {
     }
 
     // Actual affordance and keyboard paths also keep a panned, fractional-zoom map steady.
-    Editor editor;
+    RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(input)));
     showEditor(editor, QSize(1101, 901));
     CHECK(editor.selectNode(branch));
@@ -12160,7 +12383,7 @@ static void folding_positions() {
 
 static void collapse_hover_scene() {
     for (bool readOnly : {false, true}) for (qreal zoom : {qreal(1), qreal(1.5)}) {
-        Editor editor;
+        RawLabelEditor editor;
         QPalette palette = editor.palette();
         palette.setColor(QPalette::Base, Qt::white);
         palette.setColor(QPalette::Highlight, QColor(30, 95, 210));
@@ -12219,7 +12442,7 @@ static void collapse_hover_scene() {
 
 static void collapse_scene() {
     collapse_hover_scene();
-    Editor editor;
+    RawLabelEditor editor;
     const Json input = editorFixture();
     CHECK(editor.loadJson(encoded(input)));
     showEditor(editor);
@@ -12255,7 +12478,7 @@ static void collapse_scene() {
 }
 
 static void graph_edits_scene() {
-    Editor editor;
+    RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(editorFixture())));
     showEditor(editor);
     const QString first = editor.addLink(QStringLiteral("a"), QStringLiteral("b"), true, QStringLiteral("Route one"));
@@ -12309,7 +12532,7 @@ static void multi_selection_case() {
         pump();
     };
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor);
         CHECK(editor.selectNode(a));
@@ -12397,9 +12620,9 @@ static void multi_selection_case() {
         CHECK(editor.selectedNodeIds() == QStringList({b}));
     }
     {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.confirmSubtreeDeletion = false;
-        Editor editor(config);
+        RawLabelEditor editor(config);
         Json input = editorFixture();
         for (auto &node : input["nodes"]) if (node["id"] == "a") {
             node["hyperLink"] = "https://example.org";
@@ -12449,7 +12672,7 @@ static void multi_selection_case() {
         CHECK(!activeTopicInput(editor) && exported(editor) == original);
     }
     {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor);
         CHECK(editor.selectNode(d));
@@ -12468,9 +12691,9 @@ static void multi_selection_case() {
         CHECK(changed.size() == 1 && errors.isEmpty() && editor.selectedNodeId() == r);
     }
     {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.confirmSubtreeDeletion = false;
-        Editor editor(config);
+        RawLabelEditor editor(config);
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor);
         CHECK(editor.selectNode(d));
@@ -12505,10 +12728,10 @@ static void history_commands_case() {
         entry["note"] = "Retain memo\n世界";
         entry["icons"] = {"bookmark"};
     }
-    m3::qt::EditorConfig config;
+    RawLabelConfig config;
     config.confirmSubtreeDeletion = false;
     config.autoRandomBranchColor = false;
-    Editor editor(config);
+    RawLabelEditor editor(config);
     QObject::connect(&editor, &Editor::imageRequested, &editor,
         [&editor](const QString &url, quint64 id) { editor.provideImage(url, id, imagePixels()); });
     CHECK(editor.loadJson(encoded(input)));
@@ -12701,7 +12924,7 @@ static void history_commands_case() {
 }
 
 static void history_link_gestures_case() {
-    Editor editor;
+    RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(editorFixture())));
     CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
     showEditor(editor);
@@ -12771,7 +12994,7 @@ static void history_link_gestures_case() {
 }
 
 static void history_availability_case() {
-    Editor editor;
+    RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(editorFixture())));
     showEditor(editor);
     const QString a = QStringLiteral("a"), b = QStringLiteral("b"), root = QStringLiteral("r");
@@ -12876,9 +13099,9 @@ static void history_availability_case() {
 static void history_limits_case() {
     const QString root = QStringLiteral("root");
     for (int limit : {1, 3, 0}) {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.undoLimit = limit;
-        Editor editor(config);
+        RawLabelEditor editor(config);
         CHECK(editor.newDocument(QStringLiteral("Revision 0")));
         const int commands = limit == 0 ? 105 : limit + 3;
         const int retained = limit == 0 ? commands : limit;
@@ -12906,7 +13129,7 @@ static void history_limits_case() {
     }
     // A live limit bounds the entire history, including redo states beyond the current snapshot.
     for (int current : {5, 3, 1, 0}) {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.newDocument(QStringLiteral("Revision 0")));
         std::vector<Json> states{exported(editor)};
         for (int i = 1; i <= 5; ++i) {
@@ -12968,7 +13191,7 @@ static void history_limits_case() {
         CHECK(!editor.canUndo());
     }
     // Availability observers may destroy the facade during a live trim.
-    QPointer<Editor> closing = new Editor;
+    QPointer<Editor> closing = new RawLabelEditor;
     for (int i = 1; i <= 5; ++i) CHECK(closing->renameNode(root, QString::number(i)));
     for (int i = 5; i > 1; --i) CHECK(closing->undo());
     QObject::connect(closing.data(), &Editor::undoAvailable, qApp, [&](bool available) {
@@ -12981,7 +13204,7 @@ static void history_limits_case() {
 static void history_drafts_case() {
     const QString a = QStringLiteral("a"), b = QStringLiteral("b"), linkId = QStringLiteral("l1");
     for (bool link : {false, true}) {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor);
         CHECK(link ? editor.selectLink(linkId) : editor.selectNode(a));
@@ -13018,7 +13241,7 @@ static void history_drafts_case() {
         CHECK(editor.undo() && exported(editor) == baseline && !editor.canUndo());
     }
     for (bool link : {false, true}) {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor);
         CHECK(editor.renameNode(b, QStringLiteral("Independent command")));
@@ -13096,7 +13319,7 @@ static void history_drafts_case() {
     }
     {
         // A first inline edit is undoable even when there was no prior document command.
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor);
         CHECK(editor.selectNode(a));
@@ -13115,7 +13338,7 @@ static void history_drafts_case() {
 static void history_text_scope_case() {
     const QString a = QStringLiteral("a"), b = QStringLiteral("b");
     for (bool multiline : {false, true}) {
-        Editor editor;
+        RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor, QSize(1100, 900));
         const Json baseline = exported(editor);
@@ -13164,10 +13387,10 @@ static void history_text_scope_case() {
         CHECK(exported(editor) == before && changed.size() == 8);
     }
     {
-        m3::qt::EditorConfig config;
+        RawLabelConfig config;
         config.shortcuts.undo = {QKeySequence(Qt::CTRL | Qt::Key_9)};
         config.shortcuts.redo = {QKeySequence(Qt::CTRL | Qt::Key_8)};
-        Editor editor(config);
+        RawLabelEditor editor(config);
         showEditor(editor);
         const Json baseline = exported(editor);
         CHECK(editor.renameNode(QStringLiteral("root"), QStringLiteral("Rebound command")));
@@ -13200,11 +13423,11 @@ static void history_text_scope_case() {
 }
 
 static void orphans_case() {
-    m3::qt::EditorConfig config;
+    RawLabelConfig config;
     config.autoRandomBranchColor = false;
     config.confirmSubtreeDeletion = false;
     config.initialVisibleLevels = 2;
-    Editor editor(config);
+    RawLabelEditor editor(config);
     const QString main = QStringLiteral("main"), attached = QStringLiteral("attached");
     const Json input{{"schemaVersion", 1}, {"rootId", "main"}, {"nodes", Json::array({
         {{"id", "main"}, {"topic", "Main tree"}, {"children", {"attached"}}},
@@ -13393,7 +13616,7 @@ static void orphans_case() {
 
     // Save/reopen preserves the ordered forest and resets local folding per tree.
     const QByteArray snapshot = editor.toJson();
-    Editor reopened(config);
+    RawLabelEditor reopened(config);
     CHECK(reopened.loadJson(snapshot) && exported(reopened) == forest);
     CHECK(!reopened.canUndo() && !reopened.canRedo());
     CHECK(!texts(reopened, QStringLiteral("Orphan child")).isEmpty());
@@ -13415,7 +13638,7 @@ static void orphans_case() {
 
     // A semantic observer may synchronously destroy either action's editor.
     for (bool detach : {false, true}) {
-        QPointer<Editor> closing = new Editor(config);
+        QPointer<Editor> closing = new RawLabelEditor(config);
         QString id;
         if (detach) {
             id = closing->addNode(QStringLiteral("root"), QStringLiteral("Detach before close"));

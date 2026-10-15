@@ -13,8 +13,10 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -25,6 +27,10 @@ using Json = nlohmann::json;
 using Text = std::unique_ptr<char, decltype(&m3_string_free)>;
 QString string(const Json &j) { return QString::fromStdString(j.get<std::string>()); }
 std::string utf8(const QString &s) { return s.toUtf8().toStdString(); }
+QString normalizedSectionNumberPattern(const QString &pattern) {
+    if (pattern == QStringLiteral("1.1") || pattern == QStringLiteral("1.1)")) return pattern;
+    return QStringLiteral("1.1.");
+}
 void requireStatus(M3Status result) {
     if (result != M3_OK) throw std::runtime_error(m3_last_error());
 }
@@ -206,7 +212,17 @@ MindMapController::MindMapController(MindMapView &v, const EditorConfig &config,
     : QObject(parent), undoLimit(size_t(std::max(0, config.undoLimit))),
       initialVisibleLevels(std::max(0, config.initialVisibleLevels)), view(v),
       resourceBase(QDir::cleanPath(QDir::current().absoluteFilePath(config.resourceBasePath))),
-      resolveRelativeUrls(config.resolveRelativeUrls), autoRandomBranchColor(config.autoRandomBranchColor) {}
+      resolveRelativeUrls(config.resolveRelativeUrls), autoRandomBranchColor(config.autoRandomBranchColor),
+      autoSectionNumbering(config.autoSectionNumbering),
+      sectionNumberPattern(normalizedSectionNumberPattern(config.sectionNumberPattern)) {}
+void MindMapController::setSectionNumbering(bool enabled, const QString &pattern) {
+    const QString normalized = normalizedSectionNumberPattern(pattern);
+    if (autoSectionNumbering == enabled && sectionNumberPattern == normalized) return;
+    const bool displayChanged = autoSectionNumbering || enabled;
+    autoSectionNumbering = enabled;
+    sectionNumberPattern = normalized;
+    if (displayChanged) refreshAppearance();
+}
 void MindMapController::setResourceBasePath(const QString &path) {
     resourceBase = QDir::cleanPath(QDir::current().absoluteFilePath(path));
     reloadImages();
@@ -609,6 +625,12 @@ Presentation MindMapController::prepare(const QByteArray &json,
     std::vector<M3LayoutNode> sizes;
     sizes.reserve(nodes.size());
     std::vector<size_t> visibleIndexes;
+    // Reuse one path and counters by depth in the existing full-tree preorder.
+    // Both remain allocation-free while automatic numbering is disabled.
+    struct SectionLevel { qsizetype prefixLength; size_t children; };
+    std::vector<SectionLevel> sectionLevels;
+    QString sectionPath;
+    const QChar sectionSuffix = sectionNumberPattern.size() == 4 ? sectionNumberPattern.back() : QChar();
     struct Frame {
         const Json *record;
         QColor inheritedBranchColor;
@@ -650,6 +672,23 @@ Presentation MindMapController::prepare(const QByteArray &json,
         }
         node.root = record.at("id") == data.at("rootId");
         node.treeRoot = frame.parent == M3_NO_PARENT;
+        if (autoSectionNumbering) {
+            sectionLevels.resize(size_t(frame.level));
+            if (node.treeRoot) sectionPath.clear();
+            else {
+                auto &parentSection = sectionLevels[size_t(frame.level) - 2];
+                sectionPath.truncate(parentSection.prefixLength);
+                if (!sectionPath.isEmpty()) sectionPath.append(QLatin1Char('.'));
+                char ordinal[std::numeric_limits<size_t>::digits10 + 1];
+                const auto digits = std::to_chars(std::begin(ordinal), std::end(ordinal), ++parentSection.children);
+                sectionPath.append(QLatin1String(ordinal, static_cast<int>(digits.ptr - ordinal)));
+                node.sectionNumber.reserve(sectionPath.size() + 2);
+                node.sectionNumber.append(sectionPath);
+                if (!sectionSuffix.isNull()) node.sectionNumber.append(sectionSuffix);
+                node.sectionNumber.append(QLatin1Char(' '));
+            }
+            sectionLevels.back() = {sectionPath.size(), 0};
+        }
         if (initialLevels > 0 && frame.level >= initialLevels) collapsed.insert(node.id);
         node.expanded = !collapsed.contains(node.id);
         const auto &children = record.at("children");

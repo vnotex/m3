@@ -21,6 +21,7 @@ public:
     void setResourceBasePath(const QString &path);
     void setUndoLimit(int limit);
     void setAutoRandomBranchColor(bool enabled) { autoRandomBranchColor = enabled; }
+    void setSectionNumbering(bool enabled, const QString &pattern);
     void setReadOnly(bool value);
     bool isReadOnly() const { return readOnly; }
     QString resolveResourceUrl(const QString &value) const;
@@ -107,6 +108,8 @@ private:
     QString resourceBase;
     const bool resolveRelativeUrls;
     bool autoRandomBranchColor;
+    bool autoSectionNumbering;
+    QString sectionNumberPattern;
     bool readOnly = false;
     struct ImageResource {
         quint64 requestId = 0;
