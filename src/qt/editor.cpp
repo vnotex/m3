@@ -318,9 +318,9 @@ protected:
 private:
     int pendingRow = 0;
 };
-class IconsMenu final : public QMenu {
+class InputMenu final : public QMenu {
 public:
-    explicit IconsMenu(QWidget *parent) : QMenu(parent) {
+    explicit InputMenu(QWidget *parent) : QMenu(parent) {
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS) || defined(Q_OS_MAC)
         // Keep an independent input focus window: the toolbar extension can
         // reclaim Windows popup keyboard routing while this submenu remains visible.
@@ -343,20 +343,14 @@ public:
         });
 #endif
     }
-    QPointer<EmojiLineEdit> input;
-    void boundPickerSize() {
-        if (!input) return;
-        const QSize available = screen()->availableGeometry().size();
-        input->pickerWidget()->setFixedSize(qMax(1, qMin(420, available.width() - 24)),
-            qMax(1, qMin(360, available.height() - input->sizeHint().height() - 32)));
-    }
+    QPointer<QLineEdit> input;
 protected:
     void showEvent(QShowEvent *event) override {
         QMenu::showEvent(event);
         if ((windowFlags() & Qt::WindowType_Mask) == Qt::Tool) {
             QTimer::singleShot(0, this, [this] {
                 if (!isVisible() || !input || !input->isEnabled()) return;
-                const QPointer<IconsMenu> guard(this);
+                const QPointer<InputMenu> guard(this);
                 const QRect available = screen()->availableGeometry();
                 move(qBound(available.left(), x(), qMax(available.left(), available.right() - width() + 1)),
                      qBound(available.top(), y(), qMax(available.top(), available.bottom() - height() + 1)));
@@ -943,8 +937,9 @@ public:
         FormattingBinding binding;
         QList<QPointer<QWidget>> presenters;
     };
-    FormattingPopup textPopup, fillPopup, iconsPopup;
+    FormattingPopup textPopup, fillPopup, iconsPopup, tagsPopup;
     EmojiLineEdit *toolbarIcons = nullptr;
+    QLineEdit *popupTags = nullptr;
     QList<FormattingPopup *> formattingPopups;
     NodeColorPalette *textPalette = nullptr, *fillPalette = nullptr;
     bool canFormat() const {
@@ -972,6 +967,7 @@ public:
     }
     void rememberPresenters(FormattingPopup &popup) {
         popup.presenters.clear();
+        if (!popup.action) return;
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         const auto associated = popup.action->associatedObjects();
 #else
@@ -1009,13 +1005,18 @@ public:
         if (!guard || !menu) return;
         if (!validBinding(binding)) { menu->hide(); return; }
         rememberPresenters(popup);
-        if (&popup == &iconsPopup) {
-            const QSignalBlocker blocker(toolbarIcons);
-            QString text = toolbarIcons->text();
+        QLineEdit *input = &popup == &iconsPopup ? toolbarIcons : (&popup == &tagsPopup ? popupTags : nullptr);
+        if (input) {
+            const QSignalBlocker blocker(input);
+            QString text = input->text();
             if (!text.isEmpty() && !text.trimmed().endsWith(QLatin1Char(','))) text += QStringLiteral(", ");
-            toolbarIcons->setText(text);
-            toolbarIcons->setCursorPosition(text.size());
-            static_cast<IconsMenu *>(popup.menu)->boundPickerSize();
+            input->setText(text);
+            input->setCursorPosition(text.size());
+        }
+        if (&popup == &iconsPopup) {
+            const QSize available = menu->screen()->availableGeometry().size();
+            toolbarIcons->pickerWidget()->setFixedSize(qMax(1, qMin(420, available.width() - 24)),
+                qMax(1, qMin(360, available.height() - toolbarIcons->sizeHint().height() - 32)));
             const QPointer<QWidget> ancestor = QApplication::activePopupWidget();
             if ((menu->windowFlags() & Qt::WindowType_Mask) == Qt::Tool && ancestor && ancestor != menu) {
                 // QMenu's submenu-opening stack still uses its parent after aboutToShow.
@@ -1032,17 +1033,19 @@ public:
         }
         popup.content->setEnabled(true);
     }
-    void connectPopup(FormattingPopup &popup, const char *name, const char *label) {
-        popup.action = new QAction(QCoreApplication::translate("m3::qt::NodePropertiesPanel", label), host);
-        popup.action->setObjectName(QString::fromLatin1(name));
-        popup.action->setToolTip(popup.action->text());
-        popup.action->setMenu(popup.menu);
+    void connectPopup(FormattingPopup &popup, const char *name, const char *label = nullptr) {
+        if (label) {
+            popup.action = new QAction(QCoreApplication::translate("m3::qt::NodePropertiesPanel", label), host);
+            popup.action->setObjectName(QString::fromLatin1(name));
+            popup.action->setToolTip(popup.action->text());
+            popup.action->setMenu(popup.menu);
+            toolbarFormattingActions.append(popup.action);
+        }
         popup.menu->setObjectName(QString::fromLatin1(name) + QStringLiteral("Menu"));
         popup.content->setEnabled(false);
         auto *contentAction = new QWidgetAction(popup.menu);
         contentAction->setDefaultWidget(popup.content);
         popup.menu->addAction(contentAction);
-        toolbarFormattingActions.append(popup.action);
         formattingPopups.append(&popup);
         QObject::connect(popup.menu, &QMenu::aboutToShow, host, [this, &popup] { preparePopup(popup); });
         QObject::connect(popup.menu, &QMenu::aboutToHide, host, [&popup] {
@@ -1076,7 +1079,7 @@ public:
         connectPopup(popup, name, label);
     }
     void createIconsPopup() {
-        auto *menu = new IconsMenu(host);
+        auto *menu = new InputMenu(host);
         iconsPopup.menu = menu;
         auto *content = new QWidget(menu);
         auto *layout = new QVBoxLayout(content);
@@ -1093,6 +1096,28 @@ public:
         connectPopup(iconsPopup, "iconsPopup", "Icons");
         QObject::connect(toolbarIcons, &QLineEdit::textChanged, host, [this](const QString &text) {
             applyPopup(iconsPopup, {{QStringLiteral("icons"), QJsonArray::fromStringList(commaValues(text))}}, false);
+        });
+    }
+    void createTagsPopup() {
+        auto *menu = new InputMenu(host);
+        tagsPopup.menu = menu;
+        auto *content = new QWidget(menu);
+        auto *layout = new QVBoxLayout(content);
+        layout->setContentsMargins(8, 8, 8, 8);
+        popupTags = new QLineEdit(content);
+        popupTags->setObjectName(QStringLiteral("popupNodeTags"));
+        popupTags->setAccessibleName(QCoreApplication::translate("m3::qt::NodePropertiesPanel", "Tags"));
+        popupTags->setPlaceholderText(QCoreApplication::translate("m3::qt::NodePropertiesPanel", "Separate with commas"));
+        popupTags->setMinimumWidth(280);
+        layout->addWidget(popupTags);
+        menu->input = popupTags;
+        tagsPopup.content = content;
+        connectPopup(tagsPopup, "tagsPopup");
+        QObject::connect(popupTags, &QLineEdit::textChanged, host, [this](const QString &text) {
+            applyPopup(tagsPopup, {{QStringLiteral("tags"), QJsonArray::fromStringList(commaValues(text))}}, false);
+        });
+        QObject::connect(popupTags, &QLineEdit::returnPressed, host, [this] {
+            applyPopup(tagsPopup, {{QStringLiteral("tags"), QJsonArray::fromStringList(commaValues(popupTags->text()))}}, true);
         });
     }
     void applyFontSize(qreal size) {
@@ -1254,6 +1279,10 @@ public:
         if (toolbarIcons && commaValues(toolbarIcons->text()) != node.icons) {
             const QSignalBlocker blocker(toolbarIcons);
             toolbarIcons->setText(node.icons.join(QStringLiteral(", ")));
+        }
+        if (popupTags && commaValues(popupTags->text()) != node.tags) {
+            const QSignalBlocker blocker(popupTags);
+            popupTags->setText(node.tags.join(QStringLiteral(", ")));
         }
     }
     void updateActions() {
@@ -1535,6 +1564,7 @@ public:
         createColorPopup(fillPopup, "fillColorPopup", "Fill color", QStringLiteral("toolbarFill_"),
                          QStringLiteral("background"), fillPalette);
         createIconsPopup();
+        createTagsPopup();
         for (auto *action : nodeEditingActions) action->setAutoRepeat(false);
         auto *helpAction = action("showHelp", tr("Shortcuts Help"), config.shortcuts.showHelp, [this] { showHelp(); });
         helpAction->setAutoRepeat(false);
@@ -1548,6 +1578,9 @@ public:
             const bool hasNode = nodeId.isEmpty() == false;
             const QString linkId = controller->selectedLinkId();
             QMenu menu(host);
+            QAction *addIcons = nullptr, *addTags = nullptr;
+            const FormattingBinding binding = formattingBinding();
+            const QPoint globalPoint = view->mapToGlobal(point);
             if (controller->selectedNodeIds().size() > 1) {
                 menu.addAction(deleteSelection);
             } else if (hasNode) {
@@ -1562,6 +1595,10 @@ public:
                 menu.addAction(tr("Add Image"), host, [this, nodeId] {
                     if (!controller->isReadOnly()) host->onAddImage(nodeId);
                 })->setEnabled(!controller->isReadOnly());
+                addIcons = menu.addAction(tr("Add Icons"));
+                addIcons->setEnabled(canFormat());
+                addTags = menu.addAction(tr("Add Tags"));
+                addTags->setEnabled(canFormat());
                 auto *branchMenu = menu.addMenu(tr("Branch Color"));
                 branchMenu->setEnabled(!controller->isReadOnly());
                 auto *branchGroup = new QActionGroup(branchMenu);
@@ -1628,7 +1665,11 @@ public:
                 menu.addAction(copySelection);
                 if (hasNode) menu.addAction(pasteSelection);
             }
-            menu.exec(view->mapToGlobal(point));
+            const auto *chosen = menu.exec(globalPoint);
+            if (guard && chosen && validBinding(binding)) {
+                if (chosen == addIcons) iconsPopup.menu->popup(globalPoint);
+                else if (chosen == addTags) tagsPopup.menu->popup(globalPoint);
+            }
         });
         QObject::connect(controller, &MindMapController::documentChanged, editor, [this, editor] {
             const QPointer<MindMapEditor> guard(editor);

@@ -492,6 +492,14 @@
         <translation>画像を追加</translation>
     </message>
     <message>
+        <source>Add Icons</source>
+        <translation>アイコンを追加</translation>
+    </message>
+    <message>
+        <source>Add Tags</source>
+        <translation>タグを追加</translation>
+    </message>
+    <message>
         <location line="+3"/>
         <source>Branch Color</source>
         <translation>枝の色</translation>

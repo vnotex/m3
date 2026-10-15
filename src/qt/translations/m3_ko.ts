@@ -492,6 +492,14 @@
         <translation>이미지 추가</translation>
     </message>
     <message>
+        <source>Add Icons</source>
+        <translation>아이콘 추가</translation>
+    </message>
+    <message>
+        <source>Add Tags</source>
+        <translation>태그 추가</translation>
+    </message>
+    <message>
         <location line="+3"/>
         <source>Branch Color</source>
         <translation>분기 색상</translation>

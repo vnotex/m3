@@ -492,6 +492,14 @@
         <translation>添加图像</translation>
     </message>
     <message>
+        <source>Add Icons</source>
+        <translation>添加图标</translation>
+    </message>
+    <message>
+        <source>Add Tags</source>
+        <translation>添加标签</translation>
+    </message>
+    <message>
         <location line="+3"/>
         <source>Branch Color</source>
         <translation>分支颜色</translation>
