@@ -1620,6 +1620,113 @@ static void collapse_case() {
         CHECK(cursor.setExpanded(QStringLiteral("a"), true));
         CHECK(!texts(cursor, QStringLiteral("Delta")).isEmpty());
     }
+
+    // The node menu folds a complete subtree, even if its root already matches.
+    const Json forest = Json::parse(R"({"schemaVersion":1,"rootId":"r","orphanIds":["o"],"nodes":[
+        {"id":"ax","topic":"Deep Alpha"},
+        {"id":"o1","topic":"Orphan Child","children":["ox"]},
+        {"id":"r","topic":"Root","children":["a","b"]},
+        {"id":"a","topic":"Alpha","children":["a1","a2"]},
+        {"id":"bx","topic":"Deep Beta"},
+        {"id":"a2","topic":"Alpha Sibling"},
+        {"id":"b","topic":"Beta","children":["b1"]},
+        {"id":"a1","topic":"Nested Alpha","children":["ax"]},
+        {"id":"o","topic":"Orphan","children":["o1"]},
+        {"id":"b1","topic":"Nested Beta","children":["bx"]},
+        {"id":"ox","topic":"Deep Orphan"}],"crossLinks":[
+        {"id":"cross","source":"ax","target":"bx","directed":false,"topic":"Cross branch"}]})");
+    for (bool readOnly : {false, true}) {
+        m3::qt::EditorConfig config;
+        config.initialVisibleLevels = 0;
+        Editor subtree(config);
+        CHECK(subtree.loadJson(encoded(forest)));
+        CHECK(subtree.renameNode(QStringLiteral("r"), QStringLiteral("Current root")));
+        CHECK(subtree.renameNode(QStringLiteral("r"), QStringLiteral("Future root")));
+        const QByteArray future = subtree.toJson();
+        CHECK(subtree.undo() && subtree.canUndo() && subtree.canRedo());
+        CHECK(subtree.setExpanded(QStringLiteral("b1"), false));
+        CHECK(subtree.setExpanded(QStringLiteral("o1"), false));
+        subtree.setReadOnly(readOnly);
+        showEditor(subtree, QSize(1100, 800));
+        auto &view = graphics(subtree);
+        const QByteArray before = subtree.toJson();
+        QSignalSpy mutations(&subtree, &Editor::documentChanged);
+        QSignalSpy undoChanges(&subtree, &Editor::undoAvailable), redoChanges(&subtree, &Editor::redoAvailable);
+        auto foldMenu = [&](const QString &id, const QString &label, bool enabled = true) {
+            CHECK(subtree.selectNode(id));
+            pump();
+            const QPoint point = labelPoint(subtree, qs(record(exported(subtree), "nodes", id).at("topic")));
+            const QTransform transform = view.viewportTransform();
+            const QRectF rootBounds = topicRect(subtree, QStringLiteral("Current root"));
+            std::exception_ptr failure;
+            QPointer<QMenu> menu;
+            bool visited = false;
+            QTimer dismiss;
+            dismiss.setSingleShot(true);
+            QObject::connect(&dismiss, &QTimer::timeout, &subtree, [&] {
+                if (auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget())) popup->close();
+            });
+            dismiss.start(5000);
+            QTimer::singleShot(0, &subtree, [&] {
+                menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+                try {
+                    CHECK(menu);
+                    auto &picked = textAction(*menu, {label});
+                    CHECK(picked.isEnabled() == enabled);
+                    if (enabled)
+                        QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier, menu->actionGeometry(&picked).center());
+                    visited = true;
+                } catch (...) { failure = std::current_exception(); }
+                if (menu) menu->close();
+            });
+            QContextMenuEvent event(QContextMenuEvent::Mouse, point, view.viewport()->mapToGlobal(point));
+            QCoreApplication::sendEvent(view.viewport(), &event);
+            dismiss.stop();
+            pump();
+            if (failure) std::rethrow_exception(failure);
+            CHECK(visited && subtree.selectedNodeId() == id);
+            CHECK(view.viewportTransform() == transform);
+            CHECK(topicRect(subtree, QStringLiteral("Current root")) == rootBounds);
+        };
+        const QString expandAll = QStringLiteral("Expand All"), collapseAll = QStringLiteral("Collapse All");
+        CHECK(subtree.setExpanded(QStringLiteral("a"), false));
+        foldMenu(QStringLiteral("a"), collapseAll); // Root already collapsed; hidden children still need folding.
+        CHECK(subtree.setExpanded(QStringLiteral("a"), true));
+        CHECK(!texts(subtree, QStringLiteral("Nested Alpha")).isEmpty());
+        CHECK(texts(subtree, QStringLiteral("Deep Alpha")).isEmpty());
+        foldMenu(QStringLiteral("a"), expandAll); // Root already expanded; nested folds must still open.
+        CHECK(!texts(subtree, QStringLiteral("Deep Alpha")).isEmpty());
+        CHECK(!texts(subtree, QStringLiteral("Alpha Sibling")).isEmpty());
+        CHECK(texts(subtree, QStringLiteral("Deep Beta")).isEmpty());
+        CHECK(texts(subtree, QStringLiteral("Deep Orphan")).isEmpty());
+        CHECK(texts(subtree, QStringLiteral("Cross branch")).isEmpty());
+        foldMenu(QStringLiteral("ax"), expandAll, false);
+        foldMenu(QStringLiteral("ax"), collapseAll, false);
+        foldMenu(QStringLiteral("a"), collapseAll);
+        CHECK(texts(subtree, QStringLiteral("Nested Alpha")).isEmpty());
+        CHECK(!texts(subtree, QStringLiteral("Nested Beta")).isEmpty());
+        foldMenu(QStringLiteral("r"), expandAll);
+        CHECK(!texts(subtree, QStringLiteral("Deep Alpha")).isEmpty());
+        CHECK(!texts(subtree, QStringLiteral("Deep Beta")).isEmpty());
+        CHECK(!texts(subtree, QStringLiteral("Cross branch")).isEmpty());
+        CHECK(texts(subtree, QStringLiteral("Deep Orphan")).isEmpty());
+        foldMenu(QStringLiteral("r"), collapseAll);
+        CHECK(texts(subtree, QStringLiteral("Alpha")).isEmpty());
+        CHECK(texts(subtree, QStringLiteral("Beta")).isEmpty());
+        CHECK(texts(subtree, QStringLiteral("Cross branch")).isEmpty());
+        CHECK(!texts(subtree, QStringLiteral("Orphan Child")).isEmpty());
+        foldMenu(QStringLiteral("o"), expandAll);
+        CHECK(!texts(subtree, QStringLiteral("Deep Orphan")).isEmpty());
+        CHECK(texts(subtree, QStringLiteral("Alpha")).isEmpty());
+        foldMenu(QStringLiteral("o"), collapseAll);
+        CHECK(texts(subtree, QStringLiteral("Orphan Child")).isEmpty());
+        CHECK(subtree.toJson() == before && mutations.isEmpty());
+        CHECK(undoChanges.isEmpty() && redoChanges.isEmpty());
+        subtree.setReadOnly(false);
+        CHECK(subtree.canUndo() && subtree.canRedo());
+        CHECK(subtree.redo() && subtree.toJson() == future);
+        CHECK(texts(subtree, QStringLiteral("Alpha")).isEmpty());
+    }
 }
 
 static void graph_edits_case() {

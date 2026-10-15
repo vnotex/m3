@@ -59,6 +59,8 @@ class QMimeData;
 // Drag empty space with the left mouse button to pan; the middle button pans anywhere.
 // Empty space shows an open hand cursor, closing during a pan. Empty clicks clear selection.
 // Node context menus separate creation from editing/reordering and omit viewport actions.
+// Expand All/Collapse All fold that node and all its descendants, including in read-only maps.
+// Other branches and orphan trees retain their folds; these actions are disabled on leaves.
 // With no selection the menu offers Focus Main Node, Fit, 100%, Zoom In and Zoom Out,
 // followed by Add Orphan Node and Shortcuts Help (the existing keyboard shortcuts overlay).
 // Move and Detach Subtree act on non-main nodes; detach is available only for an attached

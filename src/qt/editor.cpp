@@ -1641,6 +1641,13 @@ public:
                     addBranchColor(tr("%1 (%2)").arg(QCoreApplication::translate("m3::qt::NodeColors", entry.name), hex), QColor(hex), hex);
                 }
                 menu.addSeparator();
+                menu.addAction(tr("Expand All"), host, [this, nodeId] {
+                    controller->setExpanded(nodeId, true, true);
+                })->setEnabled(toggleExpanded->isEnabled());
+                menu.addAction(tr("Collapse All"), host, [this, nodeId] {
+                    controller->setExpanded(nodeId, false, true);
+                })->setEnabled(toggleExpanded->isEnabled());
+                menu.addSeparator();
                 menu.addActions({move, detachNode, deleteSelection, up, down});
             } else if (!linkId.isEmpty()) {
                 const auto link = controller->linkChoice(linkId);
@@ -1740,7 +1747,8 @@ public:
         QObject::connect(view, &MindMapView::nodeMoveRequested, controller, &MindMapController::moveNode);
         QObject::connect(view, &MindMapView::linkPicked, controller, &MindMapController::selectLink);
         QObject::connect(view, &MindMapView::emptyPicked, controller, &MindMapController::clearSelection);
-        QObject::connect(view, &MindMapView::expansionRequested, controller, &MindMapController::setExpanded);
+        QObject::connect(view, &MindMapView::expansionRequested, controller,
+            [model = controller](const QString &id, bool expanded) { model->setExpanded(id, expanded); });
         QObject::connect(view, &MindMapView::appearanceChanged, controller, &MindMapController::refreshAppearance);
         QObject::connect(view, &MindMapView::appearanceChanged, editor, [this] { syncFormatting(); });
         QObject::connect(view, &MindMapView::editRequested, editSelection, &QAction::trigger);

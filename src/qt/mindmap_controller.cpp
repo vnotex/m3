@@ -1027,7 +1027,7 @@ bool MindMapController::moveNode(const QString &id, const QString &parent, int i
                                   index == -1 ? M3_APPEND : size_t(index));
     });
 }
-bool MindMapController::setExpanded(const QString &id, bool expanded) {
+bool MindMapController::setExpanded(const QString &id, bool expanded, bool recursive) {
     if (!strings({id})) return false;
     const QPointer<MindMapController> guard(this);
     const auto revision = documentRevision;
@@ -1036,7 +1036,22 @@ bool MindMapController::setExpanded(const QString &id, bool expanded) {
         if (!guard || revision != documentRevision) return false;
         const auto node = std::find_if(nodes.begin(), nodes.end(), [&](const NodeChoice &n) { return n.id == id; });
         if (node == nodes.end()) return fail(tr("Node not found"));
-        if (node->expanded == expanded) { success(); return true; }
+        if (!recursive && node->expanded == expanded) { success(); return true; }
+        auto collapsed = collapsedNodes;
+        bool changed = false;
+        // choices() preserves the native snapshot's full-forest preorder. Count
+        // pending descendants to stop before siblings or the next orphan tree.
+        size_t pending = 1;
+        for (auto current = node; pending != 0; ++current) {
+            if (current->expanded != expanded) {
+                if (expanded) collapsed.remove(current->id);
+                else collapsed.insert(current->id);
+                changed = true;
+            }
+            --pending;
+            if (recursive) pending += size_t(current->children.size());
+        }
+        if (!changed) { success(); return true; }
         QString fallback;
         if (!expanded && selectedNodes.size() == 1) {
             QHash<QString, QString> parents;
@@ -1044,9 +1059,6 @@ bool MindMapController::setExpanded(const QString &id, bool expanded) {
             for (QString current = selectedNodeId(); !current.isEmpty(); current = parents.value(current))
                 if (current == id) { fallback = id; break; }
         }
-        auto collapsed = collapsedNodes;
-        if (expanded) collapsed.remove(id);
-        else collapsed.insert(id);
         auto presentation = prepare(currentSnapshot, direction, collapsed);
         collapsedNodes.swap(collapsed);
         install(std::move(presentation), false);

@@ -46,7 +46,7 @@ public:
     bool removeNode(const QString &id);
     bool removeSelectedNodes();
     bool moveNode(const QString &id, const QString &parent, int index);
-    bool setExpanded(const QString &id, bool expanded);
+    bool setExpanded(const QString &id, bool expanded, bool recursive = false);
     QString addLink(const QString &source, const QString &target, bool directed, const QString &topic);
     bool updateLink(const QString &id, const QString &source, const QString &target, bool directed, const QString &topic);
     bool setLinkDirection(const QString &id, LinkDirection linkDirection);

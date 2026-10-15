@@ -518,6 +518,14 @@
         <source>%1 (%2)</source>
         <translation>%1 (%2)</translation>
     </message>
+    <message>
+        <source>Expand All</source>
+        <translation>全部展开</translation>
+    </message>
+    <message>
+        <source>Collapse All</source>
+        <translation>全部折叠</translation>
+    </message>
 </context>
 <context>
     <name>m3::qt::MindMapView</name>

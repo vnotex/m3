@@ -518,6 +518,14 @@
         <source>%1 (%2)</source>
         <translation>%1 (%2)</translation>
     </message>
+    <message>
+        <source>Expand All</source>
+        <translation>모두 펼치기</translation>
+    </message>
+    <message>
+        <source>Collapse All</source>
+        <translation>모두 접기</translation>
+    </message>
 </context>
 <context>
     <name>m3::qt::MindMapView</name>

@@ -84,6 +84,8 @@ Right-click a single node and choose **Add Icons** to open the existing searchab
 
 Select a single node to show its top-right create-link button (Lucide `external-link`). Drag the button onto another node to create an undirected cross-link and immediately edit its topic. F2 or double-click edits an existing node/link topic inline; Enter accepts, Escape cancels the draft, and clicking outside saves. Canceling the first draft keeps the newly created link. A selected link shows a square at each endpoint; drag either square onto a visible node to change its source or destination. The drag previews the connection; release commits it. Escape, an interrupted drag, or an invalid/unchanged drop leaves the link intact.
 
+Right-click a single node and choose **Expand All** or **Collapse All** to unfold or fold that node and every descendant. Other branches and orphan trees keep their current folds. Both actions work in read-only maps and are disabled on leaf nodes. Folding remains local view state: it does not change the saved map, undo/redo history or layout positions.
+
 The expand/collapse circle and create-link button highlight on hover using the current palette; moving away restores their normal appearance.
 
 A node with a URL shows a chain-link indicator (Lucide `link`) beside its topic. Clicking it emits `nodeLinkActivated`; the host decides how to open the URL. The expansion button, create-link button and URL indicator share a 20×20 logical-pixel box at 100% zoom and scale together with the node.
