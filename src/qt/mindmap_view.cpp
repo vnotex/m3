@@ -1534,8 +1534,7 @@ void MindMapView::install(Presentation presentation, bool resetCamera) {
     }
     if (cameraChanged) emit zoomChanged(1.0, false);
 }
-HtmlMap MindMapView::renderHtmlMap(Presentation presentation) const {
-    HtmlMap map;
+void MindMapView::renderHtmlMap(Presentation presentation, HtmlMap &map) const {
     map.palette = palette();
     auto detached = buildScene(std::move(presentation), font(), map.palette, &map);
     map.bounds = detached->sceneRect();
@@ -1543,7 +1542,6 @@ HtmlMap MindMapView::renderHtmlMap(Presentation presentation) const {
         !std::isfinite(map.bounds.width()) || !std::isfinite(map.bounds.height()) ||
         map.bounds.width() <= 0 || map.bounds.height() <= 0)
         throw std::runtime_error("Invalid map bounds for HTML export");
-    return map;
 }
 void MindMapView::showError(const QString &message) {
     selectedNodes.clear();

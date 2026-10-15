@@ -243,26 +243,37 @@ teardown; do not defer the property commit itself.
 
 ## HTML/SVG export boundary
 
-`MindMapController::toHtml()` prepares committed visible content and asks `MindMapView` for an
-`HtmlMap`. The optional collector in the existing detached `buildScene()` records the same node
+`MindMapController::toHtml()` prepares committed visible content and asks `MindMapView` to fill
+an `HtmlMap`. An export-only `prepare()` collector also retains cached article-image pixels for
+all nodes, including folded descendants. It performs no I/O or requests, and ordinary preparation
+allocates no article-image records. The detached `buildScene()` collector records the same node
 rectangles, routed curves, leader lines, arrowheads and label positions used by the editor. Do not
-introduce another router or read the live scene's selection/drag/camera geometry. Ordinary live
-scene construction has no HTML-record allocation. The public `toHtml()` API remains a copied string.
+introduce another router or read live selection/drag/camera geometry. Ordinary scene construction
+has no HTML-record allocation. Public `toHtml(HtmlExportMode)` returns a copied string; its default
+is Interactive, while Static omits controls and viewport caps for print/custom consumers.
 
-`html_export.cpp` emits selectable HTML topic/icon/tag/link-label text at Qt-measured line positions,
-including paragraph direction, and inline SVG paths/polygons behind the nodes (`pointer-events:none`).
-Only supplied node-image pixels are PNG-encoded, with shared image encodings reused per export.
-There is no whole-map image, canvas, foreignObject or raster-size/downsampling fallback. Invalid or
-non-finite map bounds fail. Retain the existing complete articles and safe http/https/mailto policy;
-escape text, attributes and CSS strings rather than interpolating raw document/style values.
+`html_export.cpp` emits selectable HTML topic/icon/tag/link-label text at Qt-measured positions,
+including paragraph direction, and inline SVG paths/polygons behind nodes (`pointer-events:none`).
+Only supplied image pixels are PNG-encoded; visual and article images share one encoding cache.
+There is no whole-map image, canvas, foreignObject or raster-size/downsampling fallback. Invalid
+or non-finite map bounds fail. Articles follow the map continuously, with plain-text paragraphs,
+embedded images/placeholders, safe http/https/mailto links, nonempty icon/tag badges and directional
+cross-references beside headings. Reference labels are tooltips, not metadata rows. Escape text,
+attributes and CSS strings; never interpolate raw document/style values or fetch article URLs.
 
-Host-visible geometry contract: `#map-viewport` reserves flow space and contains absolute-positioned
-`#mindmap`, whose positive `data-width`/`data-height` describe natural CSS-pixel dimensions. Node CSS
-rectangles and SVG viewBox/path/polygon coordinates are map-local, translated by the detached bounds.
-Visual node IDs use `m3-map-node-<UTF8 hex>`; article IDs remain `m3-node-<UTF8 hex>`. Keep these namespaces
-separate. Responsive fitting must ignore hidden/zero-width containers and yield to host `!important`
-styles. Print hosts must scale layout, not only paint: a transformed natural-width map can trigger
-Chromium's document-wide shrink-to-fit. VNote uses a fixed scaled viewport and CSS layout zoom.
+Host-visible geometry contract: `#visual-map` contains `#map-viewer[data-mode]`, `#map-viewport`,
+`#map-space`, then absolute-positioned `#mindmap`, whose positive `data-width`/`data-height` describe
+natural CSS-pixel dimensions. The spacer reserves scaled flow dimensions. Node CSS rectangles and
+SVG coordinates are map-local, translated by detached bounds. Visual node IDs use
+`m3-map-node-<UTF8 hex>`; their topic links target article IDs `m3-node-<UTF8 hex>`.
+
+Interactive output starts at 100%, reveals the main topic, and scopes scrolling caps to its mode.
+Zoom/reset/resize preserve the center where scroll bounds permit; Main Node reveals the root at
+current scale. Static fitting never assigns scroll offsets or centering transforms and applies
+layout zoom only to `#mindmap`, never ancestors. Ignore zero-size containers and yield to host
+`!important` rules. Print hosts must pin all four containers, not merely the viewport: unscaled
+flow width, ancestor zoom or residual scroll offsets can shrink or crop the printed document.
+VNote fixes paper geometry with map-only layout zoom and starts articles on page 2.
 
 Coverage in `m3_qt_html` / `m3_qt_html_edges` compares parsed DOM/SVG with actual scene geometry and
 paint primitives, including large maps, images, safe content, all layout directions and self/parallel/

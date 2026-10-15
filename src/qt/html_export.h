@@ -3,6 +3,7 @@
 #include <QByteArray>
 #include <QColor>
 #include <QFont>
+#include <QHash>
 #include <QImage>
 #include <QPainterPath>
 #include <QPalette>
@@ -58,6 +59,10 @@ struct HtmlLink {
     QPolygonF sourceArrow, targetArrow;
     std::optional<HtmlText> label;
 };
+struct HtmlArticleImage {
+    QImage pixels;
+    bool failed = false;
+};
 // Scene coordinates until serialization; child text/image/tag rectangles are node-local.
 struct HtmlMap {
     QRectF bounds;
@@ -65,7 +70,8 @@ struct HtmlMap {
     std::vector<HtmlNode> nodes;
     std::vector<HtmlTreeEdge> treeEdges;
     std::vector<HtmlLink> links;
+    QHash<QString, HtmlArticleImage> articleImages;
 };
-QString encodeHtml(const QByteArray &document, const HtmlMap &map);
+QString encodeHtml(const QByteArray &document, const HtmlMap &map, bool interactive);
 }
 #endif

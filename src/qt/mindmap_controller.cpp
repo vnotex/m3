@@ -581,17 +581,18 @@ QString MindMapController::toMarkdown() {
         return QString::fromUtf8(text.get());
     } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
-QString MindMapController::toHtml() {
+QString MindMapController::toHtml(MindMapEditor::HtmlExportMode mode) {
     try {
         const auto document = currentSnapshot;
-        auto presentation = prepare(document, direction, collapsedNodes);
-        const auto map = view.renderHtmlMap(std::move(presentation));
-        return encodeHtml(document, map);
+        HtmlMap map;
+        auto presentation = prepare(document, direction, collapsedNodes, true, 0, &map);
+        view.renderHtmlMap(std::move(presentation), map);
+        return encodeHtml(document, map, mode == MindMapEditor::HtmlExportMode::Interactive);
     } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
 Presentation MindMapController::prepare(const QByteArray &json,
                                        MindMapEditor::LayoutDirection requested, QSet<QString> &collapsed,
-                                       bool useImageCache, int initialLevels) {
+                                       bool useImageCache, int initialLevels, HtmlMap *html) {
     const auto data = Json::parse(json.constData(), json.constData() + json.size());
     const auto &nodes = data.at("nodes");
     std::unordered_map<std::string, const Json *> index;
@@ -639,6 +640,8 @@ Presentation MindMapController::prepare(const QByteArray &json,
                 node.imageFailed = resource->completed && resource->pixels.isNull();
             }
         }
+        if (html && node.image && !node.image->url.isEmpty())
+            html->articleImages.insert(node.id, {node.imagePixels, node.imageFailed});
         for (const auto &icon : record.at("icons")) node.icons.append(string(icon));
         node.tags.reserve(record.at("tags").size());
         for (const auto &tag : record.at("tags")) {

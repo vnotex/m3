@@ -12,6 +12,7 @@
 
 namespace m3::qt {
 class MindMapView;
+struct HtmlMap;
 class MindMapController : public QObject {
     Q_OBJECT
 public:
@@ -38,7 +39,7 @@ public:
     QByteArray copySelectedNodes();
     bool pasteNodes(const QString &parent, const QByteArray &json);
     QString toMarkdown();
-    QString toHtml();
+    QString toHtml(MindMapEditor::HtmlExportMode mode);
     QString lastError() const { return error; }
     QString addNode(const QString &parent, const QString &topic, int index);
     QStringList addNodes(const QString &parent, const QByteArray &nodesJson, int index);
@@ -135,7 +136,7 @@ private:
     QByteArray snapshot(const M3Mindmap *map);
     Presentation prepare(const QByteArray &json,
                          MindMapEditor::LayoutDirection requested, QSet<QString> &collapsed,
-                         bool useImageCache = true, int initialLevels = 0);
+                         bool useImageCache = true, int initialLevels = 0, HtmlMap *html = nullptr);
     void install(Presentation presentation, bool resetCamera);
     bool replace(Map candidate);
     bool commitChange(Map candidate, const QString &preferredNode, const QString &preferredLink = {});
