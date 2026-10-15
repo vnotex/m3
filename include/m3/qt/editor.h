@@ -44,8 +44,8 @@ class QMimeData;
 // IDs are case-sensitive. Index -1 appends; move indexes apply after removal.
 // Only visible nodes/links can be selected; hidden data is preserved. Links are
 // exclusive. Shift/Ctrl-click toggles nodes in a group; plain click selects one.
-// Right-clicking a group member retains the group and offers only Delete.
-// Multiple nodes support only Delete: no properties, editing or mutation gestures.
+// Right-clicking a group member retains the group and offers Delete and Copy.
+// Multiple nodes support only Delete as a mutation: no properties or editing gestures.
 // Viewport/help and selection controls remain available. Delete removes selected
 // subtrees once, including overlaps, in one document change and confirmation.
 // A selection containing the main root cannot be deleted. After group deletion, select
@@ -119,8 +119,15 @@ class QMimeData;
 // show an indicator beside the topic. Activating it emits nodeLinkActivated with
 // the node ID and target: relative paths become absolute file URLs unless
 // resolveRelativeUrls is false. The host decides whether and how to open it.
-// Canvas paste/drop dispatch synchronous MIME hooks without changing selection.
-// Standalone editors accept only single absolute local-file drops as hyperlinks.
+// Canvas node Copy publishes a native forest (application/x-m3-nodes+json) plus text.
+// It includes hidden descendants, deduplicates overlapping selections in document order,
+// and retains links only when both endpoints were copied. Paste appends child subtrees
+// under one selected node, regenerates node/link IDs, and selects/reveals the first new root
+// in one undoable edit. Text-input/link Copy stays text-only; read-only editors allow Copy.
+// Resource references remain literal and use the destination editor's resource base;
+// resource files are not copied. Invalid native data fails without a text/host fallback.
+// Other canvas clipboard/drop data dispatch synchronous MIME hooks without changing selection.
+// Standalone editors accept only single absolute local-file drops as hyperlinks for that data.
 // Collapsing the card leaves only its top-right toggle, without changing selection.
 // The expanded/collapsed preference is local to this editor and survives selection
 // and document changes; links/groups/empty selection hide either form without resetting it.
@@ -456,6 +463,7 @@ signals:
     void imageRequested(const QString &url, quint64 requestId);
     void errorOccurred(const QString &message);
 protected:
+    // Native node clipboard data is handled internally before these resource hooks.
     // Pure, cheap eligibility query: no IO, decoding, dialogs or document changes.
     // The default accepts one absolute local-file URL for Drop, never Clipboard.
     virtual bool canInsertFromMimeData(const QMimeData *source, MimeInsertionSource origin) const;

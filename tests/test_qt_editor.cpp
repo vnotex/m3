@@ -3058,6 +3058,232 @@ static void node_drag_case() {
     }
 }
 
+static void clipboard_case() {
+    const QString format = QStringLiteral("application/x-m3-nodes+json");
+    struct RestoreClipboard {
+        std::unique_ptr<QMimeData> mime{new QMimeData};
+        RestoreClipboard() {
+            const auto *source = QApplication::clipboard()->mimeData();
+            if (source) for (const auto &name : source->formats()) mime->setData(name, source->data(name));
+        }
+        ~RestoreClipboard() { QApplication::clipboard()->setMimeData(mime.release()); }
+    } restore;
+    const Json input = Json::parse(R"({"schemaVersion":1,"rootId":"r","orphanIds":["o"],"nodes":[
+        {"id":"y","topic":"Deep child"},
+        {"id":"r","topic":"Source","children":["a","b"]},
+        {"id":"a","topic":"Alpha","children":["x"],"note":"Literal <note>",
+         "tags":["tag","tag"],"icons":["!"],"hyperLink":"https://example.test/topic",
+         "image":{"url":"images/relative.png","width":24,"height":12},
+         "style":{"fontWeight":"bold","opaque":{"keep":[1,true]}}},
+        {"id":"x","topic":"Child","children":["y"]},{"id":"b","topic":"Outside"},
+        {"id":"o","topic":"Orphan","children":["oc"]},{"id":"oc","topic":"Orphan child"}],
+        "crossLinks":[{"id":"inside","source":"a","target":"x","directed":true,"topic":"Internal","style":{"arrowDirection":"both"}},
+        {"id":"outside","source":"x","target":"b","directed":false,"topic":"External"},
+        {"id":"bridge","source":"x","target":"oc","directed":false,"topic":"Across roots"}]})");
+    m3::qt::EditorConfig config;
+    config.initialVisibleLevels = 0;
+    Editor source(config), destination(config);
+    CHECK(source.loadJson(encoded(input)));
+    showEditor(source);
+    CHECK(source.setExpanded(QStringLiteral("a"), false));
+    CHECK(source.selectNode(QStringLiteral("a")));
+    source.setReadOnly(true);
+    const QByteArray sourceBefore = source.toJson();
+    shortcut(source, Qt::Key_C, Qt::ControlModifier);
+    CHECK(source.toJson() == sourceBefore);
+    CHECK(QApplication::clipboard()->text() == QStringLiteral("Alpha"));
+    const QByteArray payload = QApplication::clipboard()->mimeData()->data(format);
+    CHECK(!payload.isEmpty());
+    const auto setNative = [&](const QByteArray &bytes) {
+        auto *mime = new QMimeData;
+        mime->setText(QStringLiteral("https://example.test/must-not-fallback"));
+        mime->setData(format, bytes);
+        QApplication::clipboard()->setMimeData(mime);
+    };
+    showEditor(destination);
+    const QString existing = destination.addNode(QStringLiteral("root"), QStringLiteral("Existing"));
+    CHECK(!existing.isEmpty());
+    CHECK(destination.renameNode(QStringLiteral("root"), QStringLiteral("Future")));
+    CHECK(destination.undo() && destination.canUndo() && destination.canRedo());
+    CHECK(destination.setExpanded(QStringLiteral("root"), false));
+    CHECK(destination.selectNode(QStringLiteral("root")));
+    const QByteArray before = destination.toJson();
+    const qreal zoom = destination.zoomFactor();
+    QSignalSpy changed(&destination, &Editor::documentChanged);
+    shortcut(destination, Qt::Key_V, Qt::ControlModifier);
+    const Json pasted = exported(destination);
+    const auto &children = record(pasted, "nodes", QStringLiteral("root")).at("children");
+    CHECK(children.size() == 2 && children.front() == utf8(existing));
+    const QString root = qs(children.back());
+    const auto &clone = record(pasted, "nodes", root);
+    const QString child = qs(clone.at("children").front());
+    const QString deep = qs(record(pasted, "nodes", child).at("children").front());
+    CHECK(root != QStringLiteral("a") && child != QStringLiteral("x") && deep != QStringLiteral("y"));
+    CHECK(pasted.at("nodes").size() == 5 && pasted.at("crossLinks").size() == 1);
+    auto properties = [](Json node) { node.erase("id"); node.erase("children"); return node; };
+    CHECK(properties(clone) == properties(record(exported(source), "nodes", QStringLiteral("a"))));
+    CHECK(record(pasted, "nodes", deep).at("topic") == "Deep child");
+    const auto &link = pasted.at("crossLinks").front();
+    CHECK(link.at("id") != "inside" && link.at("source") == utf8(root) && link.at("target") == utf8(child));
+    CHECK(link.at("topic") == "Internal" && link.at("style").at("arrowDirection") == "both");
+    CHECK(destination.selectedNodeId() == root && destination.zoomFactor() == zoom);
+    CHECK(!texts(destination, QStringLiteral("Deep child")).isEmpty());
+    CHECK(changed.size() == 1 && destination.canUndo() && !destination.canRedo());
+    const QByteArray after = destination.toJson();
+    CHECK(destination.undo() && destination.toJson() == before);
+    CHECK(destination.redo() && destination.toJson() == after);
+    CHECK(destination.selectNode(QStringLiteral("root")));
+    shortcut(destination, Qt::Key_V, Qt::ControlModifier);
+    const Json repeated = exported(destination);
+    const QString again = qs(record(repeated, "nodes", QStringLiteral("root")).at("children").back());
+    CHECK(again != root && repeated.at("nodes").size() == 8 && repeated.at("crossLinks").size() == 2);
+    CHECK(destination.undo() && destination.toJson() == after && destination.canRedo());
+
+    // Invalid recognized native data must not partially insert or use its text fallback.
+    const std::vector<QByteArray> invalid{
+        QByteArray("{"), payload + QByteArray(1, '\0') + QByteArray("trailing"),
+        QByteArray(R"({"schemaVersion":1,"rootId":"a","nodes":[{"id":"a","topic":"one","topic":"two"}]})"),
+        QByteArray(R"({"schemaVersion":1,"rootId":"a","nodes":[{"id":"a","children":["missing"]}]})")};
+    CHECK(destination.selectNode(QStringLiteral("root")));
+    const auto selected = destination.selectedNodeId();
+    QSignalSpy errors(&destination, &Editor::errorOccurred);
+    const int edits = changed.size();
+    for (const auto &bytes : invalid) {
+        setNative(bytes);
+        const int failures = errors.size();
+        trigger(destination, "paste");
+        CHECK(errors.size() == failures + 1 && destination.toJson() == after);
+        CHECK(destination.selectedNodeId() == selected && changed.size() == edits);
+        CHECK(destination.canUndo() && destination.canRedo());
+    }
+    setNative(payload);
+    destination.setReadOnly(true);
+    CHECK(!editAction(destination, "paste").isEnabled());
+    editAction(destination, "paste").trigger();
+    CHECK(destination.toJson() == after);
+    destination.setReadOnly(false);
+    destination.setEnabled(false);
+    CHECK(!editAction(destination, "paste").isEnabled());
+    destination.setEnabled(true);
+    destination.clearSelection();
+    CHECK(!editAction(destination, "paste").isEnabled());
+
+    // Groups are copied in document order, with selected descendant overlaps removed.
+    source.setReadOnly(false);
+    CHECK(source.setExpanded(QStringLiteral("a"), true));
+    CHECK(source.selectNode(QStringLiteral("x")));
+    QTest::mouseClick(graphics(source).viewport(), Qt::LeftButton, Qt::ControlModifier,
+                      labelPoint(source, QStringLiteral("Alpha")));
+    QTest::mouseClick(graphics(source).viewport(), Qt::LeftButton, Qt::ControlModifier,
+                      labelPoint(source, QStringLiteral("Orphan")));
+    CHECK(source.selectedNodeIds().size() == 3);
+    shortcut(source, Qt::Key_C, Qt::ControlModifier);
+    Editor group(config);
+    showEditor(group);
+    shortcut(group, Qt::Key_V, Qt::ControlModifier);
+    const Json forest = exported(group);
+    const auto roots = record(forest, "nodes", QStringLiteral("root")).at("children");
+    CHECK(roots.size() == 2 && forest.at("nodes").size() == 6 && forest.at("crossLinks").size() == 2);
+    CHECK(record(forest, "nodes", qs(roots[0])).at("topic") == "Alpha");
+    CHECK(record(forest, "nodes", qs(roots[1])).at("topic") == "Orphan");
+    CHECK(!forest.contains("orphanIds")); // Copied independent roots become children of the destination.
+    CHECK(source.selectNode(QStringLiteral("r")));
+    shortcut(source, Qt::Key_C, Qt::ControlModifier);
+    CHECK(group.selectNode(QStringLiteral("root")));
+    shortcut(group, Qt::Key_V, Qt::ControlModifier);
+    CHECK(record(exported(group), "nodes", group.selectedNodeId()).at("topic") == "Source");
+
+    // Native text controls and link Copy never publish a node forest.
+    CHECK(source.selectLink(QStringLiteral("inside")));
+    shortcut(source, Qt::Key_C, Qt::ControlModifier);
+    CHECK(QApplication::clipboard()->text() == QStringLiteral("Internal"));
+    CHECK(!QApplication::clipboard()->mimeData()->hasFormat(format));
+    CHECK(source.selectNode(QStringLiteral("a")));
+    expandProperties(source);
+    auto *url = source.findChild<QLineEdit *>(QStringLiteral("nodeUrl"));
+    CHECK(url);
+    url->setFocus(); url->selectAll(); pump();
+    editAction(source, "copy").trigger();
+    CHECK(QApplication::clipboard()->text() == QStringLiteral("https://example.test/topic"));
+    CHECK(!QApplication::clipboard()->mimeData()->hasFormat(format));
+    shortcut(source, Qt::Key_F2);
+    topicInput(source).setPlainText(QStringLiteral("Uncommitted draft"));
+    topicInput(source).selectAll();
+    editAction(source, "copy").trigger();
+    CHECK(QApplication::clipboard()->text() == QStringLiteral("Uncommitted draft"));
+    CHECK(!QApplication::clipboard()->mimeData()->hasFormat(format));
+    CHECK(source.hasPendingEdit() && source.toJson() == sourceBefore);
+    topicKey(source, Qt::Key_Escape);
+
+    // Host callbacks may close or replace the destination during publication.
+    for (bool destroy : {false, true}) {
+        QPointer<Editor> closing = new Editor(config);
+        CHECK(closing->addNode(QStringLiteral("root"), QStringLiteral("Existing")) != QString());
+        CHECK(closing->setExpanded(QStringLiteral("root"), false));
+        CHECK(closing->selectNode(QStringLiteral("root")));
+        showEditor(*closing);
+        setNative(payload);
+        pump();
+        CHECK(editAction(*closing, "paste").isEnabled());
+        bool handled = false;
+        QObject::connect(closing, &Editor::documentChanged, qApp, [&] {
+            if (handled) return;
+            handled = true;
+            if (destroy) delete closing.data();
+            else CHECK(closing->newDocument(QStringLiteral("Replacement")));
+        });
+        editAction(*closing, "paste").trigger();
+        CHECK(handled);
+        if (destroy) CHECK(!closing);
+        else {
+            CHECK(closing->selectedNodeId() == QStringLiteral("root"));
+            CHECK(exported(*closing).at("nodes").size() == 1);
+            CHECK(record(exported(*closing), "nodes", QStringLiteral("root")).at("topic") == "Replacement");
+            delete closing.data();
+        }
+    }
+
+    // A lazy native MIME provider may reenter the host while its bytes are retrieved.
+    class ClipboardProvider : public QMimeData {
+    public:
+        mutable std::function<void()> beforeRead;
+    protected:
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        QVariant retrieveData(const QString &type, QMetaType preferred) const override {
+#else
+        QVariant retrieveData(const QString &type, QVariant::Type preferred) const override {
+#endif
+            if (type == QStringLiteral("application/x-m3-nodes+json") && beforeRead) {
+                auto callback = std::move(beforeRead);
+                callback();
+            }
+            return QMimeData::retrieveData(type, preferred);
+        }
+    };
+    for (bool destroy : {false, true}) {
+        QPointer<Editor> target = new Editor(config);
+        showEditor(*target);
+        auto *provider = new ClipboardProvider;
+        provider->setData(format, payload);
+        QApplication::clipboard()->setMimeData(provider);
+        pump();
+        bool retrieved = false;
+        provider->beforeRead = [&] {
+            retrieved = true;
+            if (destroy) delete target.data();
+            else CHECK(target->newDocument(QStringLiteral("Replaced while reading clipboard")));
+        };
+        editAction(*target, "paste").trigger();
+        CHECK(retrieved);
+        if (destroy) CHECK(!target);
+        else {
+            CHECK(exported(*target).at("nodes").size() == 1);
+            CHECK(record(exported(*target), "nodes", QStringLiteral("root")).at("topic") == "Replaced while reading clipboard");
+            delete target.data();
+        }
+    }
+}
+
 static void hyperlinks_case() {
     const QString a = QStringLiteral("a"), b = QStringLiteral("b"), alpha = QStringLiteral("Alpha");
     const QString rawUrl = QString::fromUtf8("opaque:世界/<b>café</b>?q=\"a&b\"#片 段");
@@ -12310,6 +12536,7 @@ int main(int argc, char **argv) {
         else if (name == "properties") properties_case();
         else if (name == "formatting_toolbar") formatting_toolbar_case();
         else if (name == "branch_color") { branch_color_case(); auto_branch_color_case(); }
+        else if (name == "clipboard") clipboard_case();
         else if (name == "hyperlinks") hyperlinks_case();
         else if (name == "controls") controls_case();
         else if (name == "inline_edit") inline_edit_case();

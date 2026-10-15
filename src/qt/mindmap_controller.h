@@ -35,6 +35,8 @@ public:
     QByteArray toJson();
     QByteArray nodeJson(const QString &id);
     QString selectedText();
+    QByteArray copySelectedNodes();
+    bool pasteNodes(const QString &parent, const QByteArray &json);
     QString toMarkdown();
     QString toHtml();
     QString lastError() const { return error; }
@@ -135,6 +137,7 @@ private:
                          bool useImageCache = true, int initialLevels = 0);
     void install(Presentation presentation, bool resetCamera);
     bool replace(Map candidate);
+    bool commitChange(Map candidate, const QString &preferredNode, const QString &preferredLink = {});
     template<typename Operation>
     bool transact(Operation &&operation,
                   const QString &preferredNode = {}, const QString &preferredLink = {});

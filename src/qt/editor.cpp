@@ -54,6 +54,7 @@
 #include <QWindow>
 #include <QWidgetAction>
 #include <algorithm>
+#include <optional>
 
 static void initializeM3Resources() {
     Q_INIT_RESOURCE(m3_resources);
@@ -61,6 +62,7 @@ static void initializeM3Resources() {
 
 namespace m3::qt {
 namespace {
+const QString nodeClipboardMimeType = QStringLiteral("application/x-m3-nodes+json");
 QString droppedLocalFilePath(const QMimeData *mime) {
     if (!mime) return {};
     const auto urls = mime->urls();
@@ -942,6 +944,19 @@ public:
     QLineEdit *popupTags = nullptr;
     QList<FormattingPopup *> formattingPopups;
     NodeColorPalette *textPalette = nullptr, *fillPalette = nullptr;
+    std::optional<QString> selectedInputText() const {
+        QWidget *focus = QApplication::focusWidget();
+        if (focus && (host->isAncestorOf(focus) || (properties && properties->isAncestorOf(focus)))) {
+            for (auto *input = focus; input && input != host && input != properties; input = input->parentWidget()) {
+                if (const auto *line = qobject_cast<QLineEdit *>(input)) return line->selectedText();
+                if (const auto *plain = qobject_cast<QPlainTextEdit *>(input))
+                    return plain->textCursor().selectedText().replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
+                if (const auto *text = qobject_cast<QTextEdit *>(input))
+                    return text->textCursor().selectedText().replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
+            }
+        }
+        return std::nullopt;
+    }
     bool canFormat() const {
         return host->isEnabled() && !controller->isReadOnly() &&
             controller->selectedNodeIds().size() == 1 && !controller->selectedNodeId().isEmpty();
@@ -1238,6 +1253,12 @@ public:
         QObject::connect(result, &QAction::triggered, host, [this, result, command = std::move(command)] {
             const QPointer<MindMapEditor> guard(host);
             if (!result->isEnabled()) { syncFormatting(); return; }
+            if (result->objectName() == QStringLiteral("copy")) {
+                if (const auto text = selectedInputText()) {
+                    QApplication::clipboard()->setText(*text);
+                    return;
+                }
+            }
             const bool boundTarget = result == boldAction || result == italicAction ||
                 result->objectName() == QStringLiteral("resetStyle") ||
                 result->objectName() == QStringLiteral("paste");
@@ -1313,8 +1334,9 @@ public:
         if (properties) properties->updateEditability();
         if (!guard) return;
         copySelection->setEnabled(hasNodes || hasLink);
-        pasteSelection->setEnabled(writable && node &&
-            host->canInsertFromMimeData(QApplication::clipboard()->mimeData(), MimeInsertionSource::Clipboard));
+        const auto *mime = QApplication::clipboard()->mimeData();
+        pasteSelection->setEnabled(writable && node && mime &&
+            (mime->hasFormat(nodeClipboardMimeType) || host->canInsertFromMimeData(mime, MimeInsertionSource::Clipboard)));
         rootSelection->setEnabled(!nodes.empty());
         clearSelectionAction->setEnabled(hasNodes || hasLink);
         editSelection->setEnabled(writable && (node || hasLink));
@@ -1527,13 +1549,32 @@ public:
             action("nextSibling", tr("Select next sibling"), config.shortcuts.nextSibling, [this] { navigate(Navigation::NextSibling); })
         };
         copySelection = action("copy", tr("Copy"), {QKeySequence(QKeySequence::Copy)}, [this] {
-            QApplication::clipboard()->setText(host->selectedText());
+            const QPointer<MindMapEditor> guard(host);
+            const QString text = host->selectedText();
+            if (!guard) return;
+            if (controller->selectedNodeIds().isEmpty()) {
+                QApplication::clipboard()->setText(text);
+                return;
+            }
+            const QByteArray nodes = controller->copySelectedNodes();
+            if (!guard || nodes.isEmpty()) return;
+            auto mime = std::make_unique<QMimeData>();
+            mime->setText(text);
+            mime->setData(nodeClipboardMimeType, nodes);
+            QApplication::clipboard()->setMimeData(mime.release());
         });
         pasteSelection = action("paste", tr("Paste"), {QKeySequence(QKeySequence::Paste)}, [this] {
             const QString target = controller->selectedNodeId();
             const QMimeData *source = QApplication::clipboard()->mimeData();
-            if (canFormat() && host->canInsertFromMimeData(source, MimeInsertionSource::Clipboard))
+            if (!canFormat() || !source) return;
+            if (source->hasFormat(nodeClipboardMimeType)) {
+                const QPointer<MindMapEditor> guard(host);
+                const FormattingBinding binding = formattingBinding();
+                const QByteArray nodes = source->data(nodeClipboardMimeType);
+                if (guard && validBinding(binding)) controller->pasteNodes(target, nodes);
+            } else if (host->canInsertFromMimeData(source, MimeInsertionSource::Clipboard)) {
                 host->insertFromMimeData(target, source, MimeInsertionSource::Clipboard);
+            }
         });
         clearSelectionAction = action("clearSelection", tr("Clear selection"), config.shortcuts.clearSelection, [this] { controller->clearSelection(); });
         layout->addWidget(view, 1); layout->addWidget(error);
@@ -1874,16 +1915,7 @@ QString MindMapEditor::selectedNodeId() const { return d->controller->selectedNo
 QStringList MindMapEditor::selectedNodeIds() const { return d->controller->selectedNodeIds(); }
 QString MindMapEditor::selectedLinkId() const { return d->controller->selectedLinkId(); }
 QString MindMapEditor::selectedText() const {
-    QWidget *focus = QApplication::focusWidget();
-    if (focus && (isAncestorOf(focus) || (d->properties && d->properties->isAncestorOf(focus)))) {
-        for (auto *input = focus; input && input != this && input != d->properties; input = input->parentWidget()) {
-            if (const auto *line = qobject_cast<QLineEdit *>(input)) return line->selectedText();
-            if (const auto *plain = qobject_cast<QPlainTextEdit *>(input))
-                return plain->textCursor().selectedText().replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
-            if (const auto *text = qobject_cast<QTextEdit *>(input))
-                return text->textCursor().selectedText().replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
-        }
-    }
+    if (const auto text = d->selectedInputText()) return *text;
     return d->controller->selectedText();
 }
 bool MindMapEditor::setLayoutDirection(LayoutDirection direction) { return d->controller->setLayoutDirection(direction); }

@@ -187,6 +187,24 @@ int main(int argc, char **argv) {
 }
 ```
 
+### Node clipboard
+
+Canvas Copy publishes `application/x-m3-nodes+json` (a valid native forest) plus the existing plain
+text flavor. Include hidden descendants, collapse selected ancestor/descendant overlaps into one
+copied root, order roots by document preorder, and keep only cross-links with both endpoints copied.
+Text-input and link Copy must stay text-only, without committing an active text draft.
+
+Native node Paste is handled before the host MIME hooks. It appends copied roots under one selected
+node with fresh node/link IDs, validates the complete merged candidate, and uses `commitChange`
+for one history publication. Do not implement it via repeated leaf insertion or `loadJson` (which
+resets history). Reveal/select the first new root only after success and while the controller and
+document revision still match. Read-only destinations refuse Paste; Copy remains available.
+Malformed native data must report failure without mutating state or falling back to text/host MIME.
+
+This is semantic node copying, not resource acquisition: URL/image records remain literal and use
+the destination resource-base policy. Hosts still own asset files and nonnative MIME insertion.
+Coverage: `m3_qt_clipboard` plus VNote's `nodeClipboardRoundTrip` integration case.
+
 ### Node-properties placement
 
 Each editor owns one node-properties panel. `EditorConfig::separateNodePropertiesPanel`

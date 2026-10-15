@@ -486,6 +486,92 @@ QString MindMapController::selectedText() {
         return topics.join(QLatin1Char('\n'));
     } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
+QByteArray MindMapController::copySelectedNodes() {
+    if (selectedNodes.isEmpty()) return {};
+    try {
+        auto data = Json::parse(currentSnapshot.constData(), currentSnapshot.constData() + currentSnapshot.size());
+        std::unordered_set<std::string> selected, included;
+        for (const auto &id : selectedNodes) selected.insert(utf8(id));
+        Json roots = Json::array(), nodes = Json::array(), links = Json::array();
+        size_t pending = 0;
+        // Canonical preorder makes selected ancestor/descendant overlaps one subtree.
+        for (auto &node : data.at("nodes")) {
+            const auto &id = node.at("id").get_ref<const std::string &>();
+            if (pending == 0) {
+                if (!selected.count(id)) continue;
+                roots.push_back(id);
+                pending = 1;
+            }
+            --pending;
+            pending += node.at("children").size();
+            included.insert(id);
+            nodes.push_back(std::move(node));
+        }
+        if (roots.empty()) return {};
+        for (auto &link : data.at("crossLinks")) {
+            if (included.count(link.at("source").get_ref<const std::string &>()) &&
+                included.count(link.at("target").get_ref<const std::string &>()))
+                links.push_back(std::move(link));
+        }
+        Json result{{"schemaVersion", 1}, {"rootId", std::move(roots.front())},
+                    {"nodes", std::move(nodes)}, {"crossLinks", std::move(links)}};
+        if (roots.size() > 1) {
+            roots.erase(roots.begin());
+            result["orphanIds"] = std::move(roots);
+        }
+        return QByteArray::fromStdString(result.dump());
+    } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
+}
+bool MindMapController::pasteNodes(const QString &parent, const QByteArray &json) {
+    if (!writable() || !strings({parent})) return false;
+    if (json.contains('\0')) return fail(tr("JSON cannot contain NUL bytes"));
+    try {
+        M3Mindmap *raw = nullptr;
+        const auto parsed = m3_mindmap_from_json(json.constData(), &raw);
+        Map copied(raw, m3_mindmap_destroy);
+        requireStatus(parsed);
+        const auto bytes = snapshot(copied.get());
+        auto source = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
+        auto destination = Json::parse(currentSnapshot.constData(), currentSnapshot.constData() + currentSnapshot.size());
+        auto &nodes = destination.at("nodes");
+        const auto parentId = utf8(parent);
+        const auto target = std::find_if(nodes.begin(), nodes.end(), [&](const Json &node) {
+            return node.at("id") == parentId;
+        });
+        if (target == nodes.end()) return fail(tr("Node not found"));
+        std::unordered_map<std::string, std::string> ids;
+        ids.reserve(source.at("nodes").size());
+        for (const auto &node : source.at("nodes"))
+            ids.emplace(node.at("id").get<std::string>(), utf8(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+        const QString first = QString::fromStdString(ids.at(source.at("rootId").get_ref<const std::string &>()));
+        // Attach roots before growing nodes, which may invalidate the target iterator.
+        target->at("children").push_back(utf8(first));
+        if (const auto orphans = source.find("orphanIds"); orphans != source.end())
+            for (const auto &root : *orphans) target->at("children").push_back(ids.at(root.get_ref<const std::string &>()));
+        for (auto &node : source.at("nodes")) {
+            node["id"] = ids.at(node.at("id").get_ref<const std::string &>());
+            for (auto &child : node.at("children")) child = ids.at(child.get_ref<const std::string &>());
+            nodes.push_back(std::move(node));
+        }
+        for (auto &link : source.at("crossLinks")) {
+            link["id"] = utf8(QUuid::createUuid().toString(QUuid::WithoutBraces));
+            link["source"] = ids.at(link.at("source").get_ref<const std::string &>());
+            link["target"] = ids.at(link.at("target").get_ref<const std::string &>());
+            destination.at("crossLinks").push_back(std::move(link));
+        }
+        const auto merged = destination.dump();
+        raw = nullptr;
+        const auto mergedStatus = m3_mindmap_from_json(merged.c_str(), &raw);
+        Map candidate(raw, m3_mindmap_destroy);
+        requireStatus(mergedStatus);
+        const QPointer<MindMapController> guard(this);
+        const auto revision = documentRevision + 1;
+        const bool committed = commitChange(std::move(candidate), first);
+        // Do not change folds on failure or touch a replacement document from a host callback.
+        if (committed && guard && documentRevision == revision && !visibleNodes.contains(first)) revealNode(first);
+        return committed;
+    } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
+}
 QString MindMapController::toMarkdown() {
     try {
         char *raw = nullptr;
@@ -751,23 +837,26 @@ bool MindMapController::transact(Operation &&operation,
         Map candidate(raw, m3_mindmap_destroy);
         requireStatus(parsed);
         requireStatus(operation(candidate.get()));
-        auto bytes = snapshot(candidate.get());
-        if (bytes == currentSnapshot) { success(); return true; }
-        HistoryState next{bytes, selectedNodes, selectedLink};
-        const size_t required = historyCursor + 2;
-        if (required > history.capacity())
-            history.reserve(std::max(required, history.capacity() * 2));
-        // No fallible work remains before publication. Reserve before truncating
-        // redo; a failed command must retain every prior state and selection.
-        model.swap(candidate);
-        currentSnapshot.swap(bytes);
-        history.resize(historyCursor + 1);
-        history.push_back(std::move(next));
-        ++historyCursor;
-        ++documentRevision;
-        trimHistory();
-        return finishChange({}, false, false, preferredNode, preferredLink);
+        return commitChange(std::move(candidate), preferredNode, preferredLink);
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
+}
+bool MindMapController::commitChange(Map candidate, const QString &preferredNode, const QString &preferredLink) {
+    auto bytes = snapshot(candidate.get());
+    if (bytes == currentSnapshot) { success(); return true; }
+    HistoryState next{bytes, selectedNodes, selectedLink};
+    const size_t required = historyCursor + 2;
+    if (required > history.capacity())
+        history.reserve(std::max(required, history.capacity() * 2));
+    // No fallible work remains before publication. Reserve before truncating
+    // redo; a failed command must retain every prior state and selection.
+    model.swap(candidate);
+    currentSnapshot.swap(bytes);
+    history.resize(historyCursor + 1);
+    history.push_back(std::move(next));
+    ++historyCursor;
+    ++documentRevision;
+    trimHistory();
+    return finishChange({}, false, false, preferredNode, preferredLink);
 }
 bool MindMapController::finishChange(std::optional<Presentation> prepared, bool resetCamera, bool restoring,
                                     const QString &preferredNode, const QString &preferredLink) {
