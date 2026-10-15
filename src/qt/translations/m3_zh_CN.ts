@@ -492,8 +492,8 @@
         <translation>添加图像</translation>
     </message>
     <message>
-        <source>Copy Link Address</source>
-        <translation>复制链接地址</translation>
+        <source>Copy Link</source>
+        <translation>复制链接</translation>
     </message>
     <message>
         <source>Add Icons</source>

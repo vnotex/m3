@@ -1579,7 +1579,7 @@ public:
             if (!linkUrl.isEmpty()) {
                 if (linkEpoch != formattingEpoch || !host->isEnabled()) return;
                 QMenu menu(host);
-                menu.addAction(tr("Copy Link Address"), host, [this, linkUrl, linkEpoch] {
+                menu.addAction(tr("Copy Link"), host, [this, linkUrl, linkEpoch] {
                     if (linkEpoch == formattingEpoch && host->isEnabled())
                         QApplication::clipboard()->setText(linkUrl);
                 });
