@@ -350,7 +350,8 @@ main { max-width:80rem; margin:auto; }
 #articles > ul { padding:0; }
 #articles ul ul { border-left:1px solid #e4eaf0; }
 article { padding:.5rem 0 1rem; scroll-margin-top:1rem; }
-article h3 { margin:.4rem 0 .6rem; line-height:1.45; }
+article h1, article h3 { margin:.4rem 0 .6rem; line-height:1.45; }
+article h1 { font-size:2em; }
 .m3-article-icons { margin-right:.4em; }
 .m3-article-icon + .m3-article-icon { margin-left:.2em; }
 .m3-article-references { margin-left:.6em; font-size:.8em; font-weight:normal; }
@@ -493,15 +494,15 @@ QString encodeHtml(const QByteArray &document, const HtmlMap &map, bool interact
            QStringLiteral("</h1>\n<section id=\"visual-map\">\n");
     visualMap(out, map, string(root.at("id")), interactive, images);
     out += QStringLiteral("</section>\n<hr id=\"map-articles-separator\"/>\n<section id=\"articles\">\n<ul>\n");
-    struct Frame { const Json *node; bool close; };
+    struct Frame { const Json *node; bool close, treeRoot; };
     std::vector<Frame> pending;
     const auto orphans = data.find("orphanIds");
     if (orphans != data.end()) {
         pending.reserve(orphans->size() + 1);
         for (auto it = orphans->rbegin(); it != orphans->rend(); ++it)
-            pending.push_back({index.at(it->get<std::string>()), false});
+            pending.push_back({index.at(it->get<std::string>()), false, true});
     }
-    pending.push_back({&root, false});
+    pending.push_back({&root, false, true});
     while (!pending.empty()) {
         const auto frame = pending.back();
         pending.pop_back();
@@ -512,7 +513,8 @@ QString encodeHtml(const QByteArray &document, const HtmlMap &map, bool interact
             out += QStringLiteral("</li>\n");
             continue;
         }
-        out += QStringLiteral("<li><article id=\"") + anchor(node.at("id")) + QStringLiteral("\"><h3>");
+        const auto heading = frame.treeRoot ? QStringLiteral("h1") : QStringLiteral("h3");
+        out += QStringLiteral("<li><article id=\"") + anchor(node.at("id")) + QStringLiteral("\"><") + heading + u'>';
         articleValues(out, node.at("icons"), QStringLiteral("m3-article-icons"), QStringLiteral("m3-article-icon"), false);
         out += QStringLiteral("<span class=\"m3-article-topic\">") + escaped(topic(node)) + QStringLiteral("</span>");
         const auto related = references.find(&node);
@@ -527,7 +529,7 @@ QString encodeHtml(const QByteArray &document, const HtmlMap &map, bool interact
             }
             out += QStringLiteral("</span>");
         }
-        out += QStringLiteral("</h3>\n");
+        out += QStringLiteral("</") + heading + QStringLiteral(">\n");
         articleValues(out, node.at("tags"), QStringLiteral("m3-article-tags"), QStringLiteral("m3-article-tag"), true);
         articleNote(out, string(node.at("note")));
         const QString url = string(node.at("hyperLink"));
@@ -546,10 +548,10 @@ QString encodeHtml(const QByteArray &document, const HtmlMap &map, bool interact
             out += QStringLiteral("</figure>\n");
         }
         out += QStringLiteral("</article>\n");
-        pending.push_back({&node, true});
+        pending.push_back({&node, true, frame.treeRoot});
         if (!children.empty()) out += QStringLiteral("<ul>\n");
         for (auto it = children.rbegin(); it != children.rend(); ++it)
-            pending.push_back({index.at(it->get<std::string>()), false});
+            pending.push_back({index.at(it->get<std::string>()), false, false});
     }
     out += QStringLiteral("</ul>\n");
     out += QStringLiteral("</section>\n</main>\n") + QString::fromLatin1(viewerScript) + QStringLiteral("</body>\n</html>\n");

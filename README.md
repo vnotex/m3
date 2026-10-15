@@ -108,6 +108,8 @@ icons and the current layout are retained. Clicking a visual topic jumps to its 
 the map. Articles include every tree and folded descendant, with readable paragraphs, images,
 links, tag badges and heading icons. Cross-references beside topics link to destination articles;
 relationship labels remain available as tooltips. There is no map/articles toggle or metadata dump.
+Each tree starts with its own root topic as an H1. Orphan roots are peers of the main root,
+not grouped beneath an extra orphan-tree title. Descendant headings retain their existing styling.
 
 The default `HtmlExportMode::Interactive` starts at 100% with the main topic visible. Large maps
 scroll inside a bounded viewer; overlay controls zoom in/out (10–400%), reset to 100%, or reveal

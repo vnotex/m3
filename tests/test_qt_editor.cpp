@@ -732,7 +732,8 @@ static void checkHtmlReferences(const HtmlPage &page, const QString &id,
     const auto topics = page.classes(QStringLiteral("m3-article-topic"), article);
     CHECK(topics.size() == 1 && page.elements[topics.front()].tag == QStringLiteral("span"));
     const int heading = page.elements[topics.front()].parent;
-    CHECK(page.elements[heading].tag == QStringLiteral("h3"));
+    CHECK(page.elements[heading].tag == QStringLiteral("h1") ||
+          page.elements[heading].tag == QStringLiteral("h3"));
     const auto containers = page.classes(QStringLiteral("m3-article-references"), article);
     const auto links = page.classes(QStringLiteral("m3-cross-reference"), article);
     CHECK(links.size() == expected.size());
@@ -13132,6 +13133,18 @@ static void orphans_case() {
     const int mainList = html.elements[html.elements[articles[0]].parent].parent;
     const int orphanList = html.elements[html.elements[articles[2]].parent].parent;
     CHECK(mainList == orphanList && html.elements[mainList].tag == QStringLiteral("ul"));
+    const int articleSection = html.identified(QStringLiteral("id"), QStringLiteral("articles"));
+    CHECK(html.tags(QStringLiteral("h1"), articleSection).size() == 2);
+    for (const auto &id : ids) {
+        const int article = html.article(id);
+        const auto topics = html.classes(QStringLiteral("m3-article-topic"), article);
+        CHECK(topics.size() == 1);
+        const auto &topic = html.elements[topics.front()];
+        const auto &articleHeading = html.elements[topic.parent];
+        CHECK(articleHeading.parent == article);
+        CHECK(articleHeading.tag == (id == main || id == orphan ? QStringLiteral("h1") : QStringLiteral("h3")));
+        CHECK(topic.text == QString::fromStdString(record(forest, "nodes", id).at("topic").get<std::string>()));
+    }
     CHECK(html.elements[articles[4]].text.contains(QStringLiteral("Deep orphan leaf")));
     CHECK(changed.isEmpty() && exported(editor) == forest);
     editor.findText(QStringLiteral("Deep orphan leaf"), Qt::CaseSensitive);

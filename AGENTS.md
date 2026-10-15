@@ -260,6 +260,10 @@ or non-finite map bounds fail. Articles follow the map continuously, with plain-
 embedded images/placeholders, safe http/https/mailto links, nonempty icon/tag badges and directional
 cross-references beside headings. Reference labels are tooltips, not metadata rows. Escape text,
 attributes and CSS strings; never interpolate raw document/style values or fetch article URLs.
+Main and orphan root articles use peer H1 headings containing their authored topics; descendants
+retain H3. Do not insert an orphan-tree category title or filter authored topic text. Set article
+H1 size explicitly so older Chromium does not demote it through section-ancestor defaults. Print
+chrome hiding must stay `main > h1`, never hide article H1s; all article headings keep with next.
 
 Host-visible geometry contract: `#visual-map` contains `#map-viewer[data-mode]`, `#map-viewport`,
 `#map-space`, then absolute-positioned `#mindmap`, whose positive `data-width`/`data-height` describe
