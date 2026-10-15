@@ -358,15 +358,16 @@ public:
     // Empty on error. No selection,
     // layout, or document changes; an active inline draft remains uncommitted.
     QString toMarkdown() const;
-    enum class HtmlExportMode { Interactive, Static };
     // Copied standalone HTML: selectable node text and inline SVG connectors for
     // the current-layout visible map, followed by readable articles for all trees.
-    // Interactive provides scrolling/zoom controls; Static fits the full map to width.
+    // The full map stays at natural size in document flow, without a nested viewer.
+    // Articles use tree-relative H1-H6 titles, then lists for deeper nodes, with
+    // separate icon, tag, URL and cross-reference rows before notes and images.
     // Supplied node images are embedded, including cached images of hidden nodes;
     // this performs no resource I/O and does not rasterize the diagram. The main root
     // supplies the title. Committed data only; no editor state changes. Empty on error;
     // the snapshot survives edits and widget destruction.
-    QString toHtml(HtmlExportMode mode = HtmlExportMode::Interactive) const;
+    QString toHtml() const;
     QString lastError() const;
     // Empty parentId creates an orphan tree; otherwise inserts a child. -1 appends.
     QString addNode(const QString &parentId, const QString &topic, int index = -1);

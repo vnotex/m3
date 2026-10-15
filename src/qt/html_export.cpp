@@ -47,10 +47,11 @@ QString safeUrl(const QString &original) {
     return url.toString(QUrl::FullyEncoded);
 }
 QString urlText(const QString &original) {
-    const QString display = escaped(original);
+    const QString display = QStringLiteral("<span class=\"m3-article-url-text\">") + escaped(original) + QStringLiteral("</span>");
     const QString url = safeUrl(original);
     if (url.isEmpty()) return display;
-    return QStringLiteral("<a href=\"") + url.toHtmlEscaped() + QStringLiteral("\">") + display + QStringLiteral("</a>");
+    return QStringLiteral("<a href=\"") + url.toHtmlEscaped() + QStringLiteral("\"><span class=\"m3-article-url-icon\" aria-hidden=\"true\">&#8599;</span>") +
+           display + QStringLiteral("</a>");
 }
 QString number(qreal value) {
     if (!std::isfinite(value)) throw std::runtime_error("Invalid geometry for HTML export");
@@ -186,26 +187,13 @@ const QString &imageData(QHash<qint64, QString> &images, const QImage &pixels) {
     }
     return found.value();
 }
-void visualMap(QString &out, const HtmlMap &map, const QString &mainId, bool interactive,
-               QHash<qint64, QString> &images) {
+void visualMap(QString &out, const HtmlMap &map, QHash<qint64, QString> &images) {
     if (map.bounds.width() <= 0 || map.bounds.height() <= 0)
         throw std::runtime_error("Invalid map bounds for HTML export");
     const QPointF origin = map.bounds.topLeft();
     const QString width = number(map.bounds.width()), height = number(map.bounds.height());
     const QString size = QStringLiteral("width:") + width + QStringLiteral("px;height:") + height + QStringLiteral("px;");
-    out += QStringLiteral("<div id=\"map-viewer\" data-mode=\"") +
-           (interactive ? QStringLiteral("interactive") : QStringLiteral("static")) +
-           QStringLiteral("\" data-main-node=\"m3-map-node-") + QString::fromLatin1(mainId.toUtf8().toHex()) + QStringLiteral("\">\n");
-    if (interactive) {
-        out += QStringLiteral("<div id=\"map-controls\" class=\"m3-map-controls\" role=\"group\" aria-label=\"Map controls\" hidden=\"hidden\">"
-                              "<button type=\"button\" id=\"map-zoom-in\" aria-label=\"Zoom In\" title=\"Zoom In\">+</button>"
-                              "<button type=\"button\" id=\"map-zoom-out\" aria-label=\"Zoom Out\" title=\"Zoom Out\">&#8722;</button>"
-                              "<button type=\"button\" id=\"map-reset\" aria-label=\"Reset (100%)\" title=\"Reset (100%)\">100%</button>"
-                              "<button type=\"button\" id=\"map-main-node\" aria-label=\"Main Node\" title=\"Main Node\">Main Node</button>"
-                              "<output id=\"map-zoom-level\" aria-live=\"polite\" aria-label=\"Zoom level\">100%</output></div>\n");
-    }
-    out += QStringLiteral("<div id=\"map-viewport\"><div id=\"map-space\" style=\"") + size + QStringLiteral("\">\n") +
-           QStringLiteral("<div id=\"mindmap\" data-width=\"") + width + QStringLiteral("\" data-height=\"") + height +
+    out += QStringLiteral("<div id=\"mindmap\" data-width=\"") + width + QStringLiteral("\" data-height=\"") + height +
            QStringLiteral("\" style=\"left:0px;top:0px;") + size + QStringLiteral("background:") + color(map.palette.color(QPalette::Base)) +
            QStringLiteral(";\">\n<svg xmlns=\"http://www.w3.org/2000/svg\" class=\"m3-connectors\" aria-hidden=\"true\" width=\"") +
            width + QStringLiteral("\" height=\"") + height + QStringLiteral("\" viewBox=\"0 0 ") + width + u' ' + height + QStringLiteral("\">\n");
@@ -279,21 +267,20 @@ void visualMap(QString &out, const HtmlMap &map, const QString &mainId, bool int
         }
         out += QStringLiteral("</div>\n");
     }
-    out += QStringLiteral("</div>\n</div>\n</div>\n</div>\n");
+    out += QStringLiteral("</div>\n");
 }
-void articleValues(QString &out, const Json &values, const QString &group, const QString &item, bool block) {
+void articleValues(QString &out, const Json &values, const QString &group, const QString &item) {
     bool opened = false;
-    const QString element = block ? QStringLiteral("div") : QStringLiteral("span");
     for (const auto &value : values) {
         const QString text = string(value);
         if (text.trimmed().isEmpty()) continue;
         if (!opened) {
-            out += u'<' + element + QStringLiteral(" class=\"") + group + QStringLiteral("\">");
+            out += QStringLiteral("<div class=\"") + group + QStringLiteral("\">");
             opened = true;
         }
         out += QStringLiteral("<span class=\"") + item + QStringLiteral("\">") + escaped(text) + QStringLiteral("</span>");
     }
-    if (opened) out += QStringLiteral("</") + element + u'>';
+    if (opened) out += QStringLiteral("</div>\n");
 }
 void articleNote(QString &out, QString note) {
     if (note.trimmed().isEmpty()) return;
@@ -318,20 +305,8 @@ void articleNote(QString &out, QString note) {
 }
 static constexpr char stylesheet[] = R"HTML(<style>
 body { margin:0; padding:1rem 1rem 2rem; font:1rem/1.5 system-ui,sans-serif; color:#17212b; background:#fff; overflow-wrap:anywhere; }
-main { max-width:80rem; margin:auto; }
-#map-viewer { position:relative; margin:1rem 0; }
-#map-viewer[data-mode=interactive] { border:1px solid #d9e1e8; border-radius:.5rem; overflow:hidden; }
-.m3-map-controls { position:absolute; top:.6rem; right:.6rem; z-index:5; display:flex; align-items:center; gap:.25rem; padding:.25rem; border:1px solid #c9d4df; border-radius:.45rem; background:rgba(255,255,255,.95); box-shadow:0 2px 8px #0002; pointer-events:none; }
-.m3-map-controls button { min-width:2.25rem; min-height:2.25rem; padding:.3rem .6rem; border:0; border-radius:.25rem; background:#edf2f7; color:#173e67; font:inherit; cursor:pointer; pointer-events:auto; }
-.m3-map-controls button:hover { background:#dbe7f2; }
-.m3-map-controls button:disabled { opacity:.45; cursor:default; }
-.m3-map-controls button:focus-visible, .m3-topic:focus-visible { outline:2px solid #c45500; outline-offset:2px; }
-#map-zoom-level { min-width:3.5em; text-align:center; font-size:.85rem; color:#435568; }
-[hidden]{display:none !important}
-#map-viewport { position:relative; }
-#map-viewer[data-mode=interactive] #map-viewport { height:32rem; max-height:70vh; min-height:12rem; overflow:auto; }
-#map-space { position:relative; overflow:hidden; }
-#mindmap { position:absolute; left:0; top:0; transform-origin:0 0; }
+.m3-topic:focus-visible { outline:2px solid #c45500; outline-offset:2px; }
+#mindmap { position:relative; }
 #mindmap, #mindmap * { box-sizing:content-box; overflow-wrap:normal; word-break:normal; }
 .m3-connectors { position:absolute; left:0; top:0; z-index:0; pointer-events:none; }
 .m3-node { position:absolute; z-index:2; border-radius:8px; outline-offset:-.5px; }
@@ -345,16 +320,16 @@ main { max-width:80rem; margin:auto; }
 .m3-node-link { position:absolute; font:20px/20px sans-serif; text-align:center; color:#3498db; text-decoration:none; }
 .m3-fold-indicator { position:absolute; border-radius:50%; font:12px/12px sans-serif; text-align:center; outline-offset:-.5px; }
 #map-articles-separator { margin:2rem 0; border:0; border-top:1px solid #d9e1e8; }
-#articles { max-width:72ch; margin:0 auto; }
-#articles ul { list-style:none; padding:0 0 0 .9rem; margin:0; }
-#articles > ul { padding:0; }
-#articles ul ul { border-left:1px solid #e4eaf0; }
-article { padding:.5rem 0 1rem; scroll-margin-top:1rem; }
-article h1, article h3 { margin:.4rem 0 .6rem; line-height:1.45; }
-article h1 { font-size:2em; }
-.m3-article-icons { margin-right:.4em; }
+#articles ul { list-style:disc outside; padding:0; margin:0; overflow:visible; }
+#articles > ul { padding-left:1.25em; }
+article { margin:0; padding:0 0 1rem; scroll-margin-top:1rem; }
+.m3-article-title { margin:0 0 .6rem; line-height:1.45; }
+h1.m3-article-title { font-size:2em; }
+h2.m3-article-title { font-size:1.5em; }
+h3.m3-article-title { font-size:1.17em; }
+h4.m3-article-title, h5.m3-article-title, h6.m3-article-title { font-size:1em; }
 .m3-article-icon + .m3-article-icon { margin-left:.2em; }
-.m3-article-references { margin-left:.6em; font-size:.8em; font-weight:normal; }
+.m3-article-references { margin:.75rem 0; }
 .m3-cross-reference { display:inline; margin-right:.6em; text-decoration:none; }
 .m3-cross-reference:hover { text-decoration:underline; }
 .m3-cross-reference-icon { margin-right:.25em; }
@@ -362,112 +337,15 @@ article h1 { font-size:2em; }
 .m3-article-tag { display:inline-block; margin:.15rem .4rem .15rem 0; padding:.15rem .65rem; border-radius:1rem; background:#edf2f7; color:#36516c; font-size:.85em; }
 .m3-article-note p { margin:.75rem 0; }
 .m3-article-url { margin:.75rem 0; }
+.m3-article-url-icon { margin-right:.25em; }
 .m3-article-figure { margin:1rem 0; }
 .m3-article-image { display:block; max-width:100%; height:auto; border-radius:.3rem; }
 .m3-article-image-placeholder { display:block; padding:1rem; border:1px dashed #bac7d3; border-radius:.3rem; background:#f5f7f9; color:#52667a; }
 a { color:#124e85; }
 </style>
 )HTML";
-static constexpr char viewerScript[] = R"HTML(<script id="map-viewer-script">
-//<![CDATA[
-(function () {
-    var viewer = document.getElementById('map-viewer');
-    var viewport = document.getElementById('map-viewport');
-    var space = document.getElementById('map-space');
-    var map = document.getElementById('mindmap');
-    var width = Number(map.getAttribute('data-width'));
-    var height = Number(map.getAttribute('data-height'));
-    if (!(width > 0 && height > 0)) return;
-    function watchResize(callback) {
-        window.addEventListener('resize', callback);
-        window.addEventListener('load', callback);
-        if (window.ResizeObserver) {
-            var observer = new window.ResizeObserver(callback);
-            observer.observe(viewer);
-        }
-        callback();
-    }
-    if (viewer.getAttribute('data-mode') === 'static') {
-        watchResize(function () {
-            var available = viewer.clientWidth;
-            if (!(available > 0)) return;
-            var fit = Math.min(1, available / width);
-            // Layout zoom avoids document-wide print shrinkage; host paper rules win.
-            map.style.zoom = String(fit);
-            map.style.transform = 'none';
-            viewport.style.width = space.style.width = (width * fit) + 'px';
-            viewport.style.height = space.style.height = (height * fit) + 'px';
-        });
-        return;
-    }
-    var controls = document.getElementById('map-controls');
-    var zoomIn = document.getElementById('map-zoom-in');
-    var zoomOut = document.getElementById('map-zoom-out');
-    var reset = document.getElementById('map-reset');
-    var mainNode = document.getElementById('map-main-node');
-    var level = document.getElementById('map-zoom-level');
-    var scale = 1, offsetX = 0, offsetY = 0, viewWidth = 0, viewHeight = 0;
-    var initialized = false, center;
-    function mainPoint() {
-        var node = document.getElementById(viewer.getAttribute('data-main-node'));
-        if (!node) return {x:width / 2, y:height / 2};
-        var topic = node.querySelector('.m3-topic');
-        return {
-            x:parseFloat(node.style.left) + (topic ? parseFloat(topic.style.left) + parseFloat(topic.style.width) / 2 : parseFloat(node.style.width) / 2),
-            y:parseFloat(node.style.top) + (topic ? parseFloat(topic.style.top) + parseFloat(topic.style.height) / 2 : parseFloat(node.style.height) / 2)
-        };
-    }
-    function currentCenter() {
-        return {
-            x:(viewport.scrollLeft + viewWidth / 2 - offsetX) / scale,
-            y:(viewport.scrollTop + viewHeight / 2 - offsetY) / scale
-        };
-    }
-    function layout(nextScale, point) {
-        var w = viewport.clientWidth, h = viewport.clientHeight;
-        if (!(w > 0 && h > 0)) return;
-        scale = Math.max(0.1, Math.min(4, nextScale));
-        var spaceWidth, spaceHeight;
-        // Account for non-overlay scrollbars before calculating the centering offsets.
-        for (var i = 0; i < 3; ++i) {
-            spaceWidth = Math.max(w, width * scale);
-            spaceHeight = Math.max(h, height * scale);
-            space.style.width = spaceWidth + 'px';
-            space.style.height = spaceHeight + 'px';
-            if (w === viewport.clientWidth && h === viewport.clientHeight) break;
-            w = viewport.clientWidth;
-            h = viewport.clientHeight;
-        }
-        offsetX = (spaceWidth - width * scale) / 2;
-        offsetY = (spaceHeight - height * scale) / 2;
-        map.style.transform = 'translate(' + offsetX + 'px,' + offsetY + 'px) scale(' + scale + ')';
-        viewWidth = w;
-        viewHeight = h;
-        viewport.scrollLeft = point.x * scale + offsetX - w / 2;
-        viewport.scrollTop = point.y * scale + offsetY - h / 2;
-        center = currentCenter();
-        zoomIn.disabled = scale >= 4;
-        zoomOut.disabled = scale <= 0.1;
-        level.textContent = Math.round(scale * 100) + '%';
-        controls.hidden = false;
-        initialized = true;
-    }
-    viewport.addEventListener('scroll', function () {
-        // Resize can clamp scrolling before its callback; retain the previous center.
-        if (initialized && viewWidth === viewport.clientWidth && viewHeight === viewport.clientHeight)
-            center = currentCenter();
-    });
-    zoomIn.addEventListener('click', function () { layout(scale * 1.25, currentCenter()); });
-    zoomOut.addEventListener('click', function () { layout(scale / 1.25, currentCenter()); });
-    reset.addEventListener('click', function () { layout(1, currentCenter()); });
-    mainNode.addEventListener('click', function () { layout(scale, mainPoint()); });
-    watchResize(function () { layout(scale, initialized ? center : mainPoint()); });
-})();
-//]]>
-</script>
-)HTML";
 }
-QString encodeHtml(const QByteArray &document, const HtmlMap &map, bool interactive) {
+QString encodeHtml(const QByteArray &document, const HtmlMap &map) {
     const auto data = Json::parse(document.constData(), document.constData() + document.size());
     std::unordered_map<std::string, const Json *> index;
     const auto &nodes = data.at("nodes");
@@ -488,21 +366,22 @@ QString encodeHtml(const QByteArray &document, const HtmlMap &map, bool interact
     }
     QHash<qint64, QString> images;
     QString out = QStringLiteral("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\"/>\n"
-                                 "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>\n<title>");
+                                 "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>\n"
+                                 "<link rel=\"icon\" type=\"image/png\" href=\"https://raw.githubusercontent.com/vnotex/m3/main/pics/m3.png\"/>\n<title>");
     out += escaped(topic(root), false) + QStringLiteral("</title>\n") + QString::fromLatin1(stylesheet);
     out += QStringLiteral("</head>\n<body>\n<main>\n<h1>") + escaped(topic(root)) +
            QStringLiteral("</h1>\n<section id=\"visual-map\">\n");
-    visualMap(out, map, string(root.at("id")), interactive, images);
-    out += QStringLiteral("</section>\n<hr id=\"map-articles-separator\"/>\n<section id=\"articles\">\n<ul>\n");
-    struct Frame { const Json *node; bool close, treeRoot; };
+    visualMap(out, map, images);
+    out += QStringLiteral("</section>\n<hr id=\"map-articles-separator\"/>\n<section id=\"articles\">\n");
+    struct Frame { const Json *node; size_t depth; bool close; };
     std::vector<Frame> pending;
     const auto orphans = data.find("orphanIds");
     if (orphans != data.end()) {
         pending.reserve(orphans->size() + 1);
         for (auto it = orphans->rbegin(); it != orphans->rend(); ++it)
-            pending.push_back({index.at(it->get<std::string>()), false, true});
+            pending.push_back({index.at(it->get<std::string>()), 1, false});
     }
-    pending.push_back({&root, false, true});
+    pending.push_back({&root, 1, false});
     while (!pending.empty()) {
         const auto frame = pending.back();
         pending.pop_back();
@@ -510,16 +389,21 @@ QString encodeHtml(const QByteArray &document, const HtmlMap &map, bool interact
         const auto &children = node.at("children");
         if (frame.close) {
             if (!children.empty()) out += QStringLiteral("</ul>\n");
-            out += QStringLiteral("</li>\n");
+            if (frame.depth > 6) out += QStringLiteral("</li>\n");
             continue;
         }
-        const auto heading = frame.treeRoot ? QStringLiteral("h1") : QStringLiteral("h3");
-        out += QStringLiteral("<li><article id=\"") + anchor(node.at("id")) + QStringLiteral("\"><") + heading + u'>';
-        articleValues(out, node.at("icons"), QStringLiteral("m3-article-icons"), QStringLiteral("m3-article-icon"), false);
-        out += QStringLiteral("<span class=\"m3-article-topic\">") + escaped(topic(node)) + QStringLiteral("</span>");
+        const auto heading = frame.depth <= 6 ? u'h' + QString::number(static_cast<int>(frame.depth)) : QStringLiteral("p");
+        if (frame.depth > 6) out += QStringLiteral("<li>");
+        out += QStringLiteral("<article id=\"") + anchor(node.at("id")) + QStringLiteral("\"><") + heading +
+               QStringLiteral(" class=\"m3-article-title\"><span class=\"m3-article-topic\">") + escaped(topic(node)) +
+               QStringLiteral("</span></") + heading + QStringLiteral(">\n");
+        articleValues(out, node.at("icons"), QStringLiteral("m3-article-icons"), QStringLiteral("m3-article-icon"));
+        articleValues(out, node.at("tags"), QStringLiteral("m3-article-tags"), QStringLiteral("m3-article-tag"));
+        const QString url = string(node.at("hyperLink"));
+        if (!url.trimmed().isEmpty()) out += QStringLiteral("<p class=\"m3-article-url\">") + urlText(url) + QStringLiteral("</p>\n");
         const auto related = references.find(&node);
         if (related != references.end()) {
-            out += QStringLiteral("<span class=\"m3-article-references\">");
+            out += QStringLiteral("<div class=\"m3-article-references\">");
             for (const auto &reference : related->second) {
                 out += QStringLiteral("<a class=\"m3-cross-reference\" href=\"#") + anchor(reference.node->at("id")) +
                        QStringLiteral("\" title=\"") + attribute(string(reference.link->at("topic"))) + QStringLiteral("\">");
@@ -527,13 +411,9 @@ QString encodeHtml(const QByteArray &document, const HtmlMap &map, bool interact
                 if (!icon.trimmed().isEmpty()) out += QStringLiteral("<span class=\"m3-cross-reference-icon\">") + escaped(icon) + QStringLiteral("</span>");
                 out += QStringLiteral("<span aria-hidden=\"true\">&#8599; </span>") + escaped(topic(*reference.node)) + QStringLiteral("</a>");
             }
-            out += QStringLiteral("</span>");
+            out += QStringLiteral("</div>\n");
         }
-        out += QStringLiteral("</") + heading + QStringLiteral(">\n");
-        articleValues(out, node.at("tags"), QStringLiteral("m3-article-tags"), QStringLiteral("m3-article-tag"), true);
         articleNote(out, string(node.at("note")));
-        const QString url = string(node.at("hyperLink"));
-        if (!url.trimmed().isEmpty()) out += QStringLiteral("<p class=\"m3-article-url\">") + urlText(url) + QStringLiteral("</p>\n");
         const auto image = map.articleImages.constFind(string(node.at("id")));
         if (image != map.articleImages.constEnd()) {
             out += QStringLiteral("<figure class=\"m3-article-figure\">");
@@ -548,13 +428,15 @@ QString encodeHtml(const QByteArray &document, const HtmlMap &map, bool interact
             out += QStringLiteral("</figure>\n");
         }
         out += QStringLiteral("</article>\n");
-        pending.push_back({&node, true, frame.treeRoot});
-        if (!children.empty()) out += QStringLiteral("<ul>\n");
+        if (frame.depth >= 6 && (!children.empty() || frame.depth > 6)) {
+            // Close the child list and its owning LI before a sibling or the next root.
+            pending.push_back({&node, frame.depth, true});
+            if (!children.empty()) out += QStringLiteral("<ul>\n");
+        }
         for (auto it = children.rbegin(); it != children.rend(); ++it)
-            pending.push_back({index.at(it->get<std::string>()), false, false});
+            pending.push_back({index.at(it->get<std::string>()), frame.depth + 1, false});
     }
-    out += QStringLiteral("</ul>\n");
-    out += QStringLiteral("</section>\n</main>\n") + QString::fromLatin1(viewerScript) + QStringLiteral("</body>\n</html>\n");
+    out += QStringLiteral("</section>\n</main>\n</body>\n</html>\n");
     return out;
 }
 }

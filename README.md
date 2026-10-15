@@ -103,30 +103,29 @@ The link context menu contains **Rename/Edit**, a separator, the exclusive direc
 ### HTML export
 
 `MindMapEditor::toHtml()` exports real HTML nodes and inline SVG branches/cross-links, not an
-image of the whole map. Text can be selected and searched, while arrows, labels, colors, tags,
-icons and the current layout are retained. Clicking a visual topic jumps to its article below
-the map. Articles include every tree and folded descendant, with readable paragraphs, images,
-links, tag badges and heading icons. Cross-references beside topics link to destination articles;
-relationship labels remain available as tooltips. There is no map/articles toggle or metadata dump.
-Each tree starts with its own root topic as an H1. Orphan roots are peers of the main root,
-not grouped beneath an extra orphan-tree title. Descendant headings retain their existing styling.
+image of the whole map. The complete visible map is laid out directly at its natural 100% size.
+There is no nested scroll area, width cap, fitting script, or viewer toolbar; large maps extend
+the normal document. Resizing the browser does not shrink the map. Text remains selectable and
+searchable, and visual topics link to their articles below the map.
 
-The default `HtmlExportMode::Interactive` starts at 100% with the main topic visible. Large maps
-scroll inside a bounded viewer; overlay controls zoom in/out (10–400%), reset to 100%, or reveal
-the main node without changing zoom. Resizing preserves the current scale and view center.
-`toHtml(HtmlExportMode::Static)` omits controls and scrolling caps and fits the full map to the
-available width without upscaling, using layout zoom. It is intended for print/custom consumers.
+Articles include every tree and folded descendant. Levels 1–6 use H1–H6 without list wrappers;
+deeper nodes use nested list items with a single marker gutter. Each main or orphan root starts
+at H1 with its own topic, never an extra orphan-tree title. Every node has separate rows for its
+title, icons, tag badges, URL with a link icon, and links to other nodes, omitting absent rows.
+Notes and supplied images follow. Relationship labels remain link tooltips; notes stay escaped
+plain text rather than being interpreted as Markdown or HTML.
 
-Styles, the small viewer script and supplied node-image pixels are embedded for offline use.
-Images alone remain PNGs; pending or failed host image requests have explicit placeholders.
-Articles reuse cached pixels even for folded nodes. Export never fetches image URLs or starts
-requests for hidden nodes; hosts needing all images must expand and settle requests first.
-Fonts are referenced by their resolved families rather than redistributed, so another machine
-may substitute its available fonts. Without JavaScript the interactive map remains scrollable
-at natural size and its controls stay hidden.
+Styles and supplied image pixels are embedded for offline content. The tab favicon uses the
+[m3 logo hosted on GitHub](https://raw.githubusercontent.com/vnotex/m3/main/pics/m3.png), so the
+favicon itself needs network access. Pending or failed host image requests have explicit
+placeholders. Articles reuse cached pixels even for folded nodes; export never fetches node-image
+URLs or starts hidden-node requests. Hosts needing all images must expand and settle requests
+first. Fonts are referenced by their resolved families, not redistributed, so another machine
+may substitute its available fonts.
 
 This is a projection of committed content, not another editable mind-map UI. Editor selection,
-zoom, pan, hover and uncommitted drafts do not change the output or the source document.
+zoom, pan, hover and uncommitted drafts do not change the output or the source document. The HTML
+requires no JavaScript. Print hosts can fit the map separately while retaining readable articles.
 
 For shared-library builds, make the m3 runtime libraries available to your application; the Qt editor also needs its matching Qt runtime and plugins. See the installed-package [core consumer](tests/consumer/CMakeLists.txt) and [Qt consumer](tests/qt_consumer/CMakeLists.txt) examples for linking and Windows DLL copying.
 

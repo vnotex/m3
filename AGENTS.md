@@ -249,35 +249,40 @@ all nodes, including folded descendants. It performs no I/O or requests, and ord
 allocates no article-image records. The detached `buildScene()` collector records the same node
 rectangles, routed curves, leader lines, arrowheads and label positions used by the editor. Do not
 introduce another router or read live selection/drag/camera geometry. Ordinary scene construction
-has no HTML-record allocation. Public `toHtml(HtmlExportMode)` returns a copied string; its default
-is Interactive, while Static omits controls and viewport caps for print/custom consumers.
+has no HTML-record allocation. Public `toHtml()` returns a copied, natural-size HTML document;
+there is no export mode, viewer toolbar, sizing script or nested scroll container.
 
 `html_export.cpp` emits selectable HTML topic/icon/tag/link-label text at Qt-measured positions,
 including paragraph direction, and inline SVG paths/polygons behind nodes (`pointer-events:none`).
 Only supplied image pixels are PNG-encoded; visual and article images share one encoding cache.
 There is no whole-map image, canvas, foreignObject or raster-size/downsampling fallback. Invalid
-or non-finite map bounds fail. Articles follow the map continuously, with plain-text paragraphs,
-embedded images/placeholders, safe http/https/mailto links, nonempty icon/tag badges and directional
-cross-references beside headings. Reference labels are tooltips, not metadata rows. Escape text,
-attributes and CSS strings; never interpolate raw document/style values or fetch article URLs.
-Main and orphan root articles use peer H1 headings containing their authored topics; descendants
-retain H3. Do not insert an orphan-tree category title or filter authored topic text. Set article
-H1 size explicitly so older Chromium does not demote it through section-ancestor defaults. Print
-chrome hiding must stay `main > h1`, never hide article H1s; all article headings keep with next.
+or non-finite map bounds fail. Escape text, attributes and CSS strings. Node-image URLs are never
+fetched by the exported document. Its sole hosted presentation asset is the requested m3 PNG
+favicon; generating the HTML still performs no network I/O.
 
-Host-visible geometry contract: `#visual-map` contains `#map-viewer[data-mode]`, `#map-viewport`,
-`#map-space`, then absolute-positioned `#mindmap`, whose positive `data-width`/`data-height` describe
-natural CSS-pixel dimensions. The spacer reserves scaled flow dimensions. Node CSS rectangles and
-SVG coordinates are map-local, translated by detached bounds. Visual node IDs use
-`m3-map-node-<UTF8 hex>`; their topic links target article IDs `m3-node-<UTF8 hex>`.
+Articles are an iterative preorder projection. Main and orphan roots restart at depth 1. Depths
+1–6 are H1–H6 articles directly under `#articles`, without a forest-wrapping list. A depth-6
+article's depth-7 children start a sibling UL; deeper child lists remain under their parent's LI.
+List titles use `p.m3-article-title`, not invalid deeper heading tags. Close each list before the
+next heading or root. Use real outside markers with one gutter, not cumulative nested indentation.
+Set heading sizes explicitly to avoid older Chromium's section-ancestor H1 demotion and keep deep
+headings readable. Never insert an orphan category title or filter authored topic text.
 
-Interactive output starts at 100%, reveals the main topic, and scopes scrolling caps to its mode.
-Zoom/reset/resize preserve the center where scroll bounds permit; Main Node reveals the root at
-current scale. Static fitting never assigns scroll offsets or centering transforms and applies
-layout zoom only to `#mindmap`, never ancestors. Ignore zero-size containers and yield to host
-`!important` rules. Print hosts must pin all four containers, not merely the viewport: unscaled
-flow width, ancestor zoom or residual scroll offsets can shrink or crop the printed document.
-VNote fixes paper geometry with map-only layout zoom and starts articles on page 2.
+Each article's direct rows are `.m3-article-title`, icons, tags, URL, cross-references, note, figure,
+in that order; skip absent fields. Icons and references do not live in the heading. Safe
+http/https/mailto links contain an aria-hidden link indicator and `.m3-article-url-text`; unsafe
+URLs stay inert text without a link indicator. References preserve direction, self/parallel edges
+and authored-label tooltips. Notes are escaped plain-text paragraphs; figures use supplied pixels
+or explicit placeholders. IDs remain `m3-node-<UTF8 hex>` for visual-topic/reference navigation.
+
+Host-visible geometry contract: `#visual-map` directly contains relative, in-flow `#mindmap` with
+positive natural CSS-pixel `data-width`/`data-height` and matching dimensions. Node/SVG coordinates
+remain map-local, translated by detached bounds. Visual IDs use `m3-map-node-<UTF8 hex>`. No main or
+article width caps, centering, transforms, fitting or JavaScript; ordinary document scrolling exposes
+large maps. Print hosts reserve the scaled rectangle on `#visual-map`, make its map child absolute,
+and apply CSS layout zoom only to that child. Never zoom ancestors or let natural-width overflow
+shrink the whole PDF. VNote preserves map-first/article-next pagination, list markers, and 12pt body.
+Print chrome hiding stays `main > h1`, not article headings; `.m3-article-title` keeps with next.
 
 Coverage in `m3_qt_html` / `m3_qt_html_edges` compares parsed DOM/SVG with actual scene geometry and
 paint primitives, including large maps, images, safe content, all layout directions and self/parallel/

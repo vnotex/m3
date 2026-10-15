@@ -72,6 +72,6 @@ struct HtmlMap {
     std::vector<HtmlLink> links;
     QHash<QString, HtmlArticleImage> articleImages;
 };
-QString encodeHtml(const QByteArray &document, const HtmlMap &map, bool interactive);
+QString encodeHtml(const QByteArray &document, const HtmlMap &map);
 }
 #endif

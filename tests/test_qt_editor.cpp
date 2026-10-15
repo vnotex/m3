@@ -616,6 +616,12 @@ struct HtmlPage {
         }
         CHECK(!reader.hasError() && stack.empty());
     }
+    std::vector<int> children(int parent) const {
+        std::vector<int> result;
+        for (size_t i = 0; i < elements.size(); ++i)
+            if (elements[i].parent == parent) result.push_back(static_cast<int>(i));
+        return result;
+    }
     std::vector<int> tags(const QString &tag, int ancestor = -1) const {
         std::vector<int> matches;
         for (size_t i = 0; i < elements.size(); ++i) {
@@ -682,39 +688,71 @@ struct HtmlPage {
         return image;
     }
 };
-static void checkHtmlViewer(const HtmlPage &page, bool interactive, const QString &root) {
+static void checkHtmlDocument(const HtmlPage &page) {
     const int visual = page.identified(QStringLiteral("id"), QStringLiteral("visual-map"));
-    const int viewer = page.identified(QStringLiteral("id"), QStringLiteral("map-viewer"));
-    const int viewport = page.identified(QStringLiteral("id"), QStringLiteral("map-viewport"));
-    const int space = page.identified(QStringLiteral("id"), QStringLiteral("map-space"));
     const int map = page.identified(QStringLiteral("id"), QStringLiteral("mindmap"));
     const int separator = page.identified(QStringLiteral("id"), QStringLiteral("map-articles-separator"));
     const int articles = page.identified(QStringLiteral("id"), QStringLiteral("articles"));
-    CHECK(page.elements[viewer].parent == visual && page.elements[viewport].parent == viewer);
-    CHECK(page.elements[space].parent == viewport && page.elements[map].parent == space);
+    CHECK(page.children(visual) == std::vector<int>{map});
     CHECK(page.elements[visual].parent == page.elements[separator].parent);
     CHECK(page.elements[visual].parent == page.elements[articles].parent && visual < separator && separator < articles);
     CHECK(page.elements[separator].tag == QStringLiteral("hr"));
-    CHECK(page.elements[viewer].attributes.value(QStringLiteral("data-mode")) ==
-          (interactive ? QStringLiteral("interactive") : QStringLiteral("static")));
-    CHECK(page.elements[viewer].attributes.value(QStringLiteral("data-main-node")) ==
-          page.elements[page.node(root)].attributes.value(QStringLiteral("id")));
-    for (int ancestor = articles; ancestor >= 0; ancestor = page.elements[ancestor].parent)
-        CHECK(!page.elements[ancestor].attributes.contains(QStringLiteral("hidden")));
-    const auto controls = page.classes(QStringLiteral("m3-map-controls"));
-    CHECK(controls.size() == (interactive ? 1u : 0u));
-    CHECK(page.tags(QStringLiteral("button")).size() == (interactive ? 4u : 0u));
-    if (interactive) {
-        const int panel = page.identified(QStringLiteral("id"), QStringLiteral("map-controls"));
-        CHECK(controls.front() == panel && page.elements[panel].parent == viewer);
-        CHECK(page.elements[panel].attributes.contains(QStringLiteral("hidden")));
-        for (const QString &id : {QStringLiteral("map-zoom-in"), QStringLiteral("map-zoom-out"),
-                                 QStringLiteral("map-reset"), QStringLiteral("map-main-node")}) {
-            const int button = page.identified(QStringLiteral("id"), id);
-            const auto &element = page.elements[button];
-            CHECK(element.tag == QStringLiteral("button") && element.parent == panel);
-            CHECK(!element.text.trimmed().isEmpty() || !element.attributes.value(QStringLiteral("aria-label")).isEmpty());
+    CHECK(page.tags(QStringLiteral("script")).empty() && page.tags(QStringLiteral("button")).empty());
+    for (const auto &element : page.elements) {
+        CHECK(!element.attributes.contains(QStringLiteral("hidden")));
+        CHECK(!element.attributes.contains(QStringLiteral("data-mode")));
+        CHECK(!element.attributes.contains(QStringLiteral("data-main-node")));
+        for (auto it = element.attributes.begin(); it != element.attributes.end(); ++it)
+            CHECK(!it.key().startsWith(QStringLiteral("on"), Qt::CaseInsensitive));
+    }
+    const QStringList rowOrder{QStringLiteral("m3-article-title"), QStringLiteral("m3-article-icons"),
+        QStringLiteral("m3-article-tags"), QStringLiteral("m3-article-url"), QStringLiteral("m3-article-references"),
+        QStringLiteral("m3-article-note"), QStringLiteral("m3-article-figure")};
+    const QStringList rowTags{QString(), QStringLiteral("div"), QStringLiteral("div"), QStringLiteral("p"),
+        QStringLiteral("div"), QStringLiteral("div"), QStringLiteral("figure")};
+    for (const int article : page.tags(QStringLiteral("article"))) {
+        const auto rows = page.children(article);
+        CHECK(!rows.empty());
+        int previous = -1;
+        for (const int row : rows) {
+            const auto &element = page.elements[row];
+            const int order = rowOrder.indexOf(element.attributes.value(QStringLiteral("class")));
+            CHECK(order >= 0 && order > previous);
+            CHECK(order == 0 || element.tag == rowTags[order]);
+            previous = order;
         }
+        const int title = rows.front();
+        CHECK(page.elements[title].attributes.value(QStringLiteral("class")) == rowOrder.front());
+        const auto topics = page.classes(QStringLiteral("m3-article-topic"), article);
+        CHECK(topics.size() == 1 && page.children(title) == topics);
+        CHECK(page.elements[topics.front()].tag == QStringLiteral("span"));
+        CHECK(page.elements[title].text == page.elements[topics.front()].text);
+        const QString tag = page.elements[title].tag;
+        if (tag == QStringLiteral("p")) CHECK(page.elements[page.elements[article].parent].tag == QStringLiteral("li"));
+        else {
+            CHECK(tag.size() == 2 && tag[0] == u'h' && tag[1] >= u'1' && tag[1] <= u'6');
+            CHECK(page.elements[article].parent == articles);
+        }
+    }
+    for (const int list : page.tags(QStringLiteral("ul"), articles)) {
+        const int parent = page.elements[list].parent;
+        CHECK(parent == articles || page.elements[parent].tag == QStringLiteral("li"));
+        const auto items = page.children(list);
+        CHECK(!items.empty());
+        for (const int item : items) CHECK(page.elements[item].tag == QStringLiteral("li"));
+        if (parent == articles) {
+            int previous = -1;
+            for (const int sibling : page.children(articles)) if (sibling < list) previous = sibling;
+            CHECK(previous >= 0 && page.elements[previous].tag == QStringLiteral("article"));
+            CHECK(page.elements[page.children(previous).front()].tag == QStringLiteral("h6"));
+        }
+    }
+    for (const int item : page.tags(QStringLiteral("li"), articles)) {
+        CHECK(page.elements[page.elements[item].parent].tag == QStringLiteral("ul"));
+        const auto contents = page.children(item);
+        CHECK(contents.size() == 1 || contents.size() == 2);
+        CHECK(page.elements[contents.front()].tag == QStringLiteral("article"));
+        if (contents.size() == 2) CHECK(page.elements[contents.back()].tag == QStringLiteral("ul"));
     }
     for (const int node : page.classes(QStringLiteral("m3-node"))) {
         const auto topics = page.classes(QStringLiteral("m3-topic"), node);
@@ -731,17 +769,15 @@ static void checkHtmlReferences(const HtmlPage &page, const QString &id,
     const int article = page.article(id);
     const auto topics = page.classes(QStringLiteral("m3-article-topic"), article);
     CHECK(topics.size() == 1 && page.elements[topics.front()].tag == QStringLiteral("span"));
-    const int heading = page.elements[topics.front()].parent;
-    CHECK(page.elements[heading].tag == QStringLiteral("h1") ||
-          page.elements[heading].tag == QStringLiteral("h3"));
+    const int title = page.elements[topics.front()].parent;
+    CHECK(page.elements[title].parent == article);
+    CHECK(page.elements[title].attributes.value(QStringLiteral("class")) == QStringLiteral("m3-article-title"));
     const auto containers = page.classes(QStringLiteral("m3-article-references"), article);
     const auto links = page.classes(QStringLiteral("m3-cross-reference"), article);
     CHECK(links.size() == expected.size());
     if (expected.size() == 0) { CHECK(containers.empty()); return; }
-    CHECK(containers.size() == 1 && page.elements[containers.front()].parent == heading);
-    int previous = -1;
-    for (int i = 0; i < containers.front(); ++i) if (page.elements[i].parent == heading) previous = i;
-    CHECK(previous == topics.front());
+    CHECK(containers.size() == 1 && page.elements[containers.front()].parent == article);
+    CHECK(page.elements[containers.front()].tag == QStringLiteral("div") && containers.front() > title);
     size_t next = 0;
     for (const auto &reference : expected) {
         const auto &link = page.elements[links[next++]];
@@ -753,6 +789,18 @@ static void checkHtmlReferences(const HtmlPage &page, const QString &id,
         CHECK(link.attributes.value(QStringLiteral("title")) == reference.second);
         CHECK(link.text.contains(target.front()));
     }
+}
+static void checkHtmlRows(const HtmlPage &page, const QString &id, const QStringList &expected) {
+    QStringList rows;
+    for (const int row : page.children(page.article(id)))
+        rows.append(page.elements[row].attributes.value(QStringLiteral("class")));
+    CHECK(rows == expected);
+}
+static void checkHtmlTitle(const HtmlPage &page, const QString &id, const QString &tag, const QString &topic) {
+    const int article = page.article(id);
+    const auto titles = page.classes(QStringLiteral("m3-article-title"), article);
+    CHECK(titles.size() == 1 && page.elements[titles.front()].parent == article);
+    CHECK(page.elements[titles.front()].tag == tag && page.elements[titles.front()].text == topic);
 }
 static QMap<QString, QString> htmlStyle(const HtmlElement &element) {
     QMap<QString, QString> result;
@@ -1302,7 +1350,7 @@ static void html_case() {
         retained = editor.toHtml();
         const HtmlPage page(retained);
         compareHtmlScene(editor, page);
-        checkHtmlViewer(page, true, QStringLiteral("r"));
+        checkHtmlDocument(page);
         CHECK(page.classes(QStringLiteral("m3-node")).size() == 4);
         const auto topic = page.classes(QStringLiteral("m3-topic"), page.node(QStringLiteral("r")));
         CHECK(topic.size() == 1 && page.elements[topic.front()].text == root);
@@ -1320,10 +1368,12 @@ static void html_case() {
         CHECK(page.values(QStringLiteral("title")) == QStringList{root});
         CHECK(page.articleIds() == QStringList({"m3-node-72", "m3-node-61", "m3-node-64", "m3-node-62", "m3-node-63"}));
         CHECK(page.classValues(QStringLiteral("m3-article-topic")).contains(QStringLiteral("Delta")));
-        const auto articles = page.tags(QStringLiteral("article"));
-        const int alphaLi = page.elements[articles[1]].parent;
-        const int deltaLi = page.elements[articles[2]].parent;
-        CHECK(page.elements[page.elements[deltaLi].parent].parent == alphaLi);
+        checkHtmlTitle(page, QStringLiteral("r"), QStringLiteral("h1"), root);
+        checkHtmlTitle(page, QStringLiteral("a"), QStringLiteral("h2"), QStringLiteral("Alpha"));
+        checkHtmlTitle(page, QStringLiteral("d"), QStringLiteral("h3"), QStringLiteral("Delta"));
+        checkHtmlTitle(page, QStringLiteral("b"), QStringLiteral("h2"), QStringLiteral("Beta"));
+        checkHtmlTitle(page, QStringLiteral("c"), QStringLiteral("h2"), QStringLiteral("Gamma"));
+        CHECK(page.tags(QStringLiteral("ul")).empty() && page.tags(QStringLiteral("li")).empty());
         const int rootArticle = page.article(QStringLiteral("r"));
         CHECK(page.classValues(QStringLiteral("m3-article-topic"), rootArticle) == QStringList{root});
         CHECK(page.classValues(QStringLiteral("m3-article-tag"), rootArticle) == QStringList({"x", "x"}));
@@ -1343,6 +1393,11 @@ static void html_case() {
         CHECK(hyperlinks.size() == 1);
         CHECK(page.elements[hyperlinks.front()].attributes.value(QStringLiteral("href")) ==
               QStringLiteral("https://example.com/?a=1&b=%22quoted%22"));
+        checkHtmlRows(page, QStringLiteral("r"), {QStringLiteral("m3-article-title"), QStringLiteral("m3-article-icons"),
+            QStringLiteral("m3-article-tags"), QStringLiteral("m3-article-url"), QStringLiteral("m3-article-note"),
+            QStringLiteral("m3-article-figure")});
+        checkHtmlRows(page, QStringLiteral("a"), {QStringLiteral("m3-article-title"), QStringLiteral("m3-article-references")});
+        checkHtmlRows(page, QStringLiteral("b"), {QStringLiteral("m3-article-title")});
         const int bareArticle = page.article(QStringLiteral("b"));
         CHECK(page.elements[bareArticle].text.trimmed() == QStringLiteral("Beta"));
         for (const QString &name : {QStringLiteral("m3-article-icons"), QStringLiteral("m3-article-tags"),
@@ -1371,12 +1426,10 @@ static void html_case() {
             const int horizontal = view.horizontalScrollBar()->value(), vertical = view.verticalScrollBar()->value();
             const QString node = editor.selectedNodeId(), link = editor.selectedLinkId();
             const auto selections = selected.size();
-            for (const auto mode : {Editor::HtmlExportMode::Interactive, Editor::HtmlExportMode::Static}) {
-                const HtmlPage snapshot(editor.toHtml(mode));
-                sameHtmlMap(snapshot, page);
-                checkHtmlViewer(snapshot, mode == Editor::HtmlExportMode::Interactive, QStringLiteral("r"));
-                CHECK(snapshot.values(QStringLiteral("article")) == page.values(QStringLiteral("article")));
-            }
+            const HtmlPage snapshot(editor.toHtml());
+            sameHtmlMap(snapshot, page);
+            checkHtmlDocument(snapshot);
+            CHECK(snapshot.values(QStringLiteral("article")) == page.values(QStringLiteral("article")));
             CHECK(view.scene() == scene && view.transform() == transform && view.sceneRect() == sceneRect);
             CHECK(view.horizontalScrollBar()->value() == horizontal && view.verticalScrollBar()->value() == vertical);
             CHECK(editor.selectedNodeId() == node && editor.selectedLinkId() == link);
@@ -1527,11 +1580,7 @@ static void html_case() {
         const auto failed = hidden.classes(QStringLiteral("m3-article-image-placeholder"), hidden.article(QStringLiteral("f")));
         CHECK(failed.size() == 1 && !hidden.elements[failed.front()].text.trimmed().isEmpty());
         CHECK(hidden.elements[failed.front()].attributes.value(QStringLiteral("data-image-state")) == QStringLiteral("unavailable"));
-        const HtmlPage staticPage(editor.toHtml(Editor::HtmlExportMode::Static));
-        checkHtmlViewer(staticPage, false, QStringLiteral("r"));
-        sameHtmlMap(staticPage, hidden);
-        CHECK(staticPage.values(QStringLiteral("article")) == hidden.values(QStringLiteral("article")));
-        for (const int image : staticPage.classes(QStringLiteral("m3-article-image"))) staticPage.nodeImage(image);
+        checkHtmlDocument(hidden);
         CHECK(view.scene() == scene && view.transform() == transform);
         CHECK(view.horizontalScrollBar()->value() == horizontal && view.verticalScrollBar()->value() == vertical);
         pump();
@@ -1580,7 +1629,7 @@ static void html_edges_case() {
                                                       {"a", "Parallel"}, {"a", "Reverse"}, {"b", "Self"}});
         checkHtmlReferences(page, QStringLiteral("r"), {});
         CHECK(page.classes(QStringLiteral("m3-cross-reference")).size() == 9);
-        checkHtmlViewer(page, true, QStringLiteral("r"));
+        checkHtmlDocument(page);
         hasLeader |= !page.classes(QStringLiteral("m3-link-leader")).empty();
         const QRectF root = topicRect(editor, QString::fromUtf8("Racine 世界 🌍"));
         const QRectF alpha = topicRect(editor, QStringLiteral("Alpha"));
@@ -1598,6 +1647,105 @@ static void html_edges_case() {
         }
         return result;
     };
+    {
+        Json forest = chain(8);
+        forest["nodes"][0]["children"].push_back("heading2");
+        forest["nodes"][4]["children"].push_back("heading6");
+        forest["nodes"][5]["children"].push_back("sibling7");
+        forest["nodes"][6]["children"].push_back("sibling8");
+        auto &details = forest["nodes"][7];
+        details["icons"] = Json::array({"<star>", "", " ", "<star>"});
+        details["tags"] = Json::array({"Tag & one", "", "Tag & one"});
+        details["hyperLink"] = "https://example.com/?a=1&b=%22eight%22";
+        details["note"] = "First <b>literal</b> line\n\nSecond paragraph";
+        details["image"] = {{"url", "memory:rows"}, {"width", 120}, {"height", 60}};
+        forest["nodes"].push_back({{"id", "sibling8"}, {"topic", "Sibling eight"}});
+        forest["nodes"].push_back({{"id", "sibling7"}, {"topic", "Sibling seven"}});
+        forest["nodes"].push_back({{"id", "heading6"}, {"topic", "Sibling six"}, {"children", {"last7"}}});
+        forest["nodes"].push_back({{"id", "last7"}, {"topic", "Last seven"}});
+        forest["nodes"].push_back({{"id", "heading2"}, {"topic", "Sibling two"}});
+        const QString orphanTopic = QString::fromUtf8("Authored orphan <世界>");
+        forest["nodes"].push_back({{"id", "orphan"}, {"topic", utf8(orphanTopic)}, {"children", {"orphan-child"}},
+            {"icons", {"", " \t"}}, {"tags", {"", " \t"}}, {"hyperLink", " \t"}, {"note", "\r\n \t"}});
+        forest["nodes"].push_back({{"id", "orphan-child"}, {"topic", "Orphan child"}});
+        forest["nodes"].push_back({{"id", "other-orphan"}, {"topic", "Second authored root"}});
+        forest["orphanIds"] = {"orphan", "other-orphan"};
+        forest["crossLinks"] = Json::array({{{"id", "row-reference"}, {"source", "n7"}, {"target", "orphan"},
+            {"directed", true}, {"topic", "Authored relation"}, {"icon", "<link>"}}});
+        std::reverse(forest["nodes"].begin(), forest["nodes"].end());
+        QSignalSpy requested(&editor, &Editor::imageRequested);
+        CHECK(editor.loadJson(encoded(forest)));
+        CHECK(QTest::qWaitFor([&] { return requested.size() == 1; }, 5000));
+        const QImage pixels = imagePixels();
+        editor.provideImage(requested.front()[0].toString(), requested.front()[1].toULongLong(), pixels);
+        editor.clearSelection();
+        pump();
+        const QByteArray before = editor.toJson();
+        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        const HtmlPage page(editor.toHtml());
+        CHECK(editor.toJson() == before && changed.isEmpty() && selected.isEmpty() && requested.size() == 1);
+        compareHtmlScene(editor, page);
+        checkHtmlDocument(page);
+        QStringList expectedIds;
+        for (const QString &id : {QStringLiteral("n0"), QStringLiteral("n1"), QStringLiteral("n2"), QStringLiteral("n3"),
+            QStringLiteral("n4"), QStringLiteral("n5"), QStringLiteral("n6"), QStringLiteral("n7"),
+            QStringLiteral("sibling8"), QStringLiteral("sibling7"), QStringLiteral("heading6"), QStringLiteral("last7"),
+            QStringLiteral("heading2"), QStringLiteral("orphan"), QStringLiteral("orphan-child"), QStringLiteral("other-orphan")})
+            expectedIds.append(QStringLiteral("m3-node-") + QString::fromLatin1(id.toUtf8().toHex()));
+        CHECK(page.articleIds() == expectedIds);
+        CHECK(page.classes(QStringLiteral("m3-article-title")).size() == 16);
+        for (int i = 0; i < 8; ++i)
+            checkHtmlTitle(page, QStringLiteral("n") + QString::number(i),
+                i < 6 ? QStringLiteral("h") + QString::number(i + 1) : QStringLiteral("p"),
+                QStringLiteral("Node ") + QString::number(i));
+        checkHtmlTitle(page, QStringLiteral("heading6"), QStringLiteral("h6"), QStringLiteral("Sibling six"));
+        checkHtmlTitle(page, QStringLiteral("heading2"), QStringLiteral("h2"), QStringLiteral("Sibling two"));
+        checkHtmlTitle(page, QStringLiteral("orphan"), QStringLiteral("h1"), orphanTopic);
+        checkHtmlTitle(page, QStringLiteral("orphan-child"), QStringLiteral("h2"), QStringLiteral("Orphan child"));
+        checkHtmlTitle(page, QStringLiteral("other-orphan"), QStringLiteral("h1"), QStringLiteral("Second authored root"));
+        for (const auto &entry : {std::make_pair(QStringLiteral("sibling8"), QStringLiteral("Sibling eight")),
+            std::make_pair(QStringLiteral("sibling7"), QStringLiteral("Sibling seven")),
+            std::make_pair(QStringLiteral("last7"), QStringLiteral("Last seven"))})
+            checkHtmlTitle(page, entry.first, QStringLiteral("p"), entry.second);
+        const int articles = page.identified(QStringLiteral("id"), QStringLiteral("articles"));
+        const auto lists = page.tags(QStringLiteral("ul"), articles);
+        CHECK(lists.size() == 3 && page.tags(QStringLiteral("li"), articles).size() == 5);
+        const int seven = page.elements[page.article(QStringLiteral("n6"))].parent;
+        const int eight = page.elements[page.article(QStringLiteral("n7"))].parent;
+        CHECK(page.elements[lists[0]].parent == articles && page.elements[seven].parent == lists[0]);
+        CHECK(page.elements[lists[1]].parent == seven && page.elements[eight].parent == lists[1]);
+        CHECK(page.elements[page.elements[page.article(QStringLiteral("sibling8"))].parent].parent == lists[1]);
+        CHECK(page.elements[page.elements[page.article(QStringLiteral("sibling7"))].parent].parent == lists[0]);
+        CHECK(page.elements[lists[2]].parent == articles);
+        CHECK(page.elements[page.elements[page.article(QStringLiteral("last7"))].parent].parent == lists[2]);
+        checkHtmlRows(page, QStringLiteral("n7"), {QStringLiteral("m3-article-title"), QStringLiteral("m3-article-icons"),
+            QStringLiteral("m3-article-tags"), QStringLiteral("m3-article-url"), QStringLiteral("m3-article-references"),
+            QStringLiteral("m3-article-note"), QStringLiteral("m3-article-figure")});
+        checkHtmlRows(page, QStringLiteral("orphan"), {QStringLiteral("m3-article-title")});
+        checkHtmlRows(page, QStringLiteral("sibling8"), {QStringLiteral("m3-article-title")});
+        checkHtmlReferences(page, QStringLiteral("n7"), {{QStringLiteral("orphan"), QStringLiteral("Authored relation")}});
+        const int article = page.article(QStringLiteral("n7"));
+        CHECK(page.classValues(QStringLiteral("m3-article-icon"), article) == QStringList({"<star>", "<star>"}));
+        CHECK(page.classValues(QStringLiteral("m3-article-tag"), article) == QStringList({"Tag & one", "Tag & one"}));
+        const auto notes = page.classes(QStringLiteral("m3-article-note"), article);
+        CHECK(notes.size() == 1);
+        const auto paragraphs = page.tags(QStringLiteral("p"), notes.front());
+        CHECK(paragraphs.size() == 2 && page.elements[paragraphs[0]].text == QStringLiteral("First <b>literal</b> line"));
+        CHECK(page.elements[paragraphs[1]].text == QStringLiteral("Second paragraph"));
+        const auto images = page.classes(QStringLiteral("m3-article-image"), article);
+        CHECK(images.size() == 1 && page.nodeImage(images.front()).convertToFormat(QImage::Format_RGB32) == pixels);
+        const auto urls = page.classes(QStringLiteral("m3-article-url"), article);
+        CHECK(urls.size() == 1);
+        const auto link = page.tags(QStringLiteral("a"), urls.front());
+        const auto icon = page.classes(QStringLiteral("m3-article-url-icon"), urls.front());
+        const auto display = page.classes(QStringLiteral("m3-article-url-text"), urls.front());
+        CHECK(link.size() == 1 && icon.size() == 1 && display.size() == 1);
+        CHECK(page.children(link.front()) == std::vector<int>({icon.front(), display.front()}));
+        CHECK(page.elements[icon.front()].attributes.value(QStringLiteral("aria-hidden")) == QStringLiteral("true"));
+        CHECK(page.elements[icon.front()].text == QString(QChar(0x2197)));
+        CHECK(page.elements[display.front()].text == QStringLiteral("https://example.com/?a=1&b=%22eight%22"));
+        CHECK(page.elements[link.front()].attributes.value(QStringLiteral("href")) == page.elements[display.front()].text);
+    }
     CHECK(editor.loadJson(encoded(chain(1024))));
     CHECK(editor.setExpanded(QStringLiteral("n0"), false));
     const HtmlPage deep(editor.toHtml());
@@ -1607,6 +1755,11 @@ static void html_edges_case() {
     CHECK(deep.classValues(QStringLiteral("m3-article-topic")).contains(QStringLiteral("Node 1023")));
     CHECK(deep.classes(QStringLiteral("m3-node")).size() == 1);
     CHECK(deep.elements[deep.node(QStringLiteral("n0"))].text.contains(QStringLiteral("Node 0")));
+    for (int i = 0; i < 6; ++i)
+        checkHtmlTitle(deep, QStringLiteral("n") + QString::number(i), QStringLiteral("h") + QString::number(i + 1),
+            QStringLiteral("Node ") + QString::number(i));
+    checkHtmlTitle(deep, QStringLiteral("n1023"), QStringLiteral("p"), QStringLiteral("Node 1023"));
+    CHECK(deep.tags(QStringLiteral("ul")).size() == 1018 && deep.tags(QStringLiteral("li")).size() == 1018);
     CHECK(editor.loadJson(encoded(chain(400))));
     CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Outline));
     editor.clearSelection();
@@ -1620,10 +1773,7 @@ static void html_edges_case() {
     const QRectF last = htmlRect(full.elements[full.node(QStringLiteral("n399"))]);
     CHECK(QRectF(QPointF(), full.size()).contains(last));
     nearHtml(last, topicRect(editor, QStringLiteral("Node 399")).adjusted(2, 2, -2, -2).translated(-source.topLeft()));
-    const HtmlPage staticFull(editor.toHtml(Editor::HtmlExportMode::Static));
-    checkHtmlViewer(staticFull, false, QStringLiteral("n0"));
-    sameHtmlMap(staticFull, full);
-    CHECK(staticFull.values(QStringLiteral("article")) == full.values(QStringLiteral("article")));
+    checkHtmlDocument(full);
 
     const QString literal = QString::fromUtf8("</article><script>window.injected=1</script> & 世界\r\nnext\rlast\tend");
     const QStringList urls{
@@ -1679,7 +1829,7 @@ static void html_edges_case() {
     CHECK(safe.elements[reference.front()].text.contains(QStringLiteral("<svg onload='x'>")));
     CHECK(!safe.elements[safe.article(sourceId)].text.contains(QStringLiteral("quoted\"<id>")));
     CHECK(!safe.elements[safe.article(sourceId)].text.contains(normalized));
-    checkHtmlViewer(safe, true, QStringLiteral("root"));
+    checkHtmlDocument(safe);
     CHECK(safe.classes(QStringLiteral("m3-node")).size() == static_cast<size_t>(urls.size() + 1));
     CHECK(safe.classes(QStringLiteral("m3-link-label")).size() == 1);
     CHECK(safe.elements[safe.classes(QStringLiteral("m3-link-label")).front()].text == normalized);
@@ -1706,20 +1856,28 @@ static void html_edges_case() {
         const QString id = QString::fromUtf8("世界-\"<&") + QString::number(i);
         const int article = safe.article(id);
         const auto url = safe.classes(QStringLiteral("m3-article-url"), article);
-        CHECK(url.size() == 1 && safe.elements[url.front()].text == urls[i]);
+        CHECK(url.size() == 1);
+        const auto display = safe.classes(QStringLiteral("m3-article-url-text"), url.front());
+        CHECK(display.size() == 1 && safe.elements[display.front()].text == urls[i]);
         const auto links = safe.tags(QStringLiteral("a"), url.front());
-        CHECK(links.size() == (i >= 6 ? 1u : 0u));
+        const auto icons = safe.classes(QStringLiteral("m3-article-url-icon"), url.front());
+        CHECK(links.size() == (i >= 6 ? 1u : 0u) && icons.size() == links.size());
+        if (i < 6) CHECK(safe.elements[display.front()].parent == url.front());
         if (i >= 6) {
             const QString href = QUrl(urls[i], QUrl::StrictMode).toString(QUrl::FullyEncoded);
             CHECK(safe.elements[links.front()].attributes.value(QStringLiteral("href")) == href);
             CHECK(activated.count(href) == 2);
+            CHECK(safe.elements[display.front()].parent == links.front());
+            CHECK(safe.elements[icons.front()].parent == links.front() && icons.front() < display.front());
+            CHECK(safe.elements[icons.front()].attributes.value(QStringLiteral("aria-hidden")) == QStringLiteral("true"));
+            CHECK(safe.elements[icons.front()].text == QString(QChar(0x2197)));
         }
         const auto placeholders = safe.classes(QStringLiteral("m3-article-image-placeholder"), article);
         CHECK(placeholders.size() == 1 && !safe.elements[placeholders.front()].text.trimmed().isEmpty());
         CHECK(!safe.elements[placeholders.front()].text.contains(urls[i]));
         CHECK(safe.tags(QStringLiteral("img"), article).empty());
     }
-    CHECK(safe.tags(QStringLiteral("script")).size() == 1);
+    CHECK(safe.tags(QStringLiteral("script")).empty());
     CHECK(safe.tags(QStringLiteral("svg")).size() == 1 && safe.classes(QStringLiteral("m3-connectors")).size() == 1);
     for (const QString &tag : {QStringLiteral("iframe"), QStringLiteral("object"), QStringLiteral("embed"),
                               QStringLiteral("canvas"), QStringLiteral("foreignObject")})
@@ -1729,7 +1887,9 @@ static void html_edges_case() {
         CHECK(!style.contains(QStringLiteral("--injected")) && !style.contains(QStringLiteral("background-image")));
         for (auto it = element.attributes.begin(); it != element.attributes.end(); ++it) {
             CHECK(!it.key().startsWith(QStringLiteral("on"), Qt::CaseInsensitive));
-            if (it.key() == QStringLiteral("href")) CHECK(element.tag == QStringLiteral("a"));
+            if (it.key() == QStringLiteral("href"))
+                CHECK(element.tag == QStringLiteral("a") ||
+                      (element.tag == QStringLiteral("link") && element.attributes.value(QStringLiteral("rel")) == QStringLiteral("icon")));
             if (it.key() == QStringLiteral("src")) CHECK(element.tag == QStringLiteral("img") && it.value().startsWith(QStringLiteral("data:image/png;base64,")));
         }
     }
@@ -11544,7 +11704,7 @@ static void demo_html_case() {
     const HtmlPage page(QString::fromUtf8(bytes));
     CHECK(page.values(QStringLiteral("title")) == QStringList{QString::fromUtf8("HTML saved 世界")});
     CHECK(page.classValues(QStringLiteral("m3-article-topic")).contains(QStringLiteral("Delta")));
-    checkHtmlViewer(page, true, QStringLiteral("r"));
+    checkHtmlDocument(page);
     sameHtmlMap(page, HtmlPage(editor.toHtml()));
     unchanged();
     const QString status = window.statusBar()->currentMessage();
@@ -13126,25 +13286,21 @@ static void orphans_case() {
     CHECK(html.classes(QStringLiteral("m3-node")).size() == 3);
     CHECK(html.elements[html.node(orphan)].text.contains(QStringLiteral("Orphan tree")));
     CHECK(html.classes(QStringLiteral("m3-cross-link")).empty());
-    checkHtmlViewer(html, true, main);
+    checkHtmlDocument(html);
     checkHtmlReferences(html, attached, {{leaf, QStringLiteral("Across trees")}});
     checkHtmlReferences(html, leaf, {});
     const auto articles = html.tags(QStringLiteral("article"));
-    const int mainList = html.elements[html.elements[articles[0]].parent].parent;
-    const int orphanList = html.elements[html.elements[articles[2]].parent].parent;
-    CHECK(mainList == orphanList && html.elements[mainList].tag == QStringLiteral("ul"));
     const int articleSection = html.identified(QStringLiteral("id"), QStringLiteral("articles"));
     CHECK(html.tags(QStringLiteral("h1"), articleSection).size() == 2);
-    for (const auto &id : ids) {
-        const int article = html.article(id);
-        const auto topics = html.classes(QStringLiteral("m3-article-topic"), article);
-        CHECK(topics.size() == 1);
-        const auto &topic = html.elements[topics.front()];
-        const auto &articleHeading = html.elements[topic.parent];
-        CHECK(articleHeading.parent == article);
-        CHECK(articleHeading.tag == (id == main || id == orphan ? QStringLiteral("h1") : QStringLiteral("h3")));
-        CHECK(topic.text == QString::fromStdString(record(forest, "nodes", id).at("topic").get<std::string>()));
+    QStringList articleIds;
+    for (qsizetype i = 0; i < ids.size(); ++i) {
+        const QString &id = ids[i];
+        checkHtmlTitle(html, id, QStringLiteral("h") + QString::number(levels[i]), qs(record(forest, "nodes", id).at("topic")));
+        articleIds.append(QStringLiteral("m3-node-") + QString::fromLatin1(id.toUtf8().toHex()));
+        CHECK(html.elements[html.article(id)].parent == articleSection);
     }
+    CHECK(html.articleIds() == articleIds);
+    CHECK(html.tags(QStringLiteral("ul"), articleSection).empty() && html.tags(QStringLiteral("li"), articleSection).empty());
     CHECK(html.elements[articles[4]].text.contains(QStringLiteral("Deep orphan leaf")));
     CHECK(changed.isEmpty() && exported(editor) == forest);
     editor.findText(QStringLiteral("Deep orphan leaf"), Qt::CaseSensitive);

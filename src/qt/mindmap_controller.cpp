@@ -581,13 +581,13 @@ QString MindMapController::toMarkdown() {
         return QString::fromUtf8(text.get());
     } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
-QString MindMapController::toHtml(MindMapEditor::HtmlExportMode mode) {
+QString MindMapController::toHtml() {
     try {
         const auto document = currentSnapshot;
         HtmlMap map;
         auto presentation = prepare(document, direction, collapsedNodes, true, 0, &map);
         view.renderHtmlMap(std::move(presentation), map);
-        return encodeHtml(document, map, mode == MindMapEditor::HtmlExportMode::Interactive);
+        return encodeHtml(document, map);
     } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
 }
 Presentation MindMapController::prepare(const QByteArray &json,

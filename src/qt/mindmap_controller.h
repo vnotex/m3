@@ -39,7 +39,7 @@ public:
     QByteArray copySelectedNodes();
     bool pasteNodes(const QString &parent, const QByteArray &json);
     QString toMarkdown();
-    QString toHtml(MindMapEditor::HtmlExportMode mode);
+    QString toHtml();
     QString lastError() const { return error; }
     QString addNode(const QString &parent, const QString &topic, int index);
     QStringList addNodes(const QString &parent, const QByteArray &nodesJson, int index);
