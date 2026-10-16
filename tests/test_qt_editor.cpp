@@ -1928,7 +1928,6 @@ static void markdown_case() {
         retained = snapshot.toMarkdown();
         CHECK(retained.contains(QString::fromUtf8("Literal \\*世界\\* &lt;br&gt;")));
         CHECK(retained.contains(QStringLiteral("### <a id=\"m3-node-64\"></a>Delta")));
-        CHECK(retained.contains(QStringLiteral("- [Alpha](#m3-node-61) → [Beta](#m3-node-62)")));
         CHECK(editor.toJson() == baseline && changed.isEmpty());
         CHECK(editor.selectedNodeId() == QStringLiteral("b") && editor.selectedLinkId().isEmpty());
         CHECK(selected.size() == selectionCount && graphics(editor).transform() == transform);
@@ -11986,7 +11985,6 @@ static void demo_markdown_case() {
         name->setText(cleanPath);
         fileResponse(cleanPath, true)(dialog);
     }}, [&] { action.trigger(); });
-    CHECK(readFile(cleanPath).contains("## Cross-links"));
     CHECK(!window.isWindowModified() && window.currentFilePath().isEmpty());
     CHECK(window.windowTitle() == untitledTitle && exported(editor) == sample);
 
@@ -12024,7 +12022,6 @@ static void demo_markdown_case() {
     const QByteArray bytes = readFile(outputPath);
     CHECK(!QFileInfo::exists(outputStem));
     CHECK(bytes.startsWith("# <a id=\"m3-node-72\"></a>Markdown smoke 世界\n"));
-    CHECK(bytes.contains("- [Alpha](#m3-node-61) → [Beta](#m3-node-62)"));
     CHECK(bytes.endsWith('\n') && !bytes.endsWith("\n\n") && !bytes.contains('\r'));
     unchanged();
     const QString exportStatus = window.statusBar()->currentMessage();

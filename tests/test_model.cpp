@@ -185,14 +185,17 @@ static void markdown() {
     CHECK(text.find("](<opaque:anything>)") != std::string::npos);
     CHECK(text.find("![Racine 世界 🌍](<memory:%E7%B5%B5>)") != std::string::npos);
     CHECK(text.find("star") != std::string::npos && text.find("flag") != std::string::npos);
-    CHECK(text.find("x") != std::string::npos && text.find("y") != std::string::npos);
+    CHECK(markdown_occurrences(text, "\\#x") == 2);
+    CHECK(markdown_occurrences(text, "\\#y") == 1);
     CHECK(text.find("**") == std::string::npos);
     CHECK(text.find("visual-only-node") == std::string::npos);
     CHECK(text.find("visual-only-link") == std::string::npos);
     for (const char *id : {"l1", "l2", "l3", "l4"}) CHECK(text.find(id) == std::string::npos);
-    CHECK(text.find("[(untitled)](#m3-node-61) → [(untitled)](#m3-node-62)") != std::string::npos);
-    CHECK(text.find("[(untitled)](#m3-node-64) ↔ [(untitled)](#m3-node-63)") != std::string::npos);
-    CHECK(text.find("[(untitled)](#m3-node-61) ↔ [(untitled)](#m3-node-61)") != std::string::npos);
+    CHECK(markdown_occurrences(text, "](#m3-node-61") == 1); // Self-link, not a duplicated backlink.
+    CHECK(markdown_occurrences(text, "](#m3-node-62") == 1);
+    CHECK(markdown_occurrences(text, "](#m3-node-63") == 2);
+    CHECK(markdown_occurrences(text, "](#m3-node-64") == 1);
+    CHECK(text.find("## Cross-links") == std::string::npos);
     CHECK(text.find("Related") != std::string::npos && text.find("Other") != std::string::npos);
     CHECK(text.find("reference") != std::string::npos && text.find("pin") != std::string::npos);
 
@@ -263,14 +266,15 @@ static void markdown_edges() {
     CHECK(text.find("Image size") == std::string::npos);
     CHECK(text.find("    - <a id=\"m3-node-6e37\"></a>D7\n\n        seventh\n\n") != std::string::npos);
     CHECK(text.find("        ![D7](<" + destination + ">)") != std::string::npos);
-    CHECK(text.find("        - <a id=\"" + deep_anchor + "\"></a>Deep 世界\n\n"
-        "            eighth\n\n"
+    CHECK(text.find("        - <a id=\"" + deep_anchor + "\"></a>Deep 世界\n\n") != std::string::npos);
+    CHECK(text.find("            eighth\n\n"
         "    - <a id=\"m3-node-7337\"></a>Sibling\n\n"
         "        sibling\n\n") != std::string::npos);
     CHECK(text.find("\\\n    CR\\\n    LF\\\n    TAB&#9;&#1;&#31;&#127;") != std::string::npos);
-    CHECK(text.find("[" + escaped + "](#" + root_anchor + ") → [(untitled)](#m3-node-6e36)") != std::string::npos);
-    CHECK(text.find("[(untitled)](#m3-node-6e36) → [Deep 世界](#" + deep_anchor + ")") != std::string::npos);
-    CHECK(text.find("[Deep 世界](#" + deep_anchor + ") → [" + escaped + "](#" + root_anchor + ")") != std::string::npos);
+    CHECK(markdown_occurrences(text, "](#m3-node-6e36") == 2);
+    CHECK(text.find("[↗ Deep 世界](#" + deep_anchor + ")") != std::string::npos);
+    CHECK(text.find("            [↗ " + escaped + "](#" + root_anchor + ")") != std::string::npos);
+    CHECK(text.find("\\#" + escaped) != std::string::npos);
 
     constexpr size_t count = 1024;
     Json chain_nodes = Json::array();
@@ -286,9 +290,8 @@ static void markdown_edges() {
     CHECK(markdown_occurrences(chain_text, "<a id=\"") == count);
     CHECK(chain_text.rfind("# <a id=\"m3-node-6e30\"></a>Chain 0\n\n", 0) == 0);
     const std::string deepest = "\n" + std::string((count - 1 - 6) * 4, ' ') +
-        "- <a id=\"m3-node-6e31303233\"></a>Chain 1023\n\n"
-        "---\n\n## Cross-links\n\n"
-        "- [Chain 1023](#m3-node-6e31303233) → [Chain 0](#m3-node-6e30)\n";
+        "- <a id=\"m3-node-6e31303233\"></a>Chain 1023\n\n" +
+        std::string((count - 6) * 4, ' ') + "[↗ Chain 0](#m3-node-6e30)\n";
     const auto deepest_at = chain_text.find(deepest);
     CHECK(deepest_at != std::string::npos && deepest_at + deepest.size() == chain_text.size());
 }
@@ -674,7 +677,9 @@ static void orphans() {
         position = found + std::string(heading).size();
     }
     CHECK(markdown_occurrences(markdown, "<a id=\"") == forest["nodes"].size());
-    CHECK(markdown.find("[Child](#m3-node-7a) → [(untitled)](#m3-node-63)", position) != std::string::npos);
+    const auto child = markdown.find("id=\"m3-node-7a\"");
+    const auto next_root = markdown.find("id=\"m3-node-79\"");
+    CHECK(markdown.find("](#m3-node-63", child) < next_root);
     CHECK(document(map) == forest);
 
     const auto fail = [&](M3Status status, M3Status expected) {

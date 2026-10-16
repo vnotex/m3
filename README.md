@@ -104,7 +104,7 @@ A node with a URL shows a chain-link indicator (Lucide `link`) beside its topic.
 
 Right-click a node's URL indicator and choose **Copy Link** to copy its stored URL verbatim, including relative paths, without opening it. This works in read-only maps and does not depend on which node is selected. Node bodies, empty canvas, cross-links and multi-selections retain their usual context menus.
 
-The link context menu contains **Rename/Edit**, a separator, the exclusive direction choices `---`, `<---`, `--->`, `<--->`, another separator, and **Delete**. Arrows refer to stored source/target order, not left/right screen positions. **Link properties** remains in the toolbar. Direction choices preserve endpoint order and unrelated metadata. Native JSON retains reverse/both arrows in `style.arrowDirection` (`"backward"`/`"both"`) with `directed: true`; without either recognized value, `directed` retains its usual forward/undirected rendering. The Qt view and HTML export honor this style; core projections do not interpret Qt styles. Endpoint squares are selection UI only and are never saved or exported.
+The link context menu contains **Rename/Edit**, a separator, the exclusive direction choices `---`, `<---`, `--->`, `<--->`, another separator, and **Delete**. Arrows refer to stored source/target order, not left/right screen positions. **Link properties** remains in the toolbar. Direction choices preserve endpoint order and unrelated metadata. Native JSON retains reverse/both arrows in `style.arrowDirection` (`"backward"`/`"both"`) with `directed: true`; without either recognized value, `directed` retains its usual forward/undirected rendering. The Qt view, HTML articles and Markdown cross-references honor this style; other styles remain presentation-only in Markdown. Endpoint squares are selection UI only and are never saved or exported.
 
 ### Markdown export
 
@@ -113,12 +113,16 @@ not a dump or backup of the map. The main topic is H1; levels 2–6 use H2–H6 
 onward become nested list items. Orphan trees start again at H1, and folded descendants
 remain included.
 
-Nonempty icons and tags appear in compact, unlabeled rows. URLs are clickable, notes are
+Nonempty icons and tags appear in compact, unlabeled rows; tags use `#tag` notation.
+URLs are clickable, notes are
 plain-text paragraphs with preserved line breaks, and images use their topic as alt text.
 Notes remain literal text: Markdown/HTML characters are escaped, not interpreted. Notes
-and images below level 6 stay inside their list item. The relationship appendix links
-endpoint topics with authored labels/icons, without exposing link IDs. Image dimensions,
-styles, duplicate image-URL rows and empty metadata are omitted. Invisible node anchors
+and images below level 6 stay inside their list item. Cross-references sit below each
+originating topic, before its notes, and link directly to the destination heading or list
+item. As in HTML, labels are tooltips and optional icons precede the destination topic.
+Forward/backward links follow their arrow; undirected/both links appear at both endpoints,
+with one entry per self-link. There is no separate relationship appendix. Image dimensions,
+visual styles, duplicate image-URL rows and empty metadata are omitted. Invisible node anchors
 keep relationship links unambiguous even when topics repeat. Resource copying belongs to
 the host; the core does not fetch images or resolve URLs.
 

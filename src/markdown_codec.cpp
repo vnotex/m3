@@ -81,20 +81,57 @@ void append_note(std::string &out, size_t indent, std::string_view note) {
     if (paragraph) out += "\n\n";
 }
 void append_values(std::string &out, size_t indent, const std::vector<std::string> &values,
-                   const char *separator) {
+                   const char *prefix) {
     bool first = true;
     for (const auto &value : values) {
         if (value.empty()) continue;
         if (first) out.append(indent, ' ');
-        else out += separator;
+        else out += ' ';
+        out += prefix;
         append_text(out, value);
         first = false;
     }
     if (!first) out += "\n\n";
 }
-void append_content(std::string &out, size_t indent, const Attributes &attrs) {
-    append_values(out, indent, attrs.icons, " ");
-    append_values(out, indent, attrs.tags, ", ");
+struct Reference { const Node *node; const Link *link; };
+void append_title(std::string &out, const std::string &title) {
+    for (unsigned char byte : title) {
+        switch (byte) {
+        case '&': out += "&amp;"; break;
+        case '<': out += "&lt;"; break;
+        case '>': out += "&gt;"; break;
+        case '"': out += "&quot;"; break;
+        case '\\': out += "\\\\"; break;
+        default:
+            if (byte < 0x20 || byte == 0x7f) {
+                out += "&#";
+                out += std::to_string(byte);
+                out += ';';
+            } else out += static_cast<char>(byte);
+        }
+    }
+}
+void append_reference(std::string &out, const Reference &reference) {
+    out += '[';
+    if (reference.link->icon.find_first_not_of(" \t\r\n\f\v") != std::string::npos) {
+        append_text(out, reference.link->icon);
+        out += ' ';
+    }
+    out += "↗ ";
+    append_topic(out, reference.node->attrs.topic);
+    out += "](#";
+    append_anchor(out, reference.node->id);
+    if (!reference.link->topic.empty()) {
+        out += " \"";
+        append_title(out, reference.link->topic);
+        out += '"';
+    }
+    out += ')';
+}
+void append_content(std::string &out, size_t indent, const Attributes &attrs,
+                    const std::vector<Reference> *references) {
+    append_values(out, indent, attrs.icons, "");
+    append_values(out, indent, attrs.tags, "\\#");
     if (!attrs.hyperlink.empty()) {
         out.append(indent, ' ');
         out += '[';
@@ -102,6 +139,16 @@ void append_content(std::string &out, size_t indent, const Attributes &attrs) {
         out += "](<";
         append_destination(out, attrs.hyperlink);
         out += ">)\n\n";
+    }
+    if (references) {
+        out.append(indent, ' ');
+        bool first = true;
+        for (const auto &reference : *references) {
+            if (!first) out += ' ';
+            append_reference(out, reference);
+            first = false;
+        }
+        out += "\n\n";
     }
     append_note(out, indent, attrs.note);
     if (attrs.image && !attrs.image->url.empty()) {
@@ -113,15 +160,18 @@ void append_content(std::string &out, size_t indent, const Attributes &attrs) {
         out += ">)\n\n";
     }
 }
-void append_endpoint(std::string &out, const Model &model, const std::string &id) {
-    out += '[';
-    append_topic(out, get_node(model, id).attrs.topic);
-    out += "](#";
-    append_anchor(out, id);
-    out += ')';
-}
 }
 std::string encode_markdown(const Model &model) {
+    std::unordered_map<const Node *, std::vector<Reference>> references;
+    for (const auto *link : sorted_links(model)) {
+        const auto *source = &get_node(model, link->source);
+        const auto *target = &get_node(model, link->target);
+        const auto arrow = link->style.find("arrowDirection");
+        const bool both = !link->directed || (arrow != link->style.end() && *arrow == "both");
+        const bool backward = !both && arrow != link->style.end() && *arrow == "backward";
+        if (!backward) references[source].push_back({target, link});
+        if (backward || (both && source != target)) references[target].push_back({source, link});
+    }
     struct Frame { const Node *node; size_t depth; };
     std::vector<Frame> pending;
     pending.reserve(model.orphans.size() + 1);
@@ -147,25 +197,10 @@ std::string encode_markdown(const Model &model) {
         out += "\"></a>";
         append_topic(out, node.attrs.topic);
         out += "\n\n";
-        append_content(out, indent, node.attrs);
+        const auto related = references.find(&node);
+        append_content(out, indent, node.attrs, related == references.end() ? nullptr : &related->second);
         for (auto it = node.children.rbegin(); it != node.children.rend(); ++it)
             pending.push_back({&get_node(model, *it), frame.depth + 1});
-    }
-    if (!model.links.empty()) {
-        out += "---\n\n## Cross-links\n\n";
-        for (const auto *link : sorted_links(model)) {
-            out += "- ";
-            append_endpoint(out, model, link->source);
-            out += link->directed ? " → " : " ↔ ";
-            append_endpoint(out, model, link->target);
-            if (!link->icon.empty() || !link->topic.empty()) {
-                out += " — ";
-                append_text(out, link->icon);
-                if (!link->icon.empty() && !link->topic.empty()) out += ' ';
-                append_text(out, link->topic);
-            }
-            out += "\n\n";
-        }
     }
     out.pop_back();
     return out;

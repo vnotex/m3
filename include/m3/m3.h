@@ -96,9 +96,13 @@ M3_API M3Status m3_mindmap_get_outline_json(const M3Mindmap *map, char **out_jso
  * Includes all descendants: depths 0-5 use headings H1-H6,
  * deeper nodes use nested lists. Stable ID-derived HTML anchors identify nodes.
  * A readable document: unlabeled nonempty icons/tags, clickable URLs, notes as
- * paragraphs, and images with topic alt text. Cross-links use endpoint topics,
- * direction and authored labels/icons, never internal link IDs. Omits styles,
- * layout, image dimensions and empty metadata. Empty topics display (untitled).
+ * paragraphs, and images with topic alt text. Tags use #tag notation. Cross-links
+ * appear beneath each originating topic, linking to destination topics with
+ * optional icons and authored labels as tooltips, never internal link IDs.
+ * Like HTML articles, backward arrows reverse navigation; undirected/both arrows
+ * link both ways (once per self-link). The recognized style.arrowDirection values
+ * are "backward" and "both". Other styles, layout, image dimensions and empty
+ * metadata are omitted. Empty topics display (untitled).
  * Stored Markdown/HTML is escaped as literal text. Notes preserve blank-line
  * paragraphs and single line breaks (backslash + LF); inline line breaks use <br>.
  * URL destinations are escaped, not resolved, fetched or scheme-validated.
