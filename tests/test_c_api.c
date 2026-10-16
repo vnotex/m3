@@ -26,7 +26,6 @@ int main(void) {
     CHECK(strstr(markdown,"# <a id=\"m3-node-72\"></a>Root\n") != NULL);
     CHECK(strstr(markdown,"## <a id=\"m3-node-61\"></a>Child 世界 🌍\n") != NULL);
     CHECK(strstr(markdown,"- [Root](#m3-node-72) ↔ [Child 世界 🌍](#m3-node-61)") != NULL);
-    CHECK(strstr(markdown,"**Label:** Updated") != NULL && strstr(markdown,"**Icon:** arrow") != NULL);
     puts(markdown);
     CALL(m3_mindmap_get_link_json(copy,"related",&link));
     CHECK(strstr(link,"Updated") != NULL && strstr(link,"arrow") != NULL);

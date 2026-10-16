@@ -1,7 +1,8 @@
 #include "markdown_codec.h"
+#include <string_view>
 namespace m3 {
 namespace {
-void append_text(std::string &out, const std::string &text) {
+void append_text(std::string &out, std::string_view text) {
     for (size_t i = 0; i < text.size(); ++i) {
         const auto byte = static_cast<unsigned char>(text[i]);
         switch (byte) {
@@ -51,49 +52,65 @@ void append_destination(std::string &out, const std::string &url) {
         else out += static_cast<char>(byte);
     }
 }
-void append_paragraph(std::string &out, size_t indent, const char *label, const std::string &text) {
-    out.append(indent, ' ');
-    out += label;
-    if (text.empty()) out += "(empty)";
-    else append_text(out, text);
-    out += "\n\n";
+void append_note(std::string &out, size_t indent, std::string_view note) {
+    bool paragraph = false;
+    while (!note.empty()) {
+        const auto end = note.find_first_of("\r\n");
+        auto line = note.substr(0, end);
+        if (end == std::string_view::npos) note = {};
+        else {
+            const auto newline = note[end];
+            note.remove_prefix(end + 1);
+            if (newline == '\r' && !note.empty() && note.front() == '\n') note.remove_prefix(1);
+        }
+        if (line.find_first_not_of(" \t") == std::string_view::npos) {
+            if (paragraph) out += "\n\n";
+            paragraph = false;
+            continue;
+        }
+        if (paragraph) out += "\\\n";
+        out.append(indent, ' ');
+        // Authored indentation is text, not a Markdown code block or nested list.
+        while (!line.empty() && line.front() == ' ') {
+            out += "&#32;";
+            line.remove_prefix(1);
+        }
+        append_text(out, line);
+        paragraph = true;
+    }
+    if (paragraph) out += "\n\n";
 }
-void append_metadata(std::string &out, size_t indent, const Attributes &attrs) {
-    if (!attrs.note.empty()) append_paragraph(out, indent, "**Note:** ", attrs.note);
+void append_values(std::string &out, size_t indent, const std::vector<std::string> &values,
+                   const char *separator) {
+    bool first = true;
+    for (const auto &value : values) {
+        if (value.empty()) continue;
+        if (first) out.append(indent, ' ');
+        else out += separator;
+        append_text(out, value);
+        first = false;
+    }
+    if (!first) out += "\n\n";
+}
+void append_content(std::string &out, size_t indent, const Attributes &attrs) {
+    append_values(out, indent, attrs.icons, " ");
+    append_values(out, indent, attrs.tags, ", ");
     if (!attrs.hyperlink.empty()) {
         out.append(indent, ' ');
-        out += "**URL:** [";
+        out += '[';
         append_text(out, attrs.hyperlink);
         out += "](<";
         append_destination(out, attrs.hyperlink);
         out += ">)\n\n";
     }
-    for (const auto &tag : attrs.tags) append_paragraph(out, indent, "**Tag:** ", tag);
-    for (const auto &icon : attrs.icons) append_paragraph(out, indent, "**Icon:** ", icon);
-    if (attrs.image) {
-        const auto &image = *attrs.image;
+    append_note(out, indent, attrs.note);
+    if (attrs.image && !attrs.image->url.empty()) {
         out.append(indent, ' ');
-        out += "**Image URL:** ";
-        if (image.url.empty()) out += "(empty)\n\n";
-        else {
-            std::string destination;
-            append_destination(destination, image.url);
-            out += '[';
-            append_text(out, image.url);
-            out += "](<";
-            out += destination;
-            out += ">)\n\n";
-            out.append(indent, ' ');
-            out += "![Image](<";
-            out += destination;
-            out += ">)\n\n";
-        }
-        out.append(indent, ' ');
-        out += "**Image size:** ";
-        out += Json(image.width).dump();
-        out += " × ";
-        out += Json(image.height).dump();
-        out += "\n\n";
+        out += "![";
+        append_topic(out, attrs.topic);
+        out += "](<";
+        append_destination(out, attrs.image->url);
+        out += ">)\n\n";
     }
 }
 void append_endpoint(std::string &out, const Model &model, const std::string &id) {
@@ -130,7 +147,7 @@ std::string encode_markdown(const Model &model) {
         out += "\"></a>";
         append_topic(out, node.attrs.topic);
         out += "\n\n";
-        append_metadata(out, indent, node.attrs);
+        append_content(out, indent, node.attrs);
         for (auto it = node.children.rbegin(); it != node.children.rend(); ++it)
             pending.push_back({&get_node(model, *it), frame.depth + 1});
     }
@@ -141,10 +158,13 @@ std::string encode_markdown(const Model &model) {
             append_endpoint(out, model, link->source);
             out += link->directed ? " → " : " ↔ ";
             append_endpoint(out, model, link->target);
+            if (!link->icon.empty() || !link->topic.empty()) {
+                out += " — ";
+                append_text(out, link->icon);
+                if (!link->icon.empty() && !link->topic.empty()) out += ' ';
+                append_text(out, link->topic);
+            }
             out += "\n\n";
-            append_paragraph(out, 4, "**ID:** ", link->id);
-            if (!link->topic.empty()) append_paragraph(out, 4, "**Label:** ", link->topic);
-            if (!link->icon.empty()) append_paragraph(out, 4, "**Icon:** ", link->icon);
         }
     }
     out.pop_back();

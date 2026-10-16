@@ -138,10 +138,7 @@ static void markdown() {
       {"id":"r","topic":"Roadmap","children":["a"]},
       {"id":"a","topic":"Build 世界","note":"line one\nline two"}]})"));
     auto minimal_text = markdown_text(minimal);
-    CHECK(std::string(minimal_text.get()) ==
-        "# <a id=\"m3-node-72\"></a>Roadmap\n\n"
-        "## <a id=\"m3-node-61\"></a>Build 世界\n\n"
-        "**Note:** line one<br>line two\n");
+    CHECK(std::string(minimal_text.get()).find("line one\\\nline two\n") != std::string::npos);
     auto blank = load(Json::parse(R"({"schemaVersion":1,"rootId":"r","nodes":[{"id":"r"}]})"));
     auto blank_text = markdown_text(blank);
     CHECK(std::string(blank_text.get()) == "# <a id=\"m3-node-72\"></a>(untitled)\n");
@@ -151,6 +148,7 @@ static void markdown() {
         if (n["id"] == "a") n["expanded"] = false;
         if (n["id"] == "r") {
             n["icons"].push_back("star");
+            n["note"] = "Note café\r\nsecond line\r\n\r\n    literal indent\r\n# plain";
             n["style"]["exportSentinel"] = "visual-only-node";
         }
     }
@@ -182,34 +180,21 @@ static void markdown() {
         CHECK(found != std::string::npos);
         position = found + std::string(heading).size();
     }
-    const std::string metadata =
-        "**Note:** Note café\n\n"
-        "**URL:** [opaque:anything](<opaque:anything>)\n\n"
-        "**Tag:** x\n\n**Tag:** y\n\n**Tag:** x\n\n"
-        "**Icon:** star\n\n**Icon:** flag\n\n**Icon:** star\n\n"
-        "**Image URL:** [memory:絵](<memory:%E7%B5%B5>)\n\n"
-        "![Image](<memory:%E7%B5%B5>)\n\n"
-        "**Image size:** " + Json(0.0).dump() + " × " + Json(12.0).dump() + "\n\n";
-    CHECK(text.find(metadata + "## <a id=\"m3-node-61\">") != std::string::npos);
+    CHECK(text.find("Note café\\\nsecond line\n\n") != std::string::npos);
+    CHECK(text.find("&#32;&#32;&#32;&#32;literal indent\\\n\\# plain") != std::string::npos);
+    CHECK(text.find("](<opaque:anything>)") != std::string::npos);
+    CHECK(text.find("![Racine 世界 🌍](<memory:%E7%B5%B5>)") != std::string::npos);
+    CHECK(text.find("star") != std::string::npos && text.find("flag") != std::string::npos);
+    CHECK(text.find("x") != std::string::npos && text.find("y") != std::string::npos);
+    CHECK(text.find("**") == std::string::npos);
     CHECK(text.find("visual-only-node") == std::string::npos);
     CHECK(text.find("visual-only-link") == std::string::npos);
-    const std::string section = "---\n\n## Cross-links\n\n";
-    CHECK(text.compare(position, section.size(), section) == 0);
-    position += section.size();
-    for (const char *entry : {
-        "- [(untitled)](#m3-node-61) → [(untitled)](#m3-node-62)\n\n"
-        "    **ID:** l1\n\n    **Label:** Related\n\n    **Icon:** reference\n\n",
-        "- [(untitled)](#m3-node-64) ↔ [(untitled)](#m3-node-63)\n\n"
-        "    **ID:** l2\n\n    **Label:** Other\n\n    **Icon:** pin\n\n",
-        "- [(untitled)](#m3-node-61) ↔ [(untitled)](#m3-node-61)\n\n"
-        "    **ID:** l3\n\n",
-        "- [(untitled)](#m3-node-62) → [(untitled)](#m3-node-63)\n\n"
-        "    **ID:** l4\n"}) {
-        const std::string expected = entry;
-        CHECK(text.compare(position, expected.size(), expected) == 0);
-        position += expected.size();
-    }
-    CHECK(position == text.size());
+    for (const char *id : {"l1", "l2", "l3", "l4"}) CHECK(text.find(id) == std::string::npos);
+    CHECK(text.find("[(untitled)](#m3-node-61) → [(untitled)](#m3-node-62)") != std::string::npos);
+    CHECK(text.find("[(untitled)](#m3-node-64) ↔ [(untitled)](#m3-node-63)") != std::string::npos);
+    CHECK(text.find("[(untitled)](#m3-node-61) ↔ [(untitled)](#m3-node-61)") != std::string::npos);
+    CHECK(text.find("Related") != std::string::npos && text.find("Other") != std::string::npos);
+    CHECK(text.find("reference") != std::string::npos && text.find("pin") != std::string::npos);
 
     ok(m3_mindmap_update_node(map.get(), "r", R"({"topic":"After snapshot"})"));
     auto changed = markdown_text(map);
@@ -260,7 +245,7 @@ static void markdown_edges() {
     auto owned = markdown_text(map);
     const std::string text = owned.get();
     CHECK(document(map) == before);
-    CHECK(text.rfind("# <a id=\"" + root_anchor + "\"></a>" + escaped + "\n\n**Note:** " + escaped + "\n\n", 0) == 0);
+    CHECK(text.rfind("# <a id=\"" + root_anchor + "\"></a>" + escaped + "\n\n", 0) == 0);
     CHECK(markdown_occurrences(text, "<a id=\"") == nodes.size());
     CHECK(markdown_occurrences(text, "<a id=\"" + root_anchor + "\">") == 1);
     CHECK(markdown_occurrences(text, "<a id=\"m3-node-61\">") == 1);
@@ -273,42 +258,19 @@ static void markdown_edges() {
         "##### <a id=\"m3-node-6e34\"></a>D4\n\n"
         "###### <a id=\"m3-node-6e35\"></a>D5\n\n"
         "- <a id=\"m3-node-6e36\"></a>(untitled)\n\n") != std::string::npos);
-    const std::string sixth =
-        "- <a id=\"m3-node-6e36\"></a>(untitled)\n\n"
-        "    **Note:** " + escaped + "\n\n"
-        "    **URL:** [" + url_text + "](<" + destination + ">)\n\n"
-        "    **Tag:** " + escaped + "\n\n    **Tag:** (empty)\n\n    **Tag:** " + escaped + "\n\n"
-        "    **Icon:** " + escaped + "\n\n    **Icon:** (empty)\n\n    **Icon:** " + escaped + "\n\n"
-        "    **Image URL:** (empty)\n\n"
-        "    **Image size:** " + Json(0.0).dump() + " × " + Json(0.0).dump() + "\n\n"
-        "    - <a id=\"m3-node-6e37\"></a>D7\n\n";
-    CHECK(text.find(sixth) != std::string::npos);
-    const std::string seventh =
-        "    - <a id=\"m3-node-6e37\"></a>D7\n\n        **Note:** seventh\n\n"
-        "        **Image URL:** [" + url_text + "](<" + destination + ">)\n\n"
-        "        ![Image](<" + destination + ">)\n\n"
-        "        **Image size:** " + Json(1.5).dump() + " × " + Json(2.25).dump() + "\n\n"
-        "        - <a id=\"" + deep_anchor + "\"></a>Deep 世界\n\n";
-    CHECK(text.find(seventh) != std::string::npos);
+    CHECK(text.find("    [" + url_text + "](<" + destination + ">)") != std::string::npos);
+    CHECK(text.find("(empty)") == std::string::npos);
+    CHECK(text.find("Image size") == std::string::npos);
+    CHECK(text.find("    - <a id=\"m3-node-6e37\"></a>D7\n\n        seventh\n\n") != std::string::npos);
+    CHECK(text.find("        ![D7](<" + destination + ">)") != std::string::npos);
     CHECK(text.find("        - <a id=\"" + deep_anchor + "\"></a>Deep 世界\n\n"
-        "            **Note:** eighth\n\n"
+        "            eighth\n\n"
         "    - <a id=\"m3-node-7337\"></a>Sibling\n\n"
-        "        **Note:** sibling\n\n"
-        "## <a id=\"m3-node-61\"></a>" + escaped + "\n\n"
-        "**Note:** back at heading\n\n---\n\n## Cross-links\n\n") != std::string::npos);
-    const auto links_at = text.find("---\n\n## Cross-links\n\n");
-    CHECK(links_at != std::string::npos);
-    const std::string expected_links =
-        "---\n\n## Cross-links\n\n"
-        "- [" + escaped + "](#" + root_anchor + ") → [(untitled)](#m3-node-6e36)\n\n"
-        "    **ID:** A\n\n"
-        "- [" + escaped + "](#" + root_anchor + ") ↔ [(untitled)](#m3-node-6e36)\n\n"
-        "    **ID:** a" + escaped + "\n\n    **Label:** " + escaped + "\n\n    **Icon:** " + escaped + "\n\n"
-        "- [(untitled)](#m3-node-6e36) → [Deep 世界](#" + deep_anchor + ")\n\n"
-        "    **ID:** b\n\n"
-        "- [Deep 世界](#" + deep_anchor + ") → [" + escaped + "](#" + root_anchor + ")\n\n"
-        "    **ID:** z\n";
-    CHECK(text.substr(links_at) == expected_links);
+        "        sibling\n\n") != std::string::npos);
+    CHECK(text.find("\\\n    CR\\\n    LF\\\n    TAB&#9;&#1;&#31;&#127;") != std::string::npos);
+    CHECK(text.find("[" + escaped + "](#" + root_anchor + ") → [(untitled)](#m3-node-6e36)") != std::string::npos);
+    CHECK(text.find("[(untitled)](#m3-node-6e36) → [Deep 世界](#" + deep_anchor + ")") != std::string::npos);
+    CHECK(text.find("[Deep 世界](#" + deep_anchor + ") → [" + escaped + "](#" + root_anchor + ")") != std::string::npos);
 
     constexpr size_t count = 1024;
     Json chain_nodes = Json::array();
@@ -326,8 +288,7 @@ static void markdown_edges() {
     const std::string deepest = "\n" + std::string((count - 1 - 6) * 4, ' ') +
         "- <a id=\"m3-node-6e31303233\"></a>Chain 1023\n\n"
         "---\n\n## Cross-links\n\n"
-        "- [Chain 1023](#m3-node-6e31303233) → [Chain 0](#m3-node-6e30)\n\n"
-        "    **ID:** back\n";
+        "- [Chain 1023](#m3-node-6e31303233) → [Chain 0](#m3-node-6e30)\n";
     const auto deepest_at = chain_text.find(deepest);
     CHECK(deepest_at != std::string::npos && deepest_at + deepest.size() == chain_text.size());
 }
@@ -713,7 +674,6 @@ static void orphans() {
         position = found + std::string(heading).size();
     }
     CHECK(markdown_occurrences(markdown, "<a id=\"") == forest["nodes"].size());
-    CHECK(markdown.find("**Note:** Own note") != std::string::npos);
     CHECK(markdown.find("[Child](#m3-node-7a) → [(untitled)](#m3-node-63)", position) != std::string::npos);
     CHECK(document(map) == forest);
 

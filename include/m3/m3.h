@@ -95,11 +95,12 @@ M3_API M3Status m3_mindmap_get_outline_json(const M3Mindmap *map, char **out_jso
  * main-tree-then-orphan-tree preorder, with each tree starting at depth 0.
  * Includes all descendants: depths 0-5 use headings H1-H6,
  * deeper nodes use nested lists. Stable ID-derived HTML anchors identify nodes.
- * Includes topics, notes, URLs, ordered tags/icons (including empty/duplicate
- * entries), image URLs/embeddings/dimensions, and ID-sorted cross-links with
- * endpoint topics, direction, IDs, labels and icons. Omits styles, layout and
- * geometry. Empty topics display (untitled).
- * Stored Markdown/HTML is escaped as literal text; line breaks become <br>.
+ * A readable document: unlabeled nonempty icons/tags, clickable URLs, notes as
+ * paragraphs, and images with topic alt text. Cross-links use endpoint topics,
+ * direction and authored labels/icons, never internal link IDs. Omits styles,
+ * layout, image dimensions and empty metadata. Empty topics display (untitled).
+ * Stored Markdown/HTML is escaped as literal text. Notes preserve blank-line
+ * paragraphs and single line breaks (backslash + LF); inline line breaks use <br>.
  * URL destinations are escaped, not resolved, fetched or scheme-validated.
  * UTF-8 without BOM, structural LF newlines and exactly one final LF; even a
  * blank map produces text. The independent NUL-terminated snapshot survives
