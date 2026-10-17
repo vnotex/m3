@@ -27,6 +27,24 @@ namespace m3::qt {
 namespace {
 constexpr int glyphRole = Qt::UserRole + 1;
 constexpr char navigationHintShownProperty[] = "m3.emojiNavigationHintShown";
+QString categoryLabel(const QString &group) {
+    static constexpr const char *labels[] = {
+        QT_TRANSLATE_NOOP("m3::qt::EmojiLineEdit", "Smileys & Emotion"),
+        QT_TRANSLATE_NOOP("m3::qt::EmojiLineEdit", "People & Body"),
+        QT_TRANSLATE_NOOP("m3::qt::EmojiLineEdit", "Animals & Nature"),
+        QT_TRANSLATE_NOOP("m3::qt::EmojiLineEdit", "Food & Drink"),
+        QT_TRANSLATE_NOOP("m3::qt::EmojiLineEdit", "Travel & Places"),
+        QT_TRANSLATE_NOOP("m3::qt::EmojiLineEdit", "Activities"),
+        QT_TRANSLATE_NOOP("m3::qt::EmojiLineEdit", "Objects"),
+        QT_TRANSLATE_NOOP("m3::qt::EmojiLineEdit", "Symbols"),
+        QT_TRANSLATE_NOOP("m3::qt::EmojiLineEdit", "Flags")
+    };
+    // Translate only display labels; catalog order and English search stay unchanged.
+    for (const auto *label : labels) {
+        if (group == QLatin1String(label)) return QCoreApplication::translate("m3::qt::EmojiLineEdit", label);
+    }
+    return group;
+}
 struct Emoji {
     QString glyph, name, searchable;
     int category;
@@ -413,7 +431,7 @@ void EmojiLineEdit::createPopup() {
     categories->setAccessibleName(tr("Emoji categories"));
     categories->setFocusPolicy(Qt::NoFocus);
     categories->addItem(tr("All categories"));
-    categories->addItems(catalog().categories);
+    for (const auto &group : catalog().categories) categories->addItem(categoryLabel(group));
     if (mode == PickerMode::Embedded) {
         // Observe only the owned dropdown, never install the floating app filter.
         categories->view()->installEventFilter(this);

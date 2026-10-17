@@ -4,6 +4,42 @@
 <context>
     <name>m3::qt::EmojiLineEdit</name>
     <message>
+        <source>Smileys &amp; Emotion</source>
+        <translation>顔と感情</translation>
+    </message>
+    <message>
+        <source>People &amp; Body</source>
+        <translation>人と身体</translation>
+    </message>
+    <message>
+        <source>Animals &amp; Nature</source>
+        <translation>動物と自然</translation>
+    </message>
+    <message>
+        <source>Food &amp; Drink</source>
+        <translation>食べ物と飲み物</translation>
+    </message>
+    <message>
+        <source>Travel &amp; Places</source>
+        <translation>旅行と場所</translation>
+    </message>
+    <message>
+        <source>Activities</source>
+        <translation>活動</translation>
+    </message>
+    <message>
+        <source>Objects</source>
+        <translation>物</translation>
+    </message>
+    <message>
+        <source>Symbols</source>
+        <translation>記号</translation>
+    </message>
+    <message>
+        <source>Flags</source>
+        <translation>旗</translation>
+    </message>
+    <message>
         <location filename="../emoji_line_edit.cpp" line="+197"/>
         <source>Choose an emoji</source>
         <translation>絵文字を選択</translation>
@@ -108,6 +144,10 @@
 </context>
 <context>
     <name>m3::qt::MindMapEditor</name>
+    <message>
+        <source>Paste</source>
+        <translation>貼り付け</translation>
+    </message>
     <message>
         <location filename="../editor.cpp" line="+731"/>
         <source>Unassigned</source>

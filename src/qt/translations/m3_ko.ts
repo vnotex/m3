@@ -4,6 +4,42 @@
 <context>
     <name>m3::qt::EmojiLineEdit</name>
     <message>
+        <source>Smileys &amp; Emotion</source>
+        <translation>표정과 감정</translation>
+    </message>
+    <message>
+        <source>People &amp; Body</source>
+        <translation>사람과 신체</translation>
+    </message>
+    <message>
+        <source>Animals &amp; Nature</source>
+        <translation>동물과 자연</translation>
+    </message>
+    <message>
+        <source>Food &amp; Drink</source>
+        <translation>음식과 음료</translation>
+    </message>
+    <message>
+        <source>Travel &amp; Places</source>
+        <translation>여행과 장소</translation>
+    </message>
+    <message>
+        <source>Activities</source>
+        <translation>활동</translation>
+    </message>
+    <message>
+        <source>Objects</source>
+        <translation>사물</translation>
+    </message>
+    <message>
+        <source>Symbols</source>
+        <translation>기호</translation>
+    </message>
+    <message>
+        <source>Flags</source>
+        <translation>깃발</translation>
+    </message>
+    <message>
         <location filename="../emoji_line_edit.cpp" line="+205"/>
         <source>Choose an emoji</source>
         <translation>이모지 선택</translation>
@@ -108,6 +144,10 @@
 </context>
 <context>
     <name>m3::qt::MindMapEditor</name>
+    <message>
+        <source>Paste</source>
+        <translation>붙여넣기</translation>
+    </message>
     <message>
         <location filename="../editor.cpp" line="+1118"/>
         <source>Unassigned</source>
