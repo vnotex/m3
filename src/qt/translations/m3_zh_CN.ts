@@ -877,6 +877,11 @@
     </message>
     <message>
         <location line="+1"/>
+        <source>I&amp;mage</source>
+        <translation>图像(&amp;M)</translation>
+    </message>
+    <message>
+        <location line="+0"/>
         <source>Image</source>
         <translation>图像</translation>
     </message>
