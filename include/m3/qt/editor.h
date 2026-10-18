@@ -11,6 +11,7 @@
 #include <memory>
 
 class QAction;
+class QMenu;
 class QMimeData;
 
 #ifdef M3_QT_STATIC
@@ -473,6 +474,10 @@ signals:
     void nodeImageActivated(const QString &nodeId, const QImage &image);
     void imageRequested(const QString &url, quint64 requestId);
     void errorOccurred(const QString &message);
+    // Extend the no-selection menu after any inline draft is committed.
+    // Connect directly on the GUI thread; the populated menu is borrowed only
+    // during this call. Hosts own their actions and file/export policy.
+    void backgroundContextMenuRequested(QMenu *menu);
 protected:
     // Native node clipboard data is handled internally before these resource hooks.
     // Pure, cheap eligibility query: no IO, decoding, dialogs or document changes.

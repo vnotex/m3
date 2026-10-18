@@ -1724,6 +1724,8 @@ public:
                 menu.addAction(addOrphan);
                 menu.addSeparator();
                 menu.addAction(helpAction);
+                emit host->backgroundContextMenuRequested(&menu);
+                if (!guard) return;
             }
             if (!linkId.isEmpty() || controller->selectedNodeIds().size() > 1) {
                 menu.addSeparator();
