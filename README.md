@@ -100,7 +100,11 @@ Right-click a single node and choose **Expand All** or **Collapse All** to unfol
 
 The expand/collapse circle and create-link button highlight on hover using the current palette; moving away restores their normal appearance.
 
-Default node outlines, tree connectors and cross-links use the palette's text color for contrast in light and dark themes. Explicit branch colors still override node outlines and tree connectors; selection highlights remain unchanged. HTML exports use the same default strokes.
+Default node outlines, tree connectors and cross-links blend the palette's text color into the
+canvas background, starting at 65% foreground. The foreground share increases as needed to retain
+at least 3:1 contrast against the opaque canvas; if the theme's original foreground is already
+below that threshold, it is kept without further dimming. Explicit branch colors still override
+node outlines and tree connectors; selection highlights remain unchanged. HTML exports use the same strokes.
 
 A node with a URL shows a chain-link indicator (Lucide `link`) beside its topic. Clicking it emits `nodeLinkActivated`; the host decides how to open the URL. The expansion button, create-link button and URL indicator share a 20×20 logical-pixel box at 100% zoom and scale together with the node.
 

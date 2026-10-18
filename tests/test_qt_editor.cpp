@@ -3539,6 +3539,87 @@ static void render_case() {
     CHECK(arrowDifference > 5);
 }
 
+static void stroke_contrast_case() {
+    RawLabelEditor editor;
+    CHECK(editor.loadJson(QByteArray(R"({"schemaVersion":1,"rootId":"r","nodes":[
+        {"id":"r","topic":"Root","children":["n"]},{"id":"n","topic":"Child"}],
+        "crossLinks":[{"id":"x","source":"r","target":"n","directed":true,"topic":"Cross"}]})")));
+    showEditor(editor);
+    editor.clearSelection();
+    const QByteArray semantic = editor.toJson();
+    QSignalSpy changed(&editor, &Editor::documentChanged);
+    const auto luminance = [](const QColor &color) {
+        const auto linear = [](double value) {
+            return value <= 0.04045 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4);
+        };
+        return 0.2126 * linear(color.redF()) + 0.7152 * linear(color.greenF()) + 0.0722 * linear(color.blueF());
+    };
+    const auto contrast = [&](const QColor &first, const QColor &second) {
+        const double a = luminance(first), b = luminance(second);
+        return (std::max(a, b) + 0.05) / (std::min(a, b) + 0.05);
+    };
+    const struct { QColor foreground, background; } appearances[] = {
+        {QColor("#c2c5cc"), QColor("#323741")}, // Normal dark-theme softening.
+        {QColor("#777777"), Qt::black},        // A fixed blend would be too dim.
+        {QColor("#777777"), Qt::white},        // Same boundary with dark foreground.
+        {QColor(255, 255, 255, 128), QColor("#323741")},
+        {QColor("#888888"), QColor("#777777")} // Do not further dim an unreadable theme.
+    };
+    QImage swatch(1, 1, QImage::Format_RGB32);
+    for (const auto &appearance : appearances) {
+        QPalette palette = editor.palette();
+        palette.setColor(QPalette::Base, appearance.background);
+        palette.setColor(QPalette::Button, appearance.background);
+        palette.setColor(QPalette::Text, appearance.foreground);
+        editor.setPalette(palette);
+        pump();
+        QList<QGraphicsPathItem *> edges;
+        for (auto *item : graphics(editor).scene()->items())
+            if (auto *edge = dynamic_cast<QGraphicsPathItem *>(item); edge && !edge->parentItem())
+                edges.append(edge);
+        CHECK(edges.size() == 1);
+        const QColor stroke = edges.front()->pen().color();
+        swatch.fill(appearance.background);
+        {
+            QPainter painter(&swatch);
+            painter.fillRect(swatch.rect(), appearance.foreground);
+        }
+        const double foregroundContrast = contrast(swatch.pixelColor(0, 0), appearance.background);
+        if (foregroundContrast < 3) {
+            CHECK(stroke == appearance.foreground);
+        } else {
+            const double strokeContrast = contrast(stroke, appearance.background);
+            CHECK(strokeContrast >= 3 && strokeContrast < foregroundContrast);
+        }
+        for (const auto *topic : {"Root", "Child", "Cross"}) {
+            HtmlPaintDevice device;
+            QPainter painter(&device);
+            ownerItem(textItem(editor, QString::fromLatin1(topic)))->paint(&painter, nullptr, nullptr);
+            CHECK(painter.end() && !device.engine.strokes.empty());
+            CHECK(device.engine.strokes.front().pen.color() == stroke);
+            if (QString::fromLatin1(topic) == QStringLiteral("Cross"))
+                for (const auto &painted : device.engine.strokes) CHECK(painted.pen.color() == stroke);
+        }
+        const HtmlPage page(editor.toHtml());
+        const auto nodes = page.classes(QStringLiteral("m3-node"));
+        CHECK(nodes.size() == 2);
+        for (const int index : nodes) {
+            const auto outline = htmlStyle(page.elements[index]).value(QStringLiteral("outline"))
+                                     .split(u' ', Qt::SkipEmptyParts);
+            CHECK(outline.size() == 3 && QColor(outline[2]) == stroke);
+        }
+        CHECK(page.classes(QStringLiteral("m3-tree-edge")).size() == 1);
+        CHECK(page.classes(QStringLiteral("m3-link-curve")).size() == 1);
+        for (const auto *className : {"m3-tree-edge", "m3-link-curve", "m3-link-leader"}) {
+            for (const int index : page.classes(QString::fromLatin1(className))) {
+                CHECK(QColor(page.elements[index].attributes.value(QStringLiteral("stroke"))) ==
+                      stroke);
+            }
+        }
+        CHECK(editor.toJson() == semantic && changed.isEmpty());
+    }
+}
+
 static void routing_case() {
     Json input = Json::parse(R"({"schemaVersion":1,"rootId":"r","nodes":[
         {"id":"r","topic":"Root","children":["a","b","c","d","e"]},
@@ -13684,7 +13765,7 @@ int main(int argc, char **argv) {
         else if (name == "collapse") { collapse_case(); collapse_scene(); }
         else if (name == "graph_edits") { graph_edits_case(); graph_edits_scene(); }
         else if (name == "images") { images_case(); image_activation_case(); }
-        else if (name == "render") { render_case(); routing_case(); }
+        else if (name == "render") { render_case(); stroke_contrast_case(); routing_case(); }
         else if (name == "navigation") navigation_case();
         else if (name == "outline_navigation") outline_navigation_case();
         else if (name == "find") find_case();

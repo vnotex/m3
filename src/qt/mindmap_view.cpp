@@ -34,6 +34,34 @@
 
 namespace m3::qt {
 namespace {
+QColor defaultStrokeColor(const QPalette &palette) {
+    const QColor foreground = palette.color(QPalette::Text);
+    const QColor background = palette.color(QPalette::Base);
+    const auto blend = [&](int percent) {
+        const qreal weight = percent * foreground.alphaF() / 100;
+        return QColor(qRound(foreground.red() * weight + background.red() * (1 - weight)),
+                      qRound(foreground.green() * weight + background.green() * (1 - weight)),
+                      qRound(foreground.blue() * weight + background.blue() * (1 - weight)));
+    };
+    const auto luminance = [](const QColor &color) {
+        const auto linear = [](qreal channel) {
+            return channel <= 0.04045 ? channel / 12.92 : std::pow((channel + 0.055) / 1.055, 2.4);
+        };
+        return 0.2126 * linear(color.redF()) + 0.7152 * linear(color.greenF()) + 0.0722 * linear(color.blueF());
+    };
+    const qreal backgroundLuminance = luminance(background);
+    const auto readable = [&](const QColor &color) {
+        const qreal value = luminance(color);
+        return (std::max(value, backgroundLuminance) + 0.05) / (std::min(value, backgroundLuminance) + 0.05) >= 3;
+    };
+    const QColor fullForeground = blend(100);
+    if (!readable(fullForeground)) return foreground;
+    for (int percent = 65; percent < 100; percent += 5) {
+        const QColor stroke = blend(percent);
+        if (readable(stroke)) return stroke;
+    }
+    return fullForeground;
+}
 QString resolveFontFamily(const QString &families) {
     if (families.isEmpty()) return {};
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
@@ -270,22 +298,23 @@ public:
     QRectF rect;
     std::vector<QRectF> tagRectangles;
     QPalette colors;
-    QColor backgroundColor, branchColor;
+    QColor backgroundColor, branchColor, strokeColor;
     QGraphicsTextItem *label;
     std::optional<NodeImage> image;
     NodeImageItem *imageItem = nullptr;
-    NodeItem(NodePresentation node, const QPalette &palette, HtmlNode *html = nullptr)
+    NodeItem(NodePresentation node, const QPalette &palette, const QColor &stroke,
+             HtmlNode *html = nullptr)
         : id(node.id), topic(std::move(node.topic)), hyperlink(node.hyperlink),
           expanded(node.expanded), hasChildren(node.hasChildren),
           rect(QPointF(), node.rectangle.size()), colors(palette),
           backgroundColor(node.style.backgroundColor.isValid() ? node.style.backgroundColor : palette.color(QPalette::Button)),
-          branchColor(node.style.branchColor) {
+          branchColor(node.style.branchColor), strokeColor(stroke) {
         if (html) {
             html->id = id;
             html->hyperlink = hyperlink;
             html->rectangle = node.rectangle;
             html->background = backgroundColor;
-            html->border = branchColor.isValid() ? branchColor : colors.color(QPalette::Text);
+            html->border = branchColor.isValid() ? branchColor : strokeColor;
             html->hasChildren = hasChildren;
             html->expanded = expanded;
             html->foldRectangle = QRectF(affordance().center() - QPointF(6, 6), QSizeF(12, 12));
@@ -373,7 +402,7 @@ public:
     QPainterPath shape() const override { QPainterPath path; path.addRoundedRect(rect, 8, 8); return path; }
     void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
         p->setPen(QPen(branchColor.isValid() ? branchColor :
-                       colors.color(dropTarget || isSelected() ? QPalette::Highlight : QPalette::Text),
+                       (dropTarget || isSelected() ? colors.color(QPalette::Highlight) : strokeColor),
                        dropTarget || isSelected() ? 3 : 1, dropTarget ? Qt::DashLine : Qt::SolidLine));
         p->setBrush(backgroundColor);
         p->drawRoundedRect(rect, 8, 8);
@@ -571,10 +600,13 @@ public:
     QPainterPath curve, hit, leader;
     QPolygonF sourceArrow, targetArrow;
     QPalette colors;
+    QColor strokeColor;
     QGraphicsTextItem *label;
     LinkItem(const LinkPresentation &link, QPainterPath path, const QFont &font, const QPalette &palette,
-             std::vector<QRectF> &occupied, const LinkRouter &router, const QRectF &source, const QRectF &target)
-        : id(link.id), source(link.source), target(link.target), curve(std::move(path)), colors(palette) {
+             const QColor &stroke, std::vector<QRectF> &occupied, const LinkRouter &router,
+             const QRectF &source, const QRectF &target)
+        : id(link.id), source(link.source), target(link.target), curve(std::move(path)), colors(palette),
+          strokeColor(stroke) {
         setZValue(1);
         setFlag(ItemIsSelectable);
         auto arrow = [this](qreal endPercent, qreal innerPercent) {
@@ -634,11 +666,11 @@ public:
     QRectF boundingRect() const override { return hit.boundingRect().adjusted(-2, -2, 2, 2); }
     QPainterPath shape() const override { return hit; }
     QPen curvePen() const {
-        return QPen(colors.color(isSelected() ? QPalette::Highlight : QPalette::Text),
+        return QPen(isSelected() ? colors.color(QPalette::Highlight) : strokeColor,
                     isSelected() ? 2 : 1, Qt::DashLine);
     }
     QPen leaderPen() const {
-        return QPen(colors.color(isSelected() ? QPalette::Highlight : QPalette::Text), 1, Qt::DotLine);
+        return QPen(isSelected() ? colors.color(QPalette::Highlight) : strokeColor, 1, Qt::DotLine);
     }
     void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
         const QPen pen = curvePen();
@@ -687,6 +719,7 @@ QPointF boundary(const QRectF &rect, const QPointF &towards) {
 std::unique_ptr<QGraphicsScene> buildScene(Presentation presentation, const QFont &font,
                                            const QPalette &palette, HtmlMap *html = nullptr) {
     auto replacement = std::make_unique<QGraphicsScene>();
+    const QColor stroke = defaultStrokeColor(palette);
     if (html) {
         html->nodes.reserve(presentation.nodes.size());
         html->treeEdges.reserve(presentation.treeEdges.size());
@@ -719,7 +752,7 @@ std::unique_ptr<QGraphicsScene> buildScene(Presentation presentation, const QFon
             path.moveTo(from);
             path.cubicTo(QPointF(middle, from.y()), QPointF(middle, to.y()), to);
         }
-        const QColor color = target->style.branchColor.isValid() ? target->style.branchColor : palette.color(QPalette::Text);
+        const QColor color = target->style.branchColor.isValid() ? target->style.branchColor : stroke;
         auto *item = replacement->addPath(path, QPen(color, 1));
         item->setAcceptedMouseButtons(Qt::NoButton);
         if (html) html->treeEdges.push_back({edge.source, edge.target, path, item->pen()});
@@ -754,7 +787,7 @@ std::unique_ptr<QGraphicsScene> buildScene(Presentation presentation, const QFon
                 path.quadTo((from + to) / 2 + normal * offset, to);
             }
             path = router.route(path, source, target, i);
-            auto *item = new LinkItem(link, std::move(path), font, palette, occupied, router, source, target);
+            auto *item = new LinkItem(link, std::move(path), font, palette, stroke, occupied, router, source, target);
             replacement->addItem(item);
             if (html) {
                 HtmlLink visual;
@@ -777,7 +810,7 @@ std::unique_ptr<QGraphicsScene> buildScene(Presentation presentation, const QFon
     // The index above borrows stable presentation nodes; do not read it after moving them.
     for (auto &node : presentation.nodes) {
         if (html) html->nodes.emplace_back();
-        auto *item = new NodeItem(std::move(node), palette, html ? &html->nodes.back() : nullptr);
+        auto *item = new NodeItem(std::move(node), palette, stroke, html ? &html->nodes.back() : nullptr);
         replacement->addItem(item);
     }
     replacement->setSceneRect(replacement->itemsBoundingRect().adjusted(-32, -32, 32, 32));
