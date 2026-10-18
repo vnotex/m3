@@ -104,7 +104,8 @@ void DemoWindow::setupEditorToolBars() {
     view->setObjectName(QStringLiteral("mindMapViewToolBar"));
     view->setMovable(false);
     for (const auto &name : {QStringLiteral("zoomIn"), QStringLiteral("zoomOut"),
-            QStringLiteral("resetZoom"), QStringLiteral("fit"), QStringLiteral("selectRoot")}) add(view, name);
+            QStringLiteral("resetZoom"), QStringLiteral("fitWidth"), QStringLiteral("fit"),
+            QStringLiteral("selectRoot")}) add(view, name);
     layoutDirection = new QComboBox(view);
     layoutDirection->setObjectName(QStringLiteral("layoutDirection"));
     layoutDirection->setAccessibleName(tr("Layout direction"));

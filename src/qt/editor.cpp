@@ -1540,7 +1540,8 @@ public:
         auto *zoomIn = action("zoomIn", tr("Zoom In"), config.shortcuts.zoomIn, [this] { view->zoom(1.2); });
         auto *zoomOut = action("zoomOut", tr("Zoom Out"), config.shortcuts.zoomOut, [this] { view->zoom(1 / 1.2); });
         auto *resetZoom = action("resetZoom", tr("100%"), config.shortcuts.resetZoom, [this] { view->resetZoom(); });
-        auto *fit = action("fit", tr("Fit"), config.shortcuts.fit, [this] { view->fitContents(); });
+        auto *fit = action("fit", tr("Fit Page"), config.shortcuts.fit, [this] { view->fitContents(); });
+        auto *fitWidth = action("fitWidth", tr("Fit Width"), config.shortcuts.fitWidth, [this] { view->fitWidth(); });
         rootSelection = action("selectRoot", tr("Focus Main Node"), config.shortcuts.selectRoot, [this] { host->focusRoot(); });
         nodeNavigation = {
             action("selectParent", tr("Select parent"), config.shortcuts.selectParent, [this] { navigate(Navigation::Parent); }),
@@ -1612,7 +1613,7 @@ public:
         // Snapshot configured bindings before inline editing temporarily clears them.
         shortcutHelpText = shortcutHelp();
         view->setContextMenuPolicy(Qt::CustomContextMenu);
-        QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this, zoomIn, zoomOut, resetZoom, fit, helpAction](const QPoint &point) {
+        QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this, zoomIn, zoomOut, resetZoom, fit, fitWidth, helpAction](const QPoint &point) {
             const QPointer<MindMapEditor> guard(host);
             const QString linkUrl = view->nodeLinkAt(point);
             const quint64 linkEpoch = formattingEpoch;
@@ -1719,7 +1720,7 @@ public:
                 menu.addSeparator();
                 menu.addAction(deleteSelection);
             } else {
-                menu.addActions({rootSelection, fit, resetZoom, zoomIn, zoomOut});
+                menu.addActions({rootSelection, fitWidth, fit, resetZoom, zoomIn, zoomOut});
                 menu.addSeparator();
                 menu.addAction(addOrphan);
                 menu.addSeparator();
@@ -1932,6 +1933,8 @@ QString MindMapEditor::selectedText() const {
 bool MindMapEditor::setLayoutDirection(LayoutDirection direction) { return d->controller->setLayoutDirection(direction); }
 MindMapEditor::LayoutDirection MindMapEditor::layoutDirection() const { return d->controller->layoutDirection(); }
 void MindMapEditor::fitToContents() { d->view->fitContents(); }
+void MindMapEditor::fitToWidth() { d->view->fitWidth(); }
+MindMapEditor::ZoomMode MindMapEditor::zoomMode() const { return d->view->zoomMode(); }
 qreal MindMapEditor::zoomFactor() const { return d->view->transform().m11(); }
 bool MindMapEditor::isZoomFit() const { return d->view->isZoomFit(); }
 void MindMapEditor::zoom(qreal factor) { d->view->zoom(factor); }

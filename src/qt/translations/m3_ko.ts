@@ -433,8 +433,13 @@
     </message>
     <message>
         <location line="+1"/>
-        <source>Fit</source>
-        <translation>화면에 맞추기</translation>
+        <source>Fit Page</source>
+        <translation>페이지에 맞추기</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Fit Width</source>
+        <translation>너비에 맞추기</translation>
     </message>
     <message>
         <location line="+1"/>

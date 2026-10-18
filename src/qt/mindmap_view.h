@@ -40,8 +40,11 @@ public:
     void ensureNodeVisible(const QString &id, const QRect &occlusion = {});
     void ensureLinkVisible(const QString &id);
     void centerNode(const QString &id);
+    using ZoomMode = MindMapEditor::ZoomMode;
     void fitContents();
-    bool isZoomFit() const { return zoomFit; }
+    void fitWidth();
+    ZoomMode zoomMode() const { return currentZoomMode; }
+    bool isZoomFit() const { return currentZoomMode != ZoomMode::Custom; }
     void zoom(qreal factor);
     void resetZoom();
     void scrollSteps(int horizontal, int vertical);
@@ -95,7 +98,8 @@ private:
     std::optional<QPointF> pendingCenter;
     bool cameraScheduled = false;
     void schedulePendingCamera();
-    bool zoomFit = false;
+    ZoomMode currentZoomMode = ZoomMode::Custom;
+    void fit(ZoomMode mode);
     QPointF panPosition;
     QHash<QString, QString> nodeParents;
     QGraphicsItem *linkCreationHandle = nullptr;

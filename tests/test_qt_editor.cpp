@@ -7903,7 +7903,147 @@ static void find_case() {
     }
 }
 
+static void zoom_modes_case() {
+    Json children = Json::array(), nodes = Json::array();
+    for (int i = 0; i < 40; ++i) {
+        const std::string id = "zoom-" + std::to_string(i);
+        children.push_back(id);
+        nodes.push_back(Json{{"id", id}, {"topic", "Tall branch " + std::to_string(i)}});
+    }
+    nodes.push_back(Json{{"id", "r"}, {"topic", "Tall root"}, {"children", children}});
+    const QByteArray tall = encoded(Json{{"schemaVersion", 1}, {"rootId", "r"}, {"nodes", nodes}});
+    {
+        RawLabelEditor editor;
+        CHECK(editor.loadJson(tall));
+        CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+        showEditor(editor);
+        editor.clearSelection();
+        auto &view = graphics(editor);
+        const QByteArray before = editor.toJson();
+        QSignalSpy changed(&editor, &Editor::documentChanged), zoomed(&editor, &Editor::zoomChanged);
+        QSignalSpy undo(&editor, &Editor::undoAvailable), redo(&editor, &Editor::redoAvailable);
+        trigger(editor, "fit");
+        CHECK(editor.zoomMode() == Editor::ZoomMode::Page && editor.isZoomFit());
+        const qreal pageScale = editor.zoomFactor();
+        const QRectF bounds = view.scene()->sceneRect();
+        CHECK(view.viewport()->rect().adjusted(-3, -3, 3, 3).contains(
+            view.mapFromScene(bounds).boundingRect()));
+        trigger(editor, "fitWidth");
+        CHECK(editor.zoomMode() == Editor::ZoomMode::Width && editor.isZoomFit());
+        CHECK(editor.zoomFactor() > pageScale);
+        CHECK(qFuzzyCompare(view.transform().m11(), view.transform().m22()));
+        CHECK(std::abs(bounds.width() * editor.zoomFactor() - (view.viewport()->width() - 4)) < 1e-6);
+        CHECK(bounds.height() * editor.zoomFactor() > view.viewport()->height());
+        CHECK(view.verticalScrollBar()->maximum() > view.verticalScrollBar()->minimum());
+        CHECK(zoomed.size() == 2 && zoomed.back().at(1).toBool());
+        editor.fitToWidth();
+        CHECK(zoomed.size() == 2);
+        const qreal widthScale = editor.zoomFactor();
+        editor.resize(1120, 760);
+        pump();
+        CHECK(qFuzzyCompare(widthScale, editor.zoomFactor())); // One-shot, not resize-to-fit.
+        CHECK(editor.zoomMode() == Editor::ZoomMode::Width);
+        wheel(view, view.viewport()->rect().center(), 120, Qt::ControlModifier);
+        CHECK(editor.zoomMode() == Editor::ZoomMode::Custom && !editor.isZoomFit());
+        CHECK(!zoomed.back().at(1).toBool());
+        editor.fitToWidth();
+        editor.resetZoom();
+        CHECK(editor.zoomMode() == Editor::ZoomMode::Custom && editor.zoomFactor() == 1.0);
+        CHECK(!zoomed.back().at(1).toBool());
+        // Empty/invalid scene geometry is a no-op, not a remembered fit request.
+        const auto camera = view.transform();
+        const auto notifications = zoomed.size();
+        for (qreal width : {qreal(0), qreal(-1)}) {
+            view.scene()->setSceneRect(QRectF(0, 0, width, 100));
+            editor.fitToWidth();
+            editor.fitToContents();
+            CHECK(view.transform() == camera && editor.zoomMode() == Editor::ZoomMode::Custom);
+            CHECK(zoomed.size() == notifications);
+        }
+        view.scene()->setSceneRect(bounds);
+        CHECK(editor.toJson() == before && changed.isEmpty() && undo.isEmpty() && redo.isEmpty());
+    }
+    {
+        QWidget host;
+        QVBoxLayout layout(&host);
+        RawLabelEditor editor(&host);
+        layout.addWidget(&editor);
+        CHECK(editor.loadJson(tall));
+        const QByteArray before = editor.toJson();
+        QSignalSpy changed(&editor, &Editor::documentChanged), zoomed(&editor, &Editor::zoomChanged);
+        editor.fitToWidth();
+        CHECK(editor.zoomMode() == Editor::ZoomMode::Width && editor.zoomFactor() == 1.0);
+        editor.fitToContents();
+        CHECK(editor.zoomMode() == Editor::ZoomMode::Page && editor.zoomFactor() == 1.0);
+        editor.fitToWidth();
+        CHECK(editor.zoomMode() == Editor::ZoomMode::Width && editor.isZoomFit());
+        CHECK(zoomed.size() == 3); // Hidden same-factor Width/Page transitions still publish.
+        for (const auto &notification : zoomed) CHECK(notification.at(1).toBool());
+        CHECK(editor.setExpanded(QStringLiteral("r"), false)); // Refresh must retain pending Width.
+        CHECK(editor.setExpanded(QStringLiteral("r"), true));
+        host.resize(860, 620);
+        host.show();
+        pump();
+        auto &view = graphics(editor);
+        const QRectF bounds = view.scene()->sceneRect();
+        CHECK(editor.zoomMode() == Editor::ZoomMode::Width);
+        CHECK(std::abs(bounds.width() * editor.zoomFactor() - (view.viewport()->width() - 4)) < 1e-6);
+        CHECK(bounds.height() * editor.zoomFactor() > view.viewport()->height());
+        CHECK(zoomed.size() == 4);
+        const qreal scale = editor.zoomFactor();
+        host.resize(980, 720);
+        pump();
+        CHECK(qFuzzyCompare(scale, editor.zoomFactor()));
+        // Manual zoom/reset supersede a hidden fit and its deferred callback.
+        for (bool reset : {false, true}) {
+            editor.hide();
+            editor.fitToWidth();
+            if (reset) editor.resetZoom();
+            else editor.zoom(1.0);
+            const qreal manualScale = editor.zoomFactor();
+            editor.show();
+            pump();
+            CHECK(editor.zoomMode() == Editor::ZoomMode::Custom && !editor.isZoomFit());
+            CHECK(qFuzzyCompare(manualScale, editor.zoomFactor()));
+        }
+        CHECK(editor.toJson() == before && changed.isEmpty());
+    }
+    {
+        RawLabelEditor editor;
+        CHECK(editor.newDocument(QStringLiteral("A wide map for equal-scale fit transitions")));
+        showEditor(editor, QSize(640, 480));
+        const QByteArray before = editor.toJson();
+        QSignalSpy changed(&editor, &Editor::documentChanged), zoomed(&editor, &Editor::zoomChanged);
+        QList<Editor::ZoomMode> observedModes;
+        QObject::connect(&editor, &Editor::zoomChanged, &editor,
+                         [&](qreal, bool) { observedModes.append(editor.zoomMode()); });
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Uncommitted camera-only draft"));
+        editor.fitToContents();
+        const qreal scale = editor.zoomFactor();
+        CHECK(scale >= 0.1 && scale <= 4.0);
+        editor.fitToWidth();
+        CHECK(qFuzzyCompare(scale, editor.zoomFactor()));
+        editor.fitToContents();
+        CHECK(qFuzzyCompare(scale, editor.zoomFactor()));
+        editor.zoom(1.0);
+        CHECK(qFuzzyCompare(scale, editor.zoomFactor()));
+        editor.fitToWidth();
+        CHECK(qFuzzyCompare(scale, editor.zoomFactor()));
+        CHECK(observedModes == QList<Editor::ZoomMode>({Editor::ZoomMode::Page, Editor::ZoomMode::Width,
+            Editor::ZoomMode::Page, Editor::ZoomMode::Custom, Editor::ZoomMode::Width}));
+        CHECK(zoomed.size() == 5 && !zoomed.at(3).at(1).toBool());
+        CHECK(editor.hasPendingEdit() && activeTopicInput(editor));
+        CHECK(editor.toJson() == before && changed.isEmpty());
+        topicKey(editor, Qt::Key_Escape);
+        editor.resetZoom();
+        CHECK(editor.zoomMode() == Editor::ZoomMode::Custom && editor.zoomFactor() == 1.0);
+        CHECK(editor.toJson() == before && changed.isEmpty());
+    }
+}
+
 static void navigation_case() {
+    zoom_modes_case();
     shift_scroll_case();
     focus_root_case();
     empty_space_panning_case();
@@ -7935,10 +8075,10 @@ static void navigation_case() {
     QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, blankPoint(view));
     CHECK(selected.size() == 3);
 
-    auto &reset = textAction(editor, {QStringLiteral("100%"), QStringLiteral("Reset zoom")});
-    auto &zoomIn = textAction(editor, {QStringLiteral("Zoom +"), QStringLiteral("Zoom in"), QStringLiteral("+")});
-    auto &zoomOut = textAction(editor, {QStringLiteral("Zoom -"), QStringLiteral("Zoom −"), QStringLiteral("Zoom out"), QStringLiteral("-")});
-    auto &fit = textAction(editor, {QStringLiteral("Fit"), QStringLiteral("Fit to contents")});
+    auto &reset = editAction(editor, "resetZoom");
+    auto &zoomIn = editAction(editor, "zoomIn");
+    auto &zoomOut = editAction(editor, "zoomOut");
+    auto &fit = editAction(editor, "fit");
     reset.trigger();
     pump();
     CHECK(std::abs(view.transform().m11() - 1.0) < 1e-6);
@@ -11620,7 +11760,7 @@ static void demo_controls_case() {
     };
     for (const char *name : {"undo", "redo", "addChild", "addSibling", "addSiblingBefore",
             "editSelection", "deleteSelection", "toggleExpanded", "moveNode", "moveUp",
-            "moveDown", "addLink", "editLink", "zoomIn", "zoomOut", "resetZoom", "fit", "selectRoot"})
+            "moveDown", "addLink", "editLink", "zoomIn", "zoomOut", "resetZoom", "fitWidth", "fit", "selectRoot"})
         button(name);
     QSignalSpy changed(&editor, &Editor::documentChanged);
     QSignalSpy layouts(&editor, &Editor::layoutDirectionChanged);

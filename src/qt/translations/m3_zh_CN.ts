@@ -433,8 +433,13 @@
     </message>
     <message>
         <location line="+1"/>
-        <source>Fit</source>
-        <translation>适应窗口</translation>
+        <source>Fit Page</source>
+        <translation>适应页面</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Fit Width</source>
+        <translation>适应宽度</translation>
     </message>
     <message>
         <location line="+1"/>

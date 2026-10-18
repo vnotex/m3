@@ -64,7 +64,7 @@ class QRectF;
 // Node context menus separate creation from editing/reordering and omit viewport actions.
 // Expand All/Collapse All fold that node and all its descendants, including in read-only maps.
 // Other branches and orphan trees retain their folds; these actions are disabled on leaves.
-// With no selection the menu offers Focus Main Node, Fit, 100%, Zoom In and Zoom Out,
+// With no selection the menu offers Focus Main Node, Fit Width, Fit Page, 100%, Zoom In and Zoom Out,
 // followed by Add Orphan Node and Shortcuts Help (the existing keyboard shortcuts overlay).
 // Move and Detach Subtree act on non-main nodes; detach is available only for an attached
 // subtree. Collapse/Expand and Add Link are commands.
@@ -220,7 +220,8 @@ struct EditorConfig {
         QList<QKeySequence> zoomIn{QKeySequence(QKeySequence::ZoomIn), QKeySequence(Qt::CTRL | Qt::Key_Equal)};
         QList<QKeySequence> zoomOut{QKeySequence(QKeySequence::ZoomOut)};
         QList<QKeySequence> resetZoom{QKeySequence(Qt::CTRL | Qt::Key_0)};
-        QList<QKeySequence> fit;
+        QList<QKeySequence> fit; // Fit Page.
+        QList<QKeySequence> fitWidth;
         QList<QKeySequence> toggleBold{QKeySequence(Qt::Key_B)};
         QList<QKeySequence> toggleItalic{QKeySequence(Qt::Key_I)};
         QList<QKeySequence> resetStyle{QKeySequence(Qt::Key_R)};
@@ -271,6 +272,8 @@ public:
     // Outline shows depth-first indented rows with square tree connectors.
     enum class LayoutDirection { Balanced, Right, Left, Outline };
     Q_ENUM(LayoutDirection)
+    enum class ZoomMode { Custom, Width, Page };
+    Q_ENUM(ZoomMode)
     enum class MimeInsertionSource { Clipboard, Drop };
     explicit MindMapEditor(QWidget *parent = nullptr);
     explicit MindMapEditor(const EditorConfig &config, QWidget *parent = nullptr);
@@ -289,7 +292,7 @@ public:
     // in toolbars/menus, but must not delete, reparent or override those policies.
     // Names: undo, redo, addChild, addOrphan, addSibling, addSiblingBefore, editSelection,
     // deleteSelection, toggleExpanded, moveNode, detachNode, moveUp, moveDown, addLink, editLink,
-    // zoomIn, zoomOut, resetZoom, fit, selectRoot, selectParent, selectChild,
+    // zoomIn, zoomOut, resetZoom, fit (Fit Page), fitWidth, selectRoot, selectParent, selectChild,
     // previousSibling, nextSibling, copy, paste, clearSelection, toggleBold, toggleItalic,
     // resetStyle, textColor, fillColor, editTags, editIcons, editNote, toggleProperties,
     // editTopic, showHelp. Triggering retains the same checked inline-commit behavior.
@@ -443,11 +446,16 @@ public:
     QString selectedText() const;
     bool setLayoutDirection(LayoutDirection direction);
     LayoutDirection layoutDirection() const;
+    // One-shot camera fitting; hidden requests wait for a visible viewport.
+    // Fit Page preserves the whole-map geometry; Fit Width permits vertical overflow.
+    // Empty or invalid scene bounds leave the camera and mode unchanged.
     void fitToContents();
+    void fitToWidth();
     // View-only controls; retain document, selection and inline draft.
     // Current canvas scale; fit may produce values outside the step-zoom range.
     qreal zoomFactor() const;
-    // True after explicit fit, including while fitting awaits a visible viewport.
+    ZoomMode zoomMode() const;
+    // True for Width or Page, including while fitting awaits a visible viewport.
     bool isZoomFit() const;
     void zoom(qreal factor);
     void resetZoom();
@@ -460,7 +468,8 @@ public:
     // the root cannot be selected.
     bool focusRoot();
 signals:
-    // View-only scale or Fit/manual-mode changes, including new/load reset and deferred fit.
+    // View-only scale or zoomMode() changes, including new/load reset and deferred fit.
+    // fit means Width or Page; query zoomMode() to distinguish them.
     // Mode transitions emit even at the same scale; pan never emits.
     void zoomChanged(qreal factor, bool fit);
     // Committed semantic changes only, never draft typing or camera/selection/folding.

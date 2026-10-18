@@ -1554,11 +1554,11 @@ void MindMapView::install(Presentation presentation, bool resetCamera) {
     replacement->setParent(this);
     setScene(replacement.release());
     delete old;
-    const bool cameraChanged = resetCamera && (zoomFit || !qFuzzyCompare(transform().m11(), qreal(1)));
+    const bool cameraChanged = resetCamera && (isZoomFit() || !qFuzzyCompare(transform().m11(), qreal(1)));
     if (resetCamera) {
         pendingFit = false;
         pendingCenter = rootCenter;
-        zoomFit = false;
+        currentZoomMode = ZoomMode::Custom;
         resetTransform();
     } else if (pendingCenter) {
         pendingCenter = rootCenter;
@@ -1774,25 +1774,43 @@ void MindMapView::centerNode(const QString &id) {
         }
     }
 }
-void MindMapView::fitContents() {
+void MindMapView::fitContents() { fit(ZoomMode::Page); }
+void MindMapView::fitWidth() { fit(ZoomMode::Width); }
+void MindMapView::fit(ZoomMode mode) {
+    if (!scene()) return;
+    const QRectF bounds = scene()->sceneRect();
+    if (!std::isfinite(bounds.x()) || !std::isfinite(bounds.y()) ||
+        !std::isfinite(bounds.width()) || !std::isfinite(bounds.height()) ||
+        bounds.width() <= 0 || bounds.height() <= 0) return;
+    // Match fitInView's two-pixel margin without using height to constrain Width.
+    const bool deferred = !isVisible() || viewport()->width() <= 4 || viewport()->height() <= 4;
+    qreal widthScale = 1;
+    if (!deferred && mode == ZoomMode::Width) {
+        widthScale = (viewport()->width() - 4) / bounds.width();
+        if (!std::isfinite(widthScale) || widthScale <= 0) return;
+    }
     clearLinkReconnect();
     clearLinkCreation();
     clearImageResize();
-    const bool wasFit = zoomFit;
+    const ZoomMode previousMode = currentZoomMode;
     pendingCenter.reset();
-    zoomFit = true;
-    if (!isVisible() || viewport()->width() <= 0 || viewport()->height() <= 0) {
-        pendingFit = true;
-        if (!wasFit) emit zoomChanged(transform().m11(), true);
+    currentZoomMode = mode;
+    pendingFit = deferred;
+    if (deferred) {
+        if (previousMode != mode) emit zoomChanged(transform().m11(), true);
         return;
     }
-    pendingFit = false;
-    const QRectF bounds = scene()->sceneRect();
     const qreal previous = transform().m11();
     setSceneRect(bounds);
-    fitInView(bounds, Qt::KeepAspectRatio);
+    if (mode == ZoomMode::Width) {
+        setTransform(QTransform::fromScale(widthScale, widthScale));
+        centerOn(bounds.center());
+    } else {
+        fitInView(bounds, Qt::KeepAspectRatio);
+    }
     updateTopicEditorGeometry();
-    if (!wasFit || !qFuzzyCompare(previous, transform().m11())) emit zoomChanged(transform().m11(), true);
+    if (previousMode != mode || !qFuzzyCompare(previous, transform().m11()))
+        emit zoomChanged(transform().m11(), true);
 }
 void MindMapView::zoom(qreal factor) {
     clearLinkReconnect();
@@ -1806,8 +1824,8 @@ void MindMapView::zoom(qreal factor) {
     scale(target / current, target / current);
     preserveCenter(center);
     updateTopicEditorGeometry();
-    const bool wasFit = zoomFit;
-    zoomFit = false;
+    const bool wasFit = isZoomFit();
+    currentZoomMode = ZoomMode::Custom;
     if (wasFit || !qFuzzyCompare(current, transform().m11())) emit zoomChanged(transform().m11(), false);
 }
 void MindMapView::scrollSteps(int horizontal, int vertical) {
@@ -1833,8 +1851,8 @@ void MindMapView::resetZoom() {
     const qreal previous = transform().m11();
     resetTransform(); preserveCenter(center);
     updateTopicEditorGeometry();
-    const bool wasFit = zoomFit;
-    zoomFit = false;
+    const bool wasFit = isZoomFit();
+    currentZoomMode = ZoomMode::Custom;
     if (wasFit || !qFuzzyCompare(previous, transform().m11())) emit zoomChanged(transform().m11(), false);
 }
 QString MindMapView::nodeLinkAt(const QPoint &position) const {
@@ -2435,7 +2453,7 @@ void MindMapView::schedulePendingCamera() {
             pendingCenter.reset();
             preserveCenter(center);
             updateTopicEditorGeometry();
-        } else if (pendingFit) fitContents();
+        } else if (pendingFit) fit(currentZoomMode);
     });
 }
 void MindMapView::resizeEvent(QResizeEvent *event) {

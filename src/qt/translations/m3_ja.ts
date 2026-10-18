@@ -433,8 +433,13 @@
     </message>
     <message>
         <location line="+1"/>
-        <source>Fit</source>
-        <translation>全体を表示</translation>
+        <source>Fit Page</source>
+        <translation>ページに合わせる</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Fit Width</source>
+        <translation>幅に合わせる</translation>
     </message>
     <message>
         <location line="+1"/>
