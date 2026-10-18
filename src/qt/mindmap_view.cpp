@@ -285,7 +285,7 @@ public:
             html->hyperlink = hyperlink;
             html->rectangle = node.rectangle;
             html->background = backgroundColor;
-            html->border = branchColor.isValid() ? branchColor : colors.color(QPalette::Mid);
+            html->border = branchColor.isValid() ? branchColor : colors.color(QPalette::Text);
             html->hasChildren = hasChildren;
             html->expanded = expanded;
             html->foldRectangle = QRectF(affordance().center() - QPointF(6, 6), QSizeF(12, 12));
@@ -373,7 +373,7 @@ public:
     QPainterPath shape() const override { QPainterPath path; path.addRoundedRect(rect, 8, 8); return path; }
     void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
         p->setPen(QPen(branchColor.isValid() ? branchColor :
-                       colors.color(dropTarget || isSelected() ? QPalette::Highlight : QPalette::Mid),
+                       colors.color(dropTarget || isSelected() ? QPalette::Highlight : QPalette::Text),
                        dropTarget || isSelected() ? 3 : 1, dropTarget ? Qt::DashLine : Qt::SolidLine));
         p->setBrush(backgroundColor);
         p->drawRoundedRect(rect, 8, 8);
@@ -634,11 +634,11 @@ public:
     QRectF boundingRect() const override { return hit.boundingRect().adjusted(-2, -2, 2, 2); }
     QPainterPath shape() const override { return hit; }
     QPen curvePen() const {
-        return QPen(colors.color(isSelected() ? QPalette::Highlight : QPalette::Dark),
+        return QPen(colors.color(isSelected() ? QPalette::Highlight : QPalette::Text),
                     isSelected() ? 2 : 1, Qt::DashLine);
     }
     QPen leaderPen() const {
-        return QPen(colors.color(isSelected() ? QPalette::Highlight : QPalette::Dark), 1, Qt::DotLine);
+        return QPen(colors.color(isSelected() ? QPalette::Highlight : QPalette::Text), 1, Qt::DotLine);
     }
     void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
         const QPen pen = curvePen();
@@ -719,7 +719,7 @@ std::unique_ptr<QGraphicsScene> buildScene(Presentation presentation, const QFon
             path.moveTo(from);
             path.cubicTo(QPointF(middle, from.y()), QPointF(middle, to.y()), to);
         }
-        const QColor color = target->style.branchColor.isValid() ? target->style.branchColor : palette.color(QPalette::Mid);
+        const QColor color = target->style.branchColor.isValid() ? target->style.branchColor : palette.color(QPalette::Text);
         auto *item = replacement->addPath(path, QPen(color, 1));
         item->setAcceptedMouseButtons(Qt::NoButton);
         if (html) html->treeEdges.push_back({edge.source, edge.target, path, item->pen()});

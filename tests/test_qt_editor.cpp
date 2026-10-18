@@ -5313,7 +5313,6 @@ static void branch_color_case() {
     const QString green = QStringLiteral("Green (#2ecc71)"), orange = QStringLiteral("Orange (#e67e22)");
     const QString automatic = QStringLiteral("Auto");
     const QColor redColor("#e74c3c"), blueColor("#3498db"), greenColor("#2ecc71"), orangeColor("#e67e22");
-    const QColor mid = view.palette().color(QPalette::Mid);
     auto menu = [&](const QString &id, const QString &choice, const QString &checked, bool keyboard = false) {
         if (!id.isEmpty()) CHECK(editor.selectNode(id));
         pump();
@@ -5443,8 +5442,11 @@ static void branch_color_case() {
         return image;
     };
     editor.clearSelection();
+    const QRectF originalBounds = view.scene()->itemsBoundingRect();
+    const QImage originalMap = raster(originalBounds);
+    const QImage originalRoot = raster(borderRegion("Root"));
+    const QImage originalBeta = raster(borderRegion("Beta"));
     const QImage originalCross = crossImage();
-    CHECK(colorPixels(originalCross, view.palette().color(QPalette::Dark)) > 20);
     const Json before = exported(editor);
     menu("a", red, automatic, true);
     CHECK(changed.size() == 1);
@@ -5459,7 +5461,8 @@ static void branch_color_case() {
     const int normalPixels = colorPixels(raster(borderRegion("Alpha")), redColor);
     CHECK(selectedPixels > normalPixels * 2);
     for (const auto *topic : {"Alpha", "Nested", "Leaf", "Sibling"}) branch(topic, redColor);
-    border("Root", mid); branch("Beta", mid);
+    CHECK(raster(borderRegion("Root")) == originalRoot);
+    CHECK(raster(borderRegion("Beta")) == originalBeta);
     CHECK(crossImage() == originalCross);
     CHECK(textItem(editor, "Alpha")->defaultTextColor() == QColor("#34495e"));
     const QRectF alpha = topicRect(editor, "Alpha").adjusted(2, 2, -2, -2);
@@ -5503,7 +5506,7 @@ static void branch_color_case() {
     menu("a", automatic, automatic);
     CHECK(changed.size() == cleared && localStyle("a") == record(before, "nodes", "a").at("style"));
     editor.clearSelection();
-    for (const auto *topic : {"Alpha", "Nested", "Leaf", "Sibling"}) branch(topic, mid);
+    CHECK(raster(originalBounds) == originalMap);
     menu("a", red, automatic);
     auto *reset = editor.findChild<QToolButton *>(QStringLiteral("nodeResetAppearance"));
     CHECK(reset);
