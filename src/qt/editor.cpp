@@ -1898,6 +1898,7 @@ bool MindMapEditor::updateNode(const QString &id, const QByteArray &patch) { ret
 QByteArray MindMapEditor::toJson() const { return d->controller->toJson(); }
 QString MindMapEditor::toMarkdown() const { return d->controller->toMarkdown(); }
 QString MindMapEditor::toHtml() const { return d->controller->toHtml(); }
+bool MindMapEditor::renderMap(QPainter &painter, const QRectF &target) const { return d->controller->renderMap(painter, target); }
 QString MindMapEditor::lastError() const { return d->controller->lastError(); }
 QString MindMapEditor::resourceBasePath() const { return d->controller->resourceBasePath(); }
 void MindMapEditor::provideImage(const QString &url, quint64 requestId, const QImage &image) { d->controller->provideImage(url, requestId, image); }

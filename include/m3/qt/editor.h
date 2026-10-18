@@ -13,6 +13,8 @@
 class QAction;
 class QMenu;
 class QMimeData;
+class QPainter;
+class QRectF;
 
 #ifdef M3_QT_STATIC
 #define M3_QT_API
@@ -375,6 +377,12 @@ public:
     // supplies the title. Committed data only; no editor state changes. Empty on error;
     // the snapshot survives edits and widget destruction.
     QString toHtml() const;
+    // Paint the committed visible map centered and aspect-fitted inside target.
+    // Vector output with the editor palette, cached images and current folds/layout;
+    // independent of camera/selection, without editor controls or selection handles.
+    // No draft commit, resource I/O or editor-state changes. The painter must be active
+    // and target must have finite coordinates and positive dimensions. False on error.
+    bool renderMap(QPainter &painter, const QRectF &target) const;
     QString lastError() const;
     // Empty parentId creates an orphan tree; otherwise inserts a child. -1 appends.
     QString addNode(const QString &parentId, const QString &topic, int index = -1);

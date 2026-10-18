@@ -34,6 +34,7 @@ public:
     void prepare(NodePresentation &node) const;
     void install(Presentation presentation, bool resetCamera);
     void renderHtmlMap(Presentation presentation, HtmlMap &map) const;
+    void renderMap(Presentation presentation, QPainter &painter, const QRectF &target) const;
     void showError(const QString &message);
     void setSelection(const QStringList &nodes, const QString &link);
     void ensureNodeVisible(const QString &id, const QRect &occlusion = {});

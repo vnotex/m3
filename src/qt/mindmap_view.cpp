@@ -19,6 +19,7 @@
 #include <QGraphicsTextItem>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QScopeGuard>
 #include <QPainterPathStroker>
 #include <QResizeEvent>
 #include <QScrollBar>
@@ -1582,6 +1583,23 @@ void MindMapView::renderHtmlMap(Presentation presentation, HtmlMap &map) const {
         !std::isfinite(map.bounds.width()) || !std::isfinite(map.bounds.height()) ||
         map.bounds.width() <= 0 || map.bounds.height() <= 0)
         throw std::runtime_error("Invalid map bounds for HTML export");
+}
+void MindMapView::renderMap(Presentation presentation, QPainter &painter, const QRectF &target) const {
+    auto detached = buildScene(std::move(presentation), font(), palette());
+    const auto bounds = detached->sceneRect();
+    if (!std::isfinite(bounds.x()) || !std::isfinite(bounds.y()) ||
+        !std::isfinite(bounds.width()) || !std::isfinite(bounds.height()) ||
+        bounds.width() <= 0 || bounds.height() <= 0)
+        throw std::runtime_error("Invalid map bounds for rendering");
+    const auto size = bounds.size().scaled(target.size(), Qt::KeepAspectRatio);
+    const QRectF fitted(target.center() - QPointF(size.width() / 2, size.height() / 2), size);
+    painter.save();
+    const auto restore = qScopeGuard([&painter] { painter.restore(); });
+    painter.setClipRect(target, Qt::IntersectClip);
+    painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing |
+                           QPainter::SmoothPixmapTransform);
+    painter.fillRect(fitted, palette().brush(QPalette::Base));
+    detached->render(&painter, fitted, bounds, Qt::IgnoreAspectRatio);
 }
 void MindMapView::showError(const QString &message) {
     selectedNodes.clear();

@@ -290,6 +290,18 @@ paint primitives, including large maps, images, safe content, all layout directi
 bidirectional links. Image-resize and demo export cases retain nonmutation/snapshot ownership checks.
 Windows offscreen tests use the installed Windows font directory so line measurements are real.
 
+## Painter rendering boundary
+
+`MindMapEditor::renderMap(QPainter &, const QRectF &)` paints the committed visible map into a
+centered, aspect-fitted rectangle through the same detached `buildScene()` used by HTML export.
+It allocates no HTML records and does not rasterize the map. The current layout, folds, palette,
+cached image pixels and placeholders remain authoritative; there is no resource I/O or implicit
+draft commit. Camera, selection, handles, properties panels and editor history are not rendered or
+mutated. Painter state is restored. Reject inactive painters and non-finite/empty target or map
+bounds; zero/negative origins are valid. The host owns QPrinter, page margins/ranges and any draft
+acceptance. Keep Qt PrintSupport out of m3. VNote exercises the public API through its real-window
+`test_mindmapviewwindow_print` regression target.
+
 ## Code Conventions & Common Patterns
 - Match nearby compact C++ formatting: four spaces, same-line braces, header guards. C API functions use `m3_*`, core helpers use snake_case, Qt types use PascalCase and methods/signals camelCase; namespaces are `m3` and `m3::qt`.
 - Use RAII (`std::unique_ptr`, Qt parent ownership). C inputs are borrowed NUL-terminated UTF-8; release output snapshots with `m3_string_free`, layout results with `m3_layout_result_free`, and handles with `m3_mindmap_destroy`. Output slots are nulled on failure.

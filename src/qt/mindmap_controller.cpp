@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QUrl>
 #include <QPointer>
+#include <QPainter>
 #include <QTimer>
 #include <QRegularExpression>
 #include <QRandomGenerator>
@@ -605,6 +606,18 @@ QString MindMapController::toHtml() {
         view.renderHtmlMap(std::move(presentation), map);
         return encodeHtml(document, map);
     } catch (const std::exception &e) { fail(QString::fromUtf8(e.what())); return {}; }
+}
+bool MindMapController::renderMap(QPainter &painter, const QRectF &target) {
+    try {
+        if (!painter.isActive() || !std::isfinite(target.x()) || !std::isfinite(target.y()) ||
+            !std::isfinite(target.width()) || !std::isfinite(target.height()) ||
+            target.width() <= 0 || target.height() <= 0)
+            throw std::runtime_error("Invalid painter or target for map rendering");
+        auto collapsed = collapsedNodes;
+        auto presentation = prepare(currentSnapshot, direction, collapsed);
+        view.renderMap(std::move(presentation), painter, target);
+        return true;
+    } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 Presentation MindMapController::prepare(const QByteArray &json,
                                        MindMapEditor::LayoutDirection requested, QSet<QString> &collapsed,
