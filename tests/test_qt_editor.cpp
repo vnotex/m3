@@ -9625,6 +9625,7 @@ static void inline_edit_case() {
         config.shortcuts.acceptTopic = {QKeySequence(QStringLiteral("Return, Ctrl+S")), QKeySequence(Qt::ALT | Qt::Key_Return)};
         config.shortcuts.toggleExpanded.clear();
         config.shortcuts.selectRoot = {QKeySequence(Qt::CTRL | Qt::Key_H), QKeySequence(Qt::ALT | Qt::Key_H)};
+        config.shortcuts.selectParent.clear();
         RawLabelEditor editor(config);
         CHECK(editor.loadJson(encoded(editorFixture())));
         showEditor(editor);
@@ -10654,6 +10655,7 @@ static void configuration_case() {
     auto configured = [] {
         RawLabelConfig config;
         config.shortcuts.addChild = {QKeySequence(Qt::CTRL | Qt::Key_J), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_J)};
+        config.shortcuts.nextSibling.clear();
         config.shortcuts.editSelection = {QKeySequence(Qt::CTRL | Qt::Key_R)};
         config.shortcuts.acceptTopic = {QKeySequence(Qt::ALT | Qt::Key_Return)};
         config.shortcuts.deleteSelection = {QKeySequence(Qt::CTRL | Qt::Key_D)};
@@ -11360,21 +11362,6 @@ static void shortcuts_case() {
     RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(editorFixture())));
     showEditor(editor);
-    const Json initial = exported(editor);
-    const QString initialSelection = editor.selectedNodeId();
-    dialogs({}, [&] { shortcut(editor, Qt::Key_L, Qt::ControlModifier); });
-    CHECK(exported(editor) == initial && editor.selectedNodeId() == initialSelection);
-    {
-        // Link creation no longer owns Ctrl+L; hosts may bind it with canvas focus.
-        QAction hostShortcut(&editor);
-        hostShortcut.setShortcut(QKeySequence(Qt::CTRL | Qt::Key_L));
-        hostShortcut.setShortcutContext(Qt::WindowShortcut);
-        editor.addAction(&hostShortcut);
-        QSignalSpy triggered(&hostShortcut, &QAction::triggered);
-        dialogs({}, [&] { shortcut(editor, Qt::Key_L, Qt::ControlModifier); });
-        CHECK(triggered.size() == 1);
-        CHECK(exported(editor) == initial && editor.selectedNodeId() == initialSelection);
-    }
     CHECK(!activeTopicInput(editor));
 
     QSignalSpy changed(&editor, &Editor::documentChanged);
@@ -11418,31 +11405,54 @@ static void shortcuts_case() {
     QTest::keyClick(&text, Qt::Key_Tab);
     QTest::keyClicks(&text, "inside topic");
     CHECK(text.toPlainText() == QStringLiteral("Typing\n\tinside topic"));
+    for (auto key : {Qt::Key_H, Qt::Key_J, Qt::Key_K, Qt::Key_L}) {
+        topicKey(editor, key, Qt::ControlModifier);
+        CHECK(activeTopicInput(editor) == &text && text.hasFocus());
+        CHECK(editor.selectedNodeId() == selected);
+    }
     CHECK(exported(editor) == inserted && changed.size() == 8);
     topicKey(editor, Qt::Key_Escape);
     CHECK(activeTopicInput(editor) == nullptr);
     CHECK(exported(editor) == inserted && editor.selectedNodeId() == selected && changed.size() == 8);
-    CHECK(editor.selectNode(QStringLiteral("a")));
-    shortcut(editor, Qt::Key_Right);
-    CHECK(editor.selectedNodeId() == QStringLiteral("d"));
-    shortcut(editor, Qt::Key_Left);
-    CHECK(editor.selectedNodeId() == QStringLiteral("a"));
-    shortcut(editor, Qt::Key_Up);
-    CHECK(editor.selectedNodeId() == QStringLiteral("a"));
-    shortcut(editor, Qt::Key_Down);
+    for (bool control : {false, true}) {
+        const auto modifiers = control ? Qt::ControlModifier : Qt::NoModifier;
+        const auto left = control ? Qt::Key_H : Qt::Key_Left;
+        const auto down = control ? Qt::Key_J : Qt::Key_Down;
+        const auto up = control ? Qt::Key_K : Qt::Key_Up;
+        const auto right = control ? Qt::Key_L : Qt::Key_Right;
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        shortcut(editor, right, modifiers);
+        CHECK(editor.selectedNodeId() == QStringLiteral("d"));
+        shortcut(editor, left, modifiers);
+        CHECK(editor.selectedNodeId() == QStringLiteral("a"));
+        shortcut(editor, up, modifiers);
+        CHECK(editor.selectedNodeId() == QStringLiteral("a"));
+        shortcut(editor, down, modifiers);
+        CHECK(editor.selectedNodeId() == QStringLiteral("b"));
+        shortcut(editor, up, modifiers);
+        CHECK(editor.selectedNodeId() == QStringLiteral("a"));
+        shortcut(editor, left, modifiers);
+        CHECK(editor.selectedNodeId() == QStringLiteral("r"));
+        shortcut(editor, right, modifiers);
+        CHECK(editor.selectedNodeId() == QStringLiteral("a"));
+        shortcut(editor, Qt::Key_Space);
+        CHECK(changed.size() == 8);
+        shortcut(editor, right, modifiers);
+        CHECK(editor.selectedNodeId() == QStringLiteral("a") && editor.lastError().isEmpty());
+        shortcut(editor, Qt::Key_Space);
+        CHECK(exported(editor) == inserted && changed.size() == 8);
+    }
+    editor.setReadOnly(true);
+    shortcut(editor, Qt::Key_J, Qt::ControlModifier);
     CHECK(editor.selectedNodeId() == QStringLiteral("b"));
-    shortcut(editor, Qt::Key_Up);
+    shortcut(editor, Qt::Key_K, Qt::ControlModifier);
     CHECK(editor.selectedNodeId() == QStringLiteral("a"));
-    shortcut(editor, Qt::Key_Left);
+    shortcut(editor, Qt::Key_H, Qt::ControlModifier);
     CHECK(editor.selectedNodeId() == QStringLiteral("r"));
-    shortcut(editor, Qt::Key_Right);
+    shortcut(editor, Qt::Key_L, Qt::ControlModifier);
     CHECK(editor.selectedNodeId() == QStringLiteral("a"));
-    shortcut(editor, Qt::Key_Space);
-    CHECK(changed.size() == 8);
-    shortcut(editor, Qt::Key_Right);
-    CHECK(editor.selectedNodeId() == QStringLiteral("a") && editor.lastError().isEmpty());
-    shortcut(editor, Qt::Key_Space);
     CHECK(exported(editor) == inserted && changed.size() == 8);
+    editor.setReadOnly(false);
     CHECK(editor.selectLink(QStringLiteral("l1")));
     shortcut(editor, Qt::Key_Home);
     CHECK(editor.selectedNodeId() == QStringLiteral("r") && editor.selectedLinkId().isEmpty());

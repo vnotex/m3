@@ -182,7 +182,7 @@ struct FindResult { int totalMatches = 0; int currentMatch = -1; };
 // undirected link, selects it and starts inline editing. There is no link-creation
 // shortcut or dialog. Escape cancels only the draft, keeping the created node
 // or link; clicking outside saves. Programmatic addNode/addLink do not start editing.
-// Example: config.shortcuts.addChild = {QKeySequence(QStringLiteral("Ctrl+J"))};
+// Example: config.shortcuts.addChild = {QKeySequence(QStringLiteral("Ctrl+Shift+J"))};
 //          MindMapEditor editor(config);
 struct EditorConfig {
     struct Style {
@@ -209,10 +209,11 @@ struct EditorConfig {
         QList<QKeySequence> moveDown{QKeySequence(Qt::CTRL | Qt::Key_Down)};
         // Logical tree navigation, independent of layout direction. A collapsed
         // node has no selectable child; Space expands it before navigating.
-        QList<QKeySequence> selectParent{QKeySequence(Qt::Key_Left)};
-        QList<QKeySequence> selectChild{QKeySequence(Qt::Key_Right)};
-        QList<QKeySequence> previousSibling{QKeySequence(Qt::Key_Up)};
-        QList<QKeySequence> nextSibling{QKeySequence(Qt::Key_Down)};
+        // With canvas focus, Ctrl+H/J/K/L also navigate left/down/up/right.
+        QList<QKeySequence> selectParent{QKeySequence(Qt::Key_Left), QKeySequence(Qt::CTRL | Qt::Key_H)};
+        QList<QKeySequence> selectChild{QKeySequence(Qt::Key_Right), QKeySequence(Qt::CTRL | Qt::Key_L)};
+        QList<QKeySequence> previousSibling{QKeySequence(Qt::Key_Up), QKeySequence(Qt::CTRL | Qt::Key_K)};
+        QList<QKeySequence> nextSibling{QKeySequence(Qt::Key_Down), QKeySequence(Qt::CTRL | Qt::Key_J)};
         // Focus main node: select the root, center it, and focus the canvas.
         QList<QKeySequence> selectRoot{QKeySequence(Qt::Key_Home)};
         QList<QKeySequence> clearSelection{QKeySequence(Qt::Key_Escape)};

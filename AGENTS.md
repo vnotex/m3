@@ -159,7 +159,7 @@ int main(int argc, char **argv) {
     const QString path = args.size() > 1 ? args.at(1) : QString();
     m3::qt::EditorConfig config;
     config.resourceBasePath = path.isEmpty() ? QDir::currentPath() : QFileInfo(path).absolutePath();
-    config.shortcuts.addChild = {QKeySequence(QStringLiteral("Ctrl+J"))};
+    config.shortcuts.addChild = {QKeySequence(QStringLiteral("Ctrl+Shift+J"))};
     auto *editor = new MindMapEditor(config, &window);
     window.setCentralWidget(editor);
     QObject::connect(editor, &MindMapEditor::documentChanged, &window,
