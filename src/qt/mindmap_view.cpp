@@ -104,7 +104,7 @@ public:
         return QRectF(0, -nodeControlSize, nodeControlSize, nodeControlSize);
     }
     void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
-        p->setPen(QPen(colors.color(hovered ? QPalette::Highlight : QPalette::ButtonText), 1));
+        p->setPen(QPen(colors.color(hovered ? QPalette::HighlightedText : QPalette::ButtonText), 1));
         p->setBrush(colors.color(hovered ? QPalette::Highlight : QPalette::Base));
         p->drawEllipse(boundingRect().adjusted(0.5, 0.5, -0.5, -0.5));
         // Lucide: https://lucide.dev/icons/external-link; notice: third_party/lucide/LICENSE.
@@ -130,7 +130,7 @@ public:
         p->scale((nodeControlSize - 4) / 24, (nodeControlSize - 4) / 24);
         p->setRenderHint(QPainter::Antialiasing);
         p->setBrush(Qt::NoBrush);
-        p->setPen(QPen(colors.color(hovered ? QPalette::HighlightedText : QPalette::Highlight),
+        p->setPen(QPen(colors.color(hovered ? QPalette::HighlightedText : QPalette::ButtonText),
                        2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p->drawPath(glyph);
         p->restore();

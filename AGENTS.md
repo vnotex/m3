@@ -315,6 +315,9 @@ acceptance. Keep Qt PrintSupport out of m3. VNote exercises the public API throu
   palette-only fills: host QSS may make `Highlight` transparent and `AlternateBase` equal to
   the normal background. Paint the current selection as active while keyboard focus stays
   in the input. Keep its `Text`-colored outline: native styles may share selection/hover fills.
+- Link-creation and expansion controls share palette roles: `ButtonText` foreground on
+  `Base` at rest, `HighlightedText` on `Highlight` while hovered. Keep link creation
+  neutral at rest rather than using the accent color for its glyph.
 
 ## Important Files
 - `include/m3/m3.h`, `include/m3/m3_layout.h`, `include/m3/qt/editor.h`: authoritative ownership, persistence, layout and widget behavior contracts; read these before changing public behavior.
