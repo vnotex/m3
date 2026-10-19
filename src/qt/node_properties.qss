@@ -5,7 +5,7 @@ QFrame#nodePropertiesPanel {
 }
 
 QLabel#nodePropertiesTitle {
-    font-weight: 600;
+    font-weight: bold;
 }
 
 QToolButton#nodeBold,

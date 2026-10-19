@@ -215,6 +215,9 @@ a dock and control its geometry/visibility. No canvas toggle or collapse shortcu
 and `collapseNodeProperties()` does nothing. Non-node selections clear and disable fields;
 editor enabled/read-only policy still gates edits outside the editor subtree.
 
+The Topic heading uses the same bold weight as Appearance and the other section headings;
+font size and text color remain inherited from the host.
+
 The editor destroys a surviving externally parented panel before its model/view. Hosts may
 destroy the panel first; the accessor then returns null rather than creating a replacement.
 Never create a second properties widget or share the panel between editors. VNote defaults
