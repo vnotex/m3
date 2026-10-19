@@ -88,23 +88,47 @@ Geometry layout_tree(const M3LayoutNode *nodes, size_t count, const M3LayoutOpti
             spans[i] = std::max(nodes[i].height, stack);
         }
         for (size_t root = first_root; root != M3_NO_PARENT; root = adjacency[root].next) {
+            size_t first_left = M3_NO_PARENT;
+            if (o.direction == M3_LAYOUT_BALANCED && adjacency[root].first != adjacency[root].last) {
+                // Removing the split gap leaves the two side stacks. Choose the
+                // prefix nearest half their total; later ties keep more on the right.
+                const double target = (stacks[root] - o.vertical_gap) / 2;
+                double prefix = 0, best_distance = stacks[root];
+                for (size_t c = adjacency[root].first; c != adjacency[root].last; c = adjacency[c].next) {
+                    if (c != adjacency[root].first) prefix = finite(prefix + o.vertical_gap);
+                    prefix = finite(prefix + spans[c]);
+                    const double distance = std::abs(prefix - target);
+                    if (distance <= best_distance) {
+                        best_distance = distance;
+                        first_left = adjacency[c].next;
+                    }
+                }
+            }
             double right_span = 0, left_span = 0;
+            bool right = o.direction != M3_LAYOUT_LEFT;
             for (size_t c = adjacency[root].first; c != M3_NO_PARENT; c = adjacency[c].next) {
-                const bool right = o.direction == M3_LAYOUT_RIGHT || (o.direction == M3_LAYOUT_BALANCED && right_span <= left_span);
+                if (c == first_left) right = false;
                 sides[c] = right ? 1 : -1;
                 auto &span = right ? right_span : left_span;
                 if (span > 0) span = finite(span + o.vertical_gap);
                 span = finite(span + spans[c]);
             }
-            double right_cursor = -right_span / 2, left_cursor = -left_span / 2;
+            double right_cursor = -right_span / 2;
+            double left_cursor = o.direction == M3_LAYOUT_BALANCED ? left_span / 2 : -left_span / 2;
             bool right_started = false, left_started = false;
             for (size_t c = adjacency[root].first; c != M3_NO_PARENT; c = adjacency[c].next) {
                 auto &cursor = sides[c] == 1 ? right_cursor : left_cursor;
                 auto &started = sides[c] == 1 ? right_started : left_started;
-                if (started) cursor = finite(cursor + o.vertical_gap);
+                if (o.direction == M3_LAYOUT_BALANCED && sides[c] == -1) {
+                    if (started) cursor = finite(cursor - o.vertical_gap);
+                    centers[c] = finite(cursor - spans[c] / 2);
+                    cursor = finite(cursor - spans[c]);
+                } else {
+                    if (started) cursor = finite(cursor + o.vertical_gap);
+                    centers[c] = finite(cursor + spans[c] / 2);
+                    cursor = finite(cursor + spans[c]);
+                }
                 started = true;
-                centers[c] = finite(cursor + spans[c] / 2);
-                cursor = finite(cursor + spans[c]);
             }
         }
         for (size_t i : order) {

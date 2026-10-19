@@ -3304,6 +3304,48 @@ static void images_case() {
     }
 }
 
+static void balanced_clockwise_case() {
+    RawLabelEditor editor;
+    const Json input = Json::parse(R"({"schemaVersion":1,"rootId":"r","nodes":[
+        {"id":"r","topic":"Root","children":["a","b","c","d","e","f"]},
+        {"id":"a","topic":"A"},{"id":"b","topic":"B"},{"id":"c","topic":"C"},
+        {"id":"d","topic":"D"},{"id":"e","topic":"E"},{"id":"f","topic":"F"}],"crossLinks":[]})");
+    CHECK(editor.loadJson(encoded(input)));
+    showEditor(editor);
+    const Json before = exported(editor);
+    QSignalSpy changed(&editor, &Editor::documentChanged);
+    const QStringList topics{QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C"),
+                             QStringLiteral("D"), QStringLiteral("E"), QStringLiteral("F")};
+    for (auto direction : {Editor::LayoutDirection::Balanced, Editor::LayoutDirection::Right,
+                           Editor::LayoutDirection::Left, Editor::LayoutDirection::Outline,
+                           Editor::LayoutDirection::Balanced}) {
+        CHECK(editor.setLayoutDirection(direction));
+        pump();
+        const QRectF root = topicRect(editor, QStringLiteral("Root"));
+        QRectF previous = root;
+        for (int i = 0; i < topics.size(); ++i) {
+            const QRectF child = topicRect(editor, topics[i]);
+            if (direction == Editor::LayoutDirection::Outline) {
+                CHECK(child.top() > previous.bottom());
+                CHECK(child.left() > root.left());
+            } else {
+                const bool right = direction == Editor::LayoutDirection::Right
+                    || (direction == Editor::LayoutDirection::Balanced && i < 3);
+                if (right) CHECK(child.left() > root.right());
+                else CHECK(child.right() < root.left());
+                if (i > 0 && !(direction == Editor::LayoutDirection::Balanced && i == 3)) {
+                    if (direction == Editor::LayoutDirection::Balanced && !right)
+                        CHECK(child.center().y() < previous.center().y());
+                    else CHECK(child.center().y() > previous.center().y());
+                    CHECK(!child.intersects(previous));
+                }
+            }
+            previous = child;
+        }
+        CHECK(exported(editor) == before && changed.isEmpty());
+    }
+}
+
 static void render_case() {
     Json input = editorFixture();
     const QString wrapped = QString::fromUtf8("Long Unicode 世界 — café naïve Καλημέρα repeated words wrap without clipping\nSecond line: 日本語 and <angle brackets> stay plain");
@@ -13915,6 +13957,7 @@ int main(int argc, char **argv) {
         else if (name == "graph_edits") { graph_edits_case(); graph_edits_scene(); }
         else if (name == "images") { images_case(); image_activation_case(); }
         else if (name == "render") { render_case(); stroke_contrast_case(); routing_case(); }
+        else if (name == "balanced_clockwise") balanced_clockwise_case();
         else if (name == "navigation") navigation_case();
         else if (name == "outline_navigation") outline_navigation_case();
         else if (name == "find") find_case();

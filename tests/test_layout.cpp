@@ -22,11 +22,12 @@ static Json layout(const Map &map, const M3NodeSize *sizes = base_sizes, size_t 
     return Json::parse(text.get());
 }
 static void geometry() {
-    const M3Rect balanced[] = {{-50,-20,100,40},{90,-25,60,20},{190,-20,40,10},{-170,-15,80,30},{90,15,50,10}};
     auto result = calculate(base_nodes,5,options());
     CHECK(result->node_count == 5);
-    for (size_t i = 0; i < 5; ++i) rect(result->rects[i],balanced[i]);
-    rect(result->bounds,{-170,-25,400,50});
+    rect(result->rects[0],{-50,-20,100,40});
+    CHECK(result->rects[1].x > result->rects[0].x+result->rects[0].width);
+    for (size_t i : {3,4}) CHECK(result->rects[i].x+result->rects[i].width < result->rects[0].x);
+    CHECK(result->rects[3].y > result->rects[4].y+result->rects[4].height);
     auto again = calculate(base_nodes,5,options());
     for (size_t i = 0; i < 5; ++i) rect(again->rects[i],result->rects[i]);
     const M3Rect right_rects[] = {{-50,-20,100,40},{90,-50,60,20},{190,-45,40,10},{90,-10,80,30},{90,40,50,10}};
@@ -44,8 +45,8 @@ static void geometry() {
     }
     const M3LayoutNode reordered[] = {{4,60,20},{0,40,10},{4,80,30},{4,50,10},{M3_NO_PARENT,100,40}};
     auto order = calculate(reordered,5,options());
-    for (size_t i = 0; i < 4; ++i) rect(order->rects[i],balanced[i+1]);
-    rect(order->rects[4],balanced[0]);
+    for (size_t i = 0; i < 4; ++i) rect(order->rects[i],result->rects[i+1]);
+    rect(order->rects[4],result->rects[0]);
     const M3LayoutNode tall[] = {{M3_NO_PARENT,100,40},{0,60,20},{1,40,100},{0,80,30},{0,50,10}};
     auto tall_result = calculate(tall,5,options());
     near(tall_result->rects[1].y,-10);
@@ -91,6 +92,82 @@ static void geometry() {
     CHECK(layout(map)["nodes"] == before["nodes"]);
     CHECK(layout(map)["bounds"] == before["bounds"]);
 
+}
+
+static void balanced_clockwise() {
+    const M3LayoutNode children[] = {
+        {M3_NO_PARENT,100,40},{0,60,20},{0,60,20},{0,60,20},
+        {0,60,20},{0,60,20},{0,60,20}
+    };
+    auto center = [](const M3Rect &r) { return r.y + r.height / 2; };
+    auto no_overlap = [](const M3LayoutResult &result) {
+        for (size_t i = 0; i < result.node_count; ++i) {
+            for (size_t j = i+1; j < result.node_count; ++j) {
+                const auto &a = result.rects[i]; const auto &b = result.rects[j];
+                CHECK(a.x+a.width <= b.x || b.x+b.width <= a.x || a.y+a.height <= b.y || b.y+b.height <= a.y);
+            }
+        }
+    };
+    auto check_six = [&](const M3LayoutResult &result, size_t root_index) {
+        const auto &root = result.rects[root_index];
+        const double ys[] = {-40,0,40,40,0,-40};
+        for (size_t i = 0; i < 6; ++i) {
+            const auto &child = result.rects[root_index+i+1];
+            if (i < 3) CHECK(child.x > root.x+root.width);
+            else CHECK(child.x+child.width < root.x);
+            rect(child,{i < 3 ? 90.0 : -150.0,center(root)+ys[i]-10,60,20});
+        }
+    };
+    auto six = calculate(children,7,options());
+    rect(six->rects[0],{-50,-20,100,40});
+    check_six(*six,0);
+    no_overlap(*six);
+    for (double gap : {20.0,0.0}) {
+        auto five = calculate(children,6,{M3_LAYOUT_BALANCED,40,gap});
+        const double step = 20+gap;
+        for (size_t i = 0; i < 5; ++i) {
+            const double y = i < 3 ? (static_cast<double>(i)-1)*step : (3.5-static_cast<double>(i))*step;
+            rect(five->rects[i+1],{i < 3 ? 90.0 : -150.0,y-10,60,20});
+        }
+        no_overlap(*five);
+    }
+    auto one = calculate(children,2,options());
+    rect(one->rects[1],{90,-10,60,20});
+    auto zero = calculate(children,1,options());
+    rect(zero->rects[0],{-50,-20,100,40});
+    rect(zero->bounds,zero->rects[0]);
+
+    const M3LayoutNode tall[] = {{M3_NO_PARENT,100,40},{0,60,20},{1,40,100},{0,80,30},{0,50,10}};
+    auto uneven = calculate(tall,5,options());
+    CHECK(uneven->rects[1].x > uneven->rects[0].x+uneven->rects[0].width);
+    for (size_t i : {3,4}) CHECK(uneven->rects[i].x+uneven->rects[i].width < uneven->rects[0].x);
+    CHECK(center(uneven->rects[3]) > center(uneven->rects[4]));
+    no_overlap(*uneven);
+
+    std::vector<M3LayoutNode> descendants(children,children+7);
+    descendants.push_back({6,60,20}); descendants.push_back({6,60,20});
+    auto branch = calculate(descendants.data(),descendants.size(),options());
+    CHECK(branch->rects[5].x+branch->rects[5].width < branch->rects[0].x);
+    CHECK(branch->rects[6].x+branch->rects[6].width < branch->rects[0].x);
+    CHECK(center(branch->rects[5]) > center(branch->rects[6]));
+    CHECK(branch->rects[7].x+branch->rects[7].width < branch->rects[6].x);
+    CHECK(branch->rects[8].x+branch->rects[8].width < branch->rects[6].x);
+    CHECK(center(branch->rects[7]) < center(branch->rects[8]));
+    no_overlap(*branch);
+
+    std::vector<M3LayoutNode> forest(children,children+7);
+    forest.push_back(children[0]);
+    for (size_t i = 1; i < 7; ++i) forest.push_back({7,60,20});
+    auto trees = calculate(forest.data(),forest.size(),options());
+    check_six(*trees,0); check_six(*trees,7);
+    double first_bottom = trees->rects[0].y+trees->rects[0].height;
+    double second_top = trees->rects[7].y;
+    for (size_t i = 1; i < 7; ++i) {
+        first_bottom = std::max(first_bottom,trees->rects[i].y+trees->rects[i].height);
+        second_top = std::min(second_top,trees->rects[i+7].y);
+    }
+    near(second_top-first_bottom,20);
+    no_overlap(*trees);
 }
 
 static void orphans() {
@@ -304,6 +381,7 @@ int main(int argc, char **argv) {
         CHECK(argc == 2);
         const std::string name = argv[1];
         if (name == "geometry") geometry();
+        else if (name == "balanced_clockwise") balanced_clockwise();
         else if (name == "orphans") orphans();
         else if (name == "legacy_expansion") legacy_expansion();
         else if (name == "invalid") invalid();

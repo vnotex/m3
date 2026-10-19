@@ -33,8 +33,12 @@ typedef struct M3LayoutResult {
  * each child's left edge is its parent's left edge plus horizontal_gap,
  * independent of node widths; each row starts vertical_gap below the previous
  * row's bottom.
- * BALANCED assigns root branches to the smaller current stacked side span,
- * RIGHT on ties. Branch descendants inherit that side. LEFT reflects RIGHT.
+ * BALANCED splits each root's ordered branches into a nonempty right prefix
+ * and a left suffix (also nonempty with two or more children), minimizing the
+ * difference of their stacked subtree spans including within-side gaps. Ties
+ * favor the longer right prefix; a single child goes right. Root children run
+ * clockwise: right top-to-bottom, then left bottom-to-top. Branch descendants
+ * inherit their side and retain top-to-bottom order. LEFT reflects RIGHT.
  * Overflow/nonfinite intermediate geometry returns INVALID_ARGUMENT.
  * The output slot is set to NULL on failure and must not own a live result. */
 M3_API M3Status m3_layout_tree(const M3LayoutNode *nodes, size_t count,
