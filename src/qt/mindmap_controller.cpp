@@ -179,9 +179,10 @@ public:
         std::array<size_t, std::size(nodeColors)> candidates;
         int count = 0;
         for (size_t i = 0; i < used.size(); ++i)
-            if (!used[i]) candidates[count++] = i;
+            if (!used[i] && qstrcmp(nodeColors[i].hex, "#ffffff") != 0) candidates[count++] = i;
         if (count == 0)
-            for (size_t i = 0; i < used.size(); ++i) candidates[count++] = i;
+            for (size_t i = 0; i < used.size(); ++i)
+                if (qstrcmp(nodeColors[i].hex, "#ffffff") != 0) candidates[count++] = i;
         const auto picked = candidates[QRandomGenerator::global()->bounded(count)];
         record["style"]["branchColor"] = nodeColors[picked].hex;
         used[picked] = true;

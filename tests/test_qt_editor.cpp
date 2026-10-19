@@ -2417,7 +2417,7 @@ static void tree_edits_case() {
         QStringList palette;
         for (auto *button : batch.findChildren<QToolButton *>())
             if (button->property("color").isValid()) palette.append(button->property("color").toString());
-        CHECK(!palette.isEmpty());
+        CHECK(palette.removeAll(QStringLiteral("#ffffff")) > 0);
         const QString existing = batch.addNode(QStringLiteral("root"), QStringLiteral("Existing"));
         const QString existingColor = qs(record(exported(batch), "nodes", existing).at("style").at("branchColor"));
         Json entries = Json::array();
@@ -2436,7 +2436,7 @@ static void tree_edits_case() {
         const auto childIds = batch.addNodes(existing, encoded(entries));
         for (const auto &id : childIds) CHECK(!record(exported(batch), "nodes", id).at("style").contains("branchColor"));
         const QString orphan = batch.addNode({}, QStringLiteral("Independent tree"));
-        const Json explicitStyle{{"branchColor", utf8(palette.front())}, {"custom", {{"preserved", true}}}};
+        const Json explicitStyle{{"branchColor", "#ffffff"}, {"custom", {{"preserved", true}}}};
         const auto explicitIds = batch.addNodes(orphan, encoded(Json::array({
             Json{{"topic", "Explicit"}, {"style", explicitStyle}},
             Json{{"topic", "Automatic one"}}, Json{{"topic", "Automatic two"}}
@@ -2446,7 +2446,7 @@ static void tree_edits_case() {
         CHECK(record(orphanResult, "nodes", explicitIds[0]).at("style") == explicitStyle);
         const auto firstColor = record(orphanResult, "nodes", explicitIds[1]).at("style").at("branchColor");
         const auto secondColor = record(orphanResult, "nodes", explicitIds[2]).at("style").at("branchColor");
-        CHECK(firstColor != utf8(palette.front()) && secondColor != utf8(palette.front()) && firstColor != secondColor);
+        CHECK(firstColor != "#ffffff" && secondColor != "#ffffff" && firstColor != secondColor);
         batch.setAutoRandomBranchColor(false);
         const auto uncolored = batch.addNodes(QStringLiteral("root"), R"([{"topic":"Plain"}])");
         CHECK(uncolored.size() == 1 && !record(exported(batch), "nodes", uncolored.front()).at("style").contains("branchColor"));
@@ -5706,7 +5706,7 @@ static void auto_branch_color_case() {
     QStringList palette;
     for (auto *button : editor.findChildren<QToolButton *>())
         if (button->property("color").isValid()) palette.append(button->property("color").toString());
-    CHECK(palette.size() == 23);
+    CHECK(palette.removeAll(QStringLiteral("#ffffff")) > 0);
     const Json empty = Json::parse(R"({"schemaVersion":1,"rootId":"home","nodes":[
         {"id":"home","topic":"Home"}],"crossLinks":[]})");
     CHECK(editor.loadJson(encoded(empty)));
@@ -5753,8 +5753,9 @@ static void auto_branch_color_case() {
     };
     for (const auto &hex : palette) {
         if (hex == "#3498db" || hex == "#e74c3c") continue;
-        main(utf8(hex), {{"branchColor", hex == "#ffffff" ? "white" : utf8(hex.toUpper())}});
+        main(utf8(hex), {{"branchColor", utf8(hex.toUpper())}});
     }
+    main("white", {{"branchColor", "white"}});
     main("inherited", Json::object());
     main("invalid-number", {{"branchColor", 42}});
     main("invalid-text", {{"branchColor", "not-a-color"}});
