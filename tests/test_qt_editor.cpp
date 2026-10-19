@@ -220,7 +220,9 @@ static QRectF topicRect(Editor &editor, const QString &topic) {
 }
 static QPoint expansionPoint(Editor &editor, const QString &topic) {
     const QRectF rect = topicRect(editor, topic).adjusted(2, 2, -2, -2);
-    return graphics(editor).mapFromScene(QPointF(rect.right() + 14, rect.center().y()));
+    const bool left = editor.layoutDirection() == Editor::LayoutDirection::Left ||
+        (editor.layoutDirection() == Editor::LayoutDirection::Balanced && rect.center().x() < 0);
+    return graphics(editor).mapFromScene(QPointF(left ? rect.left() - 14 : rect.right() + 14, rect.center().y()));
 }
 static QRectF emptyNodeRect(Editor &editor) {
     for (auto *text : texts(editor, QString())) {
@@ -12669,8 +12671,9 @@ static void folding_positions() {
 static void collapse_hover_scene() {
     for (auto direction : {Editor::LayoutDirection::Balanced, Editor::LayoutDirection::Right,
                            Editor::LayoutDirection::Left, Editor::LayoutDirection::Outline})
-    for (bool rich : {false, true})
+    for (bool balancedLeft : {false, true}) for (bool rich : {false, true})
     for (bool readOnly : {false, true}) for (qreal zoom : {qreal(1), qreal(1.5)}) {
+        if (balancedLeft && direction != Editor::LayoutDirection::Balanced) continue;
         RawLabelEditor editor;
         QPalette palette = editor.palette();
         palette.setColor(QPalette::Base, Qt::white);
@@ -12679,6 +12682,10 @@ static void collapse_hover_scene() {
         palette.setColor(QPalette::HighlightedText, Qt::white);
         editor.setPalette(palette);
         Json input = editorFixture();
+        if (balancedLeft) {
+            for (auto &node : input.at("nodes")) if (node.at("id") == "r")
+                std::reverse(node["children"].begin(), node["children"].end());
+        }
         if (rich) {
             for (auto &node : input.at("nodes")) if (node.at("id") == "a") {
                 node["icons"] = Json::array({"star"});
@@ -12701,9 +12708,12 @@ static void collapse_hover_scene() {
         const auto owner = [&] { return ownerItem(textItem(editor, alpha)); };
         const QRectF node = topicRect(editor, alpha);
         const QRectF body = node.adjusted(2, 2, -2, -2);
+        const bool left = topicRect(editor, QStringLiteral("Delta")).right() < body.left();
+        CHECK(left == (direction == Editor::LayoutDirection::Left || balancedLeft));
+        if (balancedLeft) CHECK(body.center().x() < 0);
         const QPoint button = expansionPoint(editor, alpha);
         const QPointF center = view.mapToScene(button);
-        const QPoint gap = view.mapFromScene(QPointF(body.right() + 2, body.center().y()));
+        const QPoint gap = view.mapFromScene(QPointF(left ? body.left() - 2 : body.right() + 2, body.center().y()));
         const QPoint topic = labelPoint(editor, alpha);
         const QTransform transform = view.transform();
         const QPointF anchor = view.viewportTransform().map(node.center());
@@ -12714,7 +12724,9 @@ static void collapse_hover_scene() {
         auto control = [&] {
             auto *item = view.itemAt(expansionPoint(editor, alpha));
             CHECK(item && item != owner() && item->parentItem() == owner());
-            CHECK(!body.contains(center) && item->sceneBoundingRect().left() >= body.right());
+            CHECK(!body.contains(center));
+            CHECK(left ? item->sceneBoundingRect().right() <= body.left()
+                       : item->sceneBoundingRect().left() >= body.right());
             return item;
         };
         auto checkHover = [&](bool visible, bool highlighted) {
@@ -12826,6 +12838,13 @@ static void collapse_hover_scene() {
             pump();
             checkHover(true, true);
             CHECK(texts(editor, QStringLiteral("Delta")).isEmpty() == !expanded);
+            const HtmlPage page(editor.toHtml());
+            const auto markers = page.classes(QStringLiteral("m3-fold-indicator"), page.node(QStringLiteral("a")));
+            CHECK(markers.size() == 1);
+            const QRectF htmlNode = htmlRect(page.elements[page.node(QStringLiteral("a"))]);
+            const QRectF marker = htmlRect(page.elements[markers.front()]);
+            CHECK(left ? marker.right() < 0 : marker.left() > htmlNode.width());
+            CHECK(QRectF(QPointF(), page.size()).contains(marker.translated(htmlNode.topLeft())));
             CHECK(!activeTopicInput(editor));
         }
         CHECK(view.sceneRect() == sceneBounds);
@@ -12858,6 +12877,33 @@ static void collapse_hover_scene() {
             CHECK(!belongsTo(view.itemAt(expansionPoint(editor, QStringLiteral("Beta"))), leaf));
         }
         CHECK(exported(editor) == original && changed.isEmpty() && undo.isEmpty() && redo.isEmpty());
+    }
+
+    // Layout changes must use hidden children too, including a folded tree root.
+    RawLabelEditor folded;
+    CHECK(folded.loadJson(encoded(editorFixture())));
+    showEditor(folded, QSize(1100, 900));
+    const Json original = exported(folded);
+    QSignalSpy changed(&folded, &Editor::documentChanged);
+    for (const QString &id : {QStringLiteral("a"), QStringLiteral("r")}) {
+        const QString topic = qs(record(original, "nodes", id).at("topic"));
+        const QString child = id == QStringLiteral("a") ? QStringLiteral("Delta") : QStringLiteral("Alpha");
+        for (auto direction : {Editor::LayoutDirection::Left, Editor::LayoutDirection::Right,
+                               Editor::LayoutDirection::Outline, Editor::LayoutDirection::Balanced}) {
+            CHECK(folded.setExpanded(id, false));
+            CHECK(folded.setLayoutDirection(direction));
+            CHECK(folded.revealNode(id));
+            pump();
+            auto &view = graphics(folded);
+            const QPoint button = expansionPoint(folded, topic);
+            auto *item = view.itemAt(button);
+            CHECK(item && item->parentItem() == ownerItem(textItem(folded, topic)));
+            movePointer(view, button, Qt::NoButton);
+            QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, button);
+            pump();
+            CHECK(!texts(folded, child).isEmpty());
+            CHECK(exported(folded) == original && changed.isEmpty() && !activeTopicInput(folded));
+        }
     }
 }
 

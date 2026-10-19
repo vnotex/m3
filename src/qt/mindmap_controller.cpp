@@ -734,6 +734,8 @@ Presentation MindMapController::prepare(const QByteArray &json,
         auto &node = result.nodes[i];
         const auto &rect = layout->rects[visibleIndexes[i]];
         node.rectangle = QRectF(rect.x, rect.y, rect.width, rect.height);
+        // Full preorder retains the first direct child even while this node is folded.
+        if (node.hasChildren) node.childrenOnLeft = layout->rects[visibleIndexes[i] + 1].x < rect.x;
         result.bounds = result.bounds.united(node.rectangle);
         visible.insert(node.id);
     }

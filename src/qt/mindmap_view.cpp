@@ -93,8 +93,8 @@ constexpr qreal nodeControlSize = 20;
 constexpr qreal nodeControlGap = 4;
 class NodeExpansionItem final : public QGraphicsItem {
 public:
-    NodeExpansionItem(bool expanded, const QPalette &palette, QGraphicsItem *parent)
-        : QGraphicsItem(parent), expanded(expanded), colors(palette) {
+    NodeExpansionItem(bool expanded, bool childrenOnLeft, const QPalette &palette, QGraphicsItem *parent)
+        : QGraphicsItem(parent), expanded(expanded), childrenOnLeft(childrenOnLeft), colors(palette) {
         setAcceptedMouseButtons(Qt::NoButton);
         setAcceptHoverEvents(true);
     }
@@ -102,7 +102,10 @@ public:
         return QRectF(0, 0, nodeControlGap + nodeControlSize, nodeControlSize);
     }
     QPainterPath shape() const override { QPainterPath path; path.addRect(boundingRect()); return path; }
-    QRectF circleRect() const { return boundingRect().adjusted(nodeControlGap, 0, 0, 0); }
+    QRectF circleRect() const {
+        return childrenOnLeft ? boundingRect().adjusted(0, 0, -nodeControlGap, 0)
+                              : boundingRect().adjusted(nodeControlGap, 0, 0, 0);
+    }
     void setHoverState(bool active, bool highlighted) {
         highlighted = active && highlighted;
         if (hoverActive == active && hovered == highlighted) return;
@@ -121,7 +124,7 @@ public:
         if (!expanded) p->drawLine(center - QPointF(0, arm), center + QPointF(0, arm));
     }
 private:
-    bool expanded;
+    bool expanded, childrenOnLeft;
     QPalette colors;
     bool hoverActive = false;
     bool hovered = false;
@@ -329,7 +332,7 @@ HtmlText htmlText(QTextDocument &document, const QPointF &position, const QColor
 class NodeItem final : public QGraphicsItem {
 public:
     QString id, topic, hyperlink;
-    bool expanded, hasChildren;
+    bool expanded, hasChildren, childrenOnLeft;
     bool dropTarget = false;
     QRectF rect;
     std::vector<QRectF> tagRectangles;
@@ -342,7 +345,7 @@ public:
     NodeItem(NodePresentation node, const QPalette &palette, const QColor &stroke,
              HtmlNode *html = nullptr)
         : id(node.id), topic(std::move(node.topic)), hyperlink(node.hyperlink),
-          expanded(node.expanded), hasChildren(node.hasChildren),
+          expanded(node.expanded), hasChildren(node.hasChildren), childrenOnLeft(node.childrenOnLeft),
           rect(QPointF(), node.rectangle.size()), colors(palette),
           backgroundColor(node.style.backgroundColor.isValid() ? node.style.backgroundColor : palette.color(QPalette::Button)),
           branchColor(node.style.branchColor), strokeColor(stroke) {
@@ -386,8 +389,9 @@ public:
         setAcceptHoverEvents(hasChildren);
         setFiltersChildEvents(hasChildren);
         if (hasChildren) {
-            expansionItem = new NodeExpansionItem(expanded, palette, this);
-            expansionItem->setPos(rect.right(), rect.center().y() - nodeControlSize / 2);
+            expansionItem = new NodeExpansionItem(expanded, childrenOnLeft, palette, this);
+            expansionItem->setPos(childrenOnLeft ? rect.left() - nodeControlGap - nodeControlSize : rect.right(),
+                                  rect.center().y() - nodeControlSize / 2);
         }
         auto addText = [this](std::unique_ptr<QTextDocument> text, const QPointF &position,
                               const QColor &color, HtmlText *htmlTextBlock = nullptr) {
@@ -435,8 +439,8 @@ public:
         return QGraphicsItem::itemChange(change, value);
     }
     QRectF affordance() const {
-        return QRectF(rect.right() + nodeControlGap, rect.center().y() - nodeControlSize / 2,
-                      nodeControlSize, nodeControlSize);
+        return QRectF(childrenOnLeft ? rect.left() - nodeControlGap - nodeControlSize : rect.right() + nodeControlGap,
+                      rect.center().y() - nodeControlSize / 2, nodeControlSize, nodeControlSize);
     }
     QRectF boundingRect() const override { return rect.adjusted(-2, -2, 2, 2); }
     QPainterPath shape() const override { QPainterPath path; path.addRoundedRect(rect, 8, 8); return path; }

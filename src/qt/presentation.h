@@ -58,6 +58,7 @@ struct NodePresentation {
     std::vector<NodeTagPresentation> tags;
     // root protects the main node; treeRoot gives every independent root its appearance.
     bool root = false, treeRoot = false, expanded = true, hasChildren = false;
+    bool childrenOnLeft = false;
     QRectF rectangle;
     std::optional<NodeImage> image;
     QRectF imageRectangle;
