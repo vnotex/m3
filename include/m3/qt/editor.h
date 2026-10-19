@@ -253,8 +253,9 @@ struct EditorConfig {
     // New direct children of any tree root (UI or addNode) get a random palette color.
     // Prefer colors unused by that tree's direct branches, comparing their effective
     // QColor values (local override or inherited root color); nested overrides
-    // do not reserve colors. Once all 22 non-white colors are used, allow repeats.
-    // White remains available manually; existing white branches are preserved.
+    // do not reserve colors. Once all 16 automatic colors are used, allow repeats.
+    // White, Cloud, Gray, Slate, Midnight, Black and Mint are manual-only choices;
+    // existing branch colors are preserved.
     // Enabled by default. Creation only: loading/moving nodes never recolors them.
     // The setting is copied, not persisted; each assigned branchColor is persisted.
     bool autoRandomBranchColor = true;

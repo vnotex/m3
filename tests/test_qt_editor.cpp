@@ -91,6 +91,10 @@
 
 using Editor = m3::qt::MindMapEditor;
 
+static constexpr const char *manualOnlyBranchColors[] = {
+    "#ffffff", "#ecf0f1", "#95a5a6", "#34495e", "#2c3e50", "#000000", "#a8e6cf"
+};
+
 // Existing rendering fixtures exercise authored labels, not automatic decoration.
 struct RawLabelConfig : m3::qt::EditorConfig {
     RawLabelConfig() { autoSectionNumbering = false; }
@@ -2417,7 +2421,8 @@ static void tree_edits_case() {
         QStringList palette;
         for (auto *button : batch.findChildren<QToolButton *>())
             if (button->property("color").isValid()) palette.append(button->property("color").toString());
-        CHECK(palette.removeAll(QStringLiteral("#ffffff")) > 0);
+        for (const auto *hex : manualOnlyBranchColors)
+            CHECK(palette.removeAll(QString::fromLatin1(hex)) > 0);
         const QString existing = batch.addNode(QStringLiteral("root"), QStringLiteral("Existing"));
         const QString existingColor = qs(record(exported(batch), "nodes", existing).at("style").at("branchColor"));
         Json entries = Json::array();
@@ -2446,7 +2451,7 @@ static void tree_edits_case() {
         CHECK(record(orphanResult, "nodes", explicitIds[0]).at("style") == explicitStyle);
         const auto firstColor = record(orphanResult, "nodes", explicitIds[1]).at("style").at("branchColor");
         const auto secondColor = record(orphanResult, "nodes", explicitIds[2]).at("style").at("branchColor");
-        CHECK(firstColor != "#ffffff" && secondColor != "#ffffff" && firstColor != secondColor);
+        CHECK(palette.contains(qs(firstColor)) && palette.contains(qs(secondColor)) && firstColor != secondColor);
         batch.setAutoRandomBranchColor(false);
         const auto uncolored = batch.addNodes(QStringLiteral("root"), R"([{"topic":"Plain"}])");
         CHECK(uncolored.size() == 1 && !record(exported(batch), "nodes", uncolored.front()).at("style").contains("branchColor"));
@@ -5706,7 +5711,8 @@ static void auto_branch_color_case() {
     QStringList palette;
     for (auto *button : editor.findChildren<QToolButton *>())
         if (button->property("color").isValid()) palette.append(button->property("color").toString());
-    CHECK(palette.removeAll(QStringLiteral("#ffffff")) > 0);
+    for (const auto *hex : manualOnlyBranchColors)
+        CHECK(palette.removeAll(QString::fromLatin1(hex)) > 0);
     const Json empty = Json::parse(R"({"schemaVersion":1,"rootId":"home","nodes":[
         {"id":"home","topic":"Home"}],"crossLinks":[]})");
     CHECK(editor.loadJson(encoded(empty)));
@@ -5756,6 +5762,8 @@ static void auto_branch_color_case() {
         main(utf8(hex), {{"branchColor", utf8(hex.toUpper())}});
     }
     main("white", {{"branchColor", "white"}});
+    for (const auto *hex : manualOnlyBranchColors)
+        if (qstrcmp(hex, "#ffffff") != 0) main(hex, {{"branchColor", hex}});
     main("inherited", Json::object());
     main("invalid-number", {{"branchColor", 42}});
     main("invalid-text", {{"branchColor", "not-a-color"}});
