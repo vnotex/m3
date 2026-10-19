@@ -91,6 +91,41 @@ constexpr qreal topicTagGap = 6;
 constexpr qreal tagCornerRadius = 4;
 constexpr qreal nodeControlSize = 20;
 constexpr qreal nodeControlGap = 4;
+class NodeExpansionItem final : public QGraphicsItem {
+public:
+    NodeExpansionItem(bool expanded, const QPalette &palette, QGraphicsItem *parent)
+        : QGraphicsItem(parent), expanded(expanded), colors(palette) {
+        setAcceptedMouseButtons(Qt::NoButton);
+        setAcceptHoverEvents(true);
+    }
+    QRectF boundingRect() const override {
+        return QRectF(0, 0, nodeControlGap + nodeControlSize, nodeControlSize);
+    }
+    QPainterPath shape() const override { QPainterPath path; path.addRect(boundingRect()); return path; }
+    QRectF circleRect() const { return boundingRect().adjusted(nodeControlGap, 0, 0, 0); }
+    void setHoverState(bool active, bool highlighted) {
+        highlighted = active && highlighted;
+        if (hoverActive == active && hovered == highlighted) return;
+        hoverActive = active;
+        hovered = highlighted;
+        update();
+    }
+    void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
+        if (!hoverActive) return;
+        const QPointF center = circleRect().center();
+        p->setPen(QPen(colors.color(hovered ? QPalette::HighlightedText : QPalette::ButtonText), 1));
+        p->setBrush(colors.color(hovered ? QPalette::Highlight : QPalette::Base));
+        p->drawEllipse(circleRect().adjusted(0.5, 0.5, -0.5, -0.5));
+        const qreal arm = nodeControlSize / 5;
+        p->drawLine(center - QPointF(arm, 0), center + QPointF(arm, 0));
+        if (!expanded) p->drawLine(center - QPointF(0, arm), center + QPointF(0, arm));
+    }
+private:
+    bool expanded;
+    QPalette colors;
+    bool hoverActive = false;
+    bool hovered = false;
+};
 class LinkCreationHandle final : public QGraphicsItem {
 public:
     LinkCreationHandle(const QPalette &palette, QGraphicsItem *parent)
@@ -303,6 +338,7 @@ public:
     QGraphicsTextItem *label;
     std::optional<NodeImage> image;
     NodeImageItem *imageItem = nullptr;
+    NodeExpansionItem *expansionItem = nullptr;
     NodeItem(NodePresentation node, const QPalette &palette, const QColor &stroke,
              HtmlNode *html = nullptr)
         : id(node.id), topic(std::move(node.topic)), hyperlink(node.hyperlink),
@@ -349,6 +385,10 @@ public:
         setFlag(ItemIsSelectable);
         setAcceptHoverEvents(hasChildren);
         setFiltersChildEvents(hasChildren);
+        if (hasChildren) {
+            expansionItem = new NodeExpansionItem(expanded, palette, this);
+            expansionItem->setPos(rect.right(), rect.center().y() - nodeControlSize / 2);
+        }
         auto addText = [this](std::unique_ptr<QTextDocument> text, const QPointF &position,
                               const QColor &color, HtmlText *htmlTextBlock = nullptr) {
             if (htmlTextBlock) *htmlTextBlock = htmlText(*text, position, color);
@@ -384,8 +424,7 @@ public:
         }
         if (!hyperlink.isEmpty()) {
             auto *indicator = new NodeLinkItem(hyperlink, this);
-            indicator->setPos(rect.right() - 12 - nodeControlSize -
-                                  (hasChildren ? nodeControlSize + nodeControlGap : 0),
+            indicator->setPos(rect.right() - 12 - nodeControlSize,
                               rect.center().y() - nodeControlSize / 2);
             if (html) html->linkRectangle = indicator->mapRectToParent(indicator->boundingRect());
         }
@@ -396,7 +435,7 @@ public:
         return QGraphicsItem::itemChange(change, value);
     }
     QRectF affordance() const {
-        return QRectF(rect.right() - 12 - nodeControlSize, rect.center().y() - nodeControlSize / 2,
+        return QRectF(rect.right() + nodeControlGap, rect.center().y() - nodeControlSize / 2,
                       nodeControlSize, nodeControlSize);
     }
     QRectF boundingRect() const override { return rect.adjusted(-2, -2, 2, 2); }
@@ -411,15 +450,6 @@ public:
         p->setBrush(colors.color(QPalette::Base));
         for (const auto &rectangle : tagRectangles)
             p->drawRoundedRect(rectangle.adjusted(0.5, 0.5, -0.5, -0.5), tagCornerRadius, tagCornerRadius);
-        if (hasChildren) {
-            const QPointF center = affordance().center();
-            p->setPen(QPen(colors.color(expansionHovered ? QPalette::HighlightedText : QPalette::ButtonText), 1));
-            p->setBrush(colors.color(expansionHovered ? QPalette::Highlight : QPalette::Base));
-            p->drawEllipse(affordance().adjusted(0.5, 0.5, -0.5, -0.5));
-            const qreal arm = nodeControlSize / 5;
-            p->drawLine(center - QPointF(arm, 0), center + QPointF(arm, 0));
-            if (!expanded) p->drawLine(center - QPointF(0, arm), center + QPointF(0, arm));
-        }
     }
 protected:
     bool sceneEventFilter(QGraphicsItem *watched, QEvent *event) override {
@@ -430,17 +460,13 @@ protected:
     }
     void hoverEnterEvent(QGraphicsSceneHoverEvent *event) override { updateExpansionHover(event->pos()); }
     void hoverMoveEvent(QGraphicsSceneHoverEvent *event) override { updateExpansionHover(event->pos()); }
-    void hoverLeaveEvent(QGraphicsSceneHoverEvent *) override { setExpansionHovered(false); }
+    void hoverLeaveEvent(QGraphicsSceneHoverEvent *) override {
+        if (expansionItem) expansionItem->setHoverState(false, false);
+    }
 private:
     void updateExpansionHover(const QPointF &position) {
-        setExpansionHovered(hasChildren && affordance().contains(position));
+        if (expansionItem) expansionItem->setHoverState(true, affordance().contains(position));
     }
-    void setExpansionHovered(bool hovered) {
-        if (expansionHovered == hovered) return;
-        expansionHovered = hovered;
-        update(affordance());
-    }
-    bool expansionHovered = false;
 };
 QString semanticTopic(const QGraphicsTextItem *label) {
     // Node labels may include display-only numbering; link labels remain authored text.
@@ -461,8 +487,9 @@ QRectF placeLabel(const QRectF &initial, const std::vector<QRectF> &occupied) {
     for (int direction = 0; direction < 4; ++direction) {
         QRectF candidate = initial;
         for (auto obstacle = collision(candidate); obstacle != occupied.end(); obstacle = collision(candidate)) {
-            // Clear the boundary despite rounding through moveRight/Bottom and adjusted().
-            const qreal gap = 4 + 8 * std::numeric_limits<qreal>::epsilon() *
+            // Leave one pixel beyond the 8px round-capped leader hit stroke.
+            // Also clear rounding through moveRight/Bottom and adjusted().
+            const qreal gap = 5 + 8 * std::numeric_limits<qreal>::epsilon() *
                 std::max({qreal(1), std::abs(obstacle->left()), std::abs(obstacle->right()),
                           std::abs(obstacle->top()), std::abs(obstacle->bottom()), candidate.width(), candidate.height()});
             switch (direction) {
@@ -1507,8 +1534,7 @@ void MindMapView::prepare(NodePresentation &node) const {
         contentBottom = node.imageRectangle.bottom();
     }
     node.rectangle = QRectF(0, 0, qMax(qreal(72), contentWidth + 24 +
-                                    (node.hyperlink.isEmpty() ? 0 : nodeControlSize + nodeControlGap) +
-                                    (node.hasChildren ? nodeControlSize + nodeControlGap : 0)),
+                                    (node.hyperlink.isEmpty() ? 0 : nodeControlSize + nodeControlGap)),
                             qMax(qreal(36), contentBottom + 8));
 }
 void MindMapView::install(Presentation presentation, bool resetCamera) {

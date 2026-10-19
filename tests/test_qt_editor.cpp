@@ -220,7 +220,7 @@ static QRectF topicRect(Editor &editor, const QString &topic) {
 }
 static QPoint expansionPoint(Editor &editor, const QString &topic) {
     const QRectF rect = topicRect(editor, topic).adjusted(2, 2, -2, -2);
-    return graphics(editor).mapFromScene(QPointF(rect.right() - 22, rect.center().y()));
+    return graphics(editor).mapFromScene(QPointF(rect.right() + 14, rect.center().y()));
 }
 static QRectF emptyNodeRect(Editor &editor) {
     for (auto *text : texts(editor, QString())) {
@@ -1380,7 +1380,14 @@ static void html_case() {
         CHECK(visibleTags.size() == 2);
         for (const int tag : visibleTags) CHECK(page.elements[tag].text.simplified() == QStringLiteral("x"));
         CHECK(!page.classes(QStringLiteral("m3-icons"), page.node(QStringLiteral("r"))).empty());
-        CHECK(!page.classes(QStringLiteral("m3-fold-indicator"), page.node(QStringLiteral("a"))).empty());
+        for (const QString &id : {QStringLiteral("r"), QStringLiteral("a")}) {
+            const auto markers = page.classes(QStringLiteral("m3-fold-indicator"), page.node(id));
+            CHECK(markers.size() == 1);
+            const QRectF node = htmlRect(page.elements[page.node(id)]);
+            const QRectF marker = htmlRect(page.elements[markers.front()]);
+            CHECK(marker.left() > node.width());
+            CHECK(QRectF(QPointF(), page.size()).contains(marker.translated(node.topLeft())));
+        }
         CHECK(page.values(QStringLiteral("title")) == QStringList{root});
         CHECK(page.articleIds() == QStringList({"m3-node-72", "m3-node-61", "m3-node-64", "m3-node-62", "m3-node-63"}));
         CHECK(page.classValues(QStringLiteral("m3-article-topic")).contains(QStringLiteral("Delta")));
@@ -9567,7 +9574,7 @@ static void inline_label_hit_case() {
         CHECK(topicInput(editor).toPlainText() == topic);
         CHECK(exported(editor) == original && changed.isEmpty());
         topicKey(editor, Qt::Key_Escape);
-        const QPoint expansion = view.mapFromScene(QPointF(node.right() - 15, node.center().y()));
+        const QPoint expansion = expansionPoint(editor, topic);
         noEdit(expansion);
         CHECK(!texts(editor, QStringLiteral("Alpha")).isEmpty());
         QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, expansion);
@@ -12660,61 +12667,197 @@ static void folding_positions() {
 }
 
 static void collapse_hover_scene() {
+    for (auto direction : {Editor::LayoutDirection::Balanced, Editor::LayoutDirection::Right,
+                           Editor::LayoutDirection::Left, Editor::LayoutDirection::Outline})
+    for (bool rich : {false, true})
     for (bool readOnly : {false, true}) for (qreal zoom : {qreal(1), qreal(1.5)}) {
         RawLabelEditor editor;
         QPalette palette = editor.palette();
         palette.setColor(QPalette::Base, Qt::white);
+        palette.setColor(QPalette::ButtonText, QColor(190, 25, 145));
         palette.setColor(QPalette::Highlight, QColor(30, 95, 210));
         palette.setColor(QPalette::HighlightedText, Qt::white);
         editor.setPalette(palette);
-        CHECK(editor.loadJson(encoded(editorFixture())));
+        Json input = editorFixture();
+        if (rich) {
+            for (auto &node : input.at("nodes")) if (node.at("id") == "a") {
+                node["icons"] = Json::array({"star"});
+                node["tags"] = Json::array({"hover tag"});
+                node["image"] = {{"url", "memory:hover"}, {"width", 80}, {"height", 40}};
+                node["hyperLink"] = "https://example.com/hover";
+            }
+            QObject::connect(&editor, &Editor::imageRequested, &editor,
+                [&editor](const QString &url, quint64 id) { editor.provideImage(url, id, imagePixels()); });
+        }
+        CHECK(editor.loadJson(encoded(input)));
+        CHECK(editor.setLayoutDirection(direction));
         editor.setReadOnly(readOnly);
-        showEditor(editor);
+        showEditor(editor, QSize(1100, 900));
         editor.zoom(zoom);
         CHECK(editor.revealNode(QStringLiteral("a")));
         pump();
         auto &view = graphics(editor);
-        const QRectF node = topicRect(editor, QStringLiteral("Alpha"));
-        const QPoint button = expansionPoint(editor, QStringLiteral("Alpha"));
+        const QString alpha = QStringLiteral("Alpha");
+        const auto owner = [&] { return ownerItem(textItem(editor, alpha)); };
+        const QRectF node = topicRect(editor, alpha);
+        const QRectF body = node.adjusted(2, 2, -2, -2);
+        const QPoint button = expansionPoint(editor, alpha);
         const QPointF center = view.mapToScene(button);
+        const QPoint gap = view.mapFromScene(QPointF(body.right() + 2, body.center().y()));
+        const QPoint topic = labelPoint(editor, alpha);
+        const QTransform transform = view.transform();
+        const QPointF anchor = view.viewportTransform().map(node.center());
+        const QRectF sceneBounds = view.sceneRect();
         const Json original = exported(editor);
-        auto checkHover = [&](bool hovered) {
-            const QImage image = paintScene(editor, node);
-            const QColor actual = image.pixelColor(imagePoint(image, node, center + QPointF(3, -3)));
-            const QColor expected = palette.color(hovered ? QPalette::Highlight : QPalette::Base);
-            CHECK(std::abs(actual.red() - expected.red()) <= 2 &&
-                  std::abs(actual.green() - expected.green()) <= 2 &&
-                  std::abs(actual.blue() - expected.blue()) <= 2);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        QSignalSpy undo(&editor, &Editor::undoAvailable), redo(&editor, &Editor::redoAvailable);
+        auto control = [&] {
+            auto *item = view.itemAt(expansionPoint(editor, alpha));
+            CHECK(item && item != owner() && item->parentItem() == owner());
+            CHECK(!body.contains(center) && item->sceneBoundingRect().left() >= body.right());
+            return item;
+        };
+        auto checkHover = [&](bool visible, bool highlighted) {
+            // Reacquire after every command: folding replaces all scene items.
+            auto *item = control();
+            const QRectF local = item->boundingRect();
+            QImage pixels(QSize(qCeil(local.width() * 4), qCeil(local.height() * 4)),
+                          QImage::Format_ARGB32_Premultiplied);
+            pixels.fill(Qt::transparent);
+            QPainter painter(&pixels);
+            painter.scale(4, 4);
+            painter.translate(-local.topLeft());
+            item->paint(&painter, nullptr, nullptr);
+            painter.end();
+            bool painted = false;
+            for (int y = 0; y < pixels.height(); ++y) for (int x = 0; x < pixels.width(); ++x)
+                painted |= pixels.pixelColor(x, y).alpha() != 0;
+            CHECK(painted == visible);
+            if (visible) {
+                const QColor fill = palette.color(highlighted ? QPalette::Highlight : QPalette::Base);
+                const QColor glyph = palette.color(highlighted ? QPalette::HighlightedText : QPalette::ButtonText);
+                const QPointF localCenter = item->mapFromScene(center);
+                CHECK(pixels.pixelColor(imagePoint(pixels, local, localCenter + QPointF(3, -3))) == fill);
+                const auto hasGlyph = [&](const QPointF &point) {
+                    const QRect sample = QRect(imagePoint(pixels, local, point - QPointF(0.75, 0.75)),
+                                               imagePoint(pixels, local, point + QPointF(0.75, 0.75)));
+                    for (int y = sample.top(); y <= sample.bottom(); ++y)
+                        for (int x = sample.left(); x <= sample.right(); ++x)
+                            if (pixels.pixelColor(x, y) == glyph) return true;
+                    return false;
+                };
+                CHECK(hasGlyph(localCenter + QPointF(3, 0)));
+                CHECK(hasGlyph(localCenter + QPointF(0, -3)) == texts(editor, QStringLiteral("Delta")).isEmpty());
+                const QRectF capture = node.united(owner()->mapRectToScene(owner()->childrenBoundingRect()));
+                const QImage image = paintScene(editor, capture);
+                const QColor actual = image.pixelColor(imagePoint(image, capture, center + QPointF(3, -3)));
+                CHECK(std::abs(actual.red() - fill.red()) <= 2 &&
+                      std::abs(actual.green() - fill.green()) <= 2 &&
+                      std::abs(actual.blue() - fill.blue()) <= 2);
+            }
+            CHECK(topicRect(editor, alpha) == node && view.transform() == transform);
+            CHECK(QLineF(view.viewportTransform().map(node.center()), anchor).length() <= 1.0);
+            CHECK(exported(editor) == original && changed.isEmpty() && undo.isEmpty() && redo.isEmpty());
+            CHECK(!editor.canUndo() && !editor.canRedo());
+        };
+        const auto hover = [&](QPoint point, bool highlighted) {
+            const QRectF bounds = view.sceneRect();
+            movePointer(view, point, Qt::NoButton);
+            checkHover(true, highlighted);
+            CHECK(view.sceneRect() == bounds);
         };
         movePointer(view, blankPoint(view), Qt::NoButton);
-        checkHover(false);
-        movePointer(view, button, Qt::NoButton);
-        checkHover(true);
+        checkHover(false, false);
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        checkHover(false, false); // Selection alone never paints the expansion control.
+        const auto render = [&] {
+            QImage image(QSize(qCeil(sceneBounds.width()), qCeil(sceneBounds.height())),
+                         QImage::Format_ARGB32_Premultiplied);
+            image.fill(Qt::transparent);
+            QPainter painter(&image);
+            painter.translate(-sceneBounds.topLeft());
+            CHECK(editor.renderMap(painter, sceneBounds));
+            painter.end();
+            return image;
+        };
+        const QImage beforeHover = render();
+        checkHover(false, false);
+        hover(topic, false);
+        if (rich) {
+            // Text, icons, tags, the image and hyperlink all participate in parent hover.
+            for (auto *child : owner()->childItems()) {
+                const QPointF point = child->sceneBoundingRect().center();
+                if (!body.contains(point)) continue;
+                const QPoint target = view.mapFromScene(point);
+                CHECK(belongsTo(view.itemAt(target), child));
+                hover(target, false);
+            }
+            QSignalSpy activated(&editor, &Editor::nodeLinkActivated);
+            QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, nodeLinkPoint(editor, alpha));
+            CHECK(activated.size() == 1 && activated.front()[0].toString() == QStringLiteral("a") &&
+                  activated.front()[1].toString() == QStringLiteral("https://example.com/hover"));
+            CHECK(!texts(editor, QStringLiteral("Delta")).isEmpty());
+            checkHover(true, false);
+        }
+        hover(gap, false);
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, gap);
+        CHECK(editor.selectedNodeId() == QStringLiteral("a") && !texts(editor, QStringLiteral("Delta")).isEmpty());
+        hover(button, true);
+        const QStringList selected = editor.selectedNodeIds();
+        CHECK(render() == beforeHover);
+        CHECK(editor.selectedNodeIds() == selected);
+        checkHover(true, true);
+        // Independently exclude the neutral outline/glyph from the detached external area.
+        // The tree connector may cross it, so do not require a uniformly blank rectangle.
+        const qreal radius = control()->boundingRect().height() / 2;
+        const QRect area = QRectF(center - QPointF(radius, radius), QSizeF(2 * radius, 2 * radius))
+                               .translated(-sceneBounds.topLeft()).toAlignedRect();
+        CHECK(beforeHover.rect().contains(area));
+        for (int y = area.top(); y <= area.bottom(); ++y) for (int x = area.left(); x <= area.right(); ++x) {
+            CHECK(beforeHover.pixelColor(x, y) != palette.color(QPalette::ButtonText));
+            CHECK(beforeHover.pixelColor(x, y) != palette.color(QPalette::Highlight));
+        }
         for (bool expanded : {false, true}) {
             // Qt delivers the second rapid press as a double-click, not another press.
             if (expanded) QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, button);
             else QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, button);
-            checkHover(true);
+            checkHover(true, true);
             QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, button);
             pump();
-            checkHover(true);
+            checkHover(true, true);
             CHECK(texts(editor, QStringLiteral("Delta")).isEmpty() == !expanded);
-            CHECK(exported(editor) == original && !activeTopicInput(editor));
+            CHECK(!activeTopicInput(editor));
         }
+        CHECK(view.sceneRect() == sceneBounds);
+        hover(gap, false);
+        hover(topic, false);
+        hover(gap, false);
+        hover(button, true);
         movePointer(view, blankPoint(view), Qt::NoButton);
-        checkHover(false);
-        movePointer(view, button, Qt::NoButton);
-        checkHover(true);
+        checkHover(false, false);
+        CHECK(view.sceneRect() == sceneBounds);
+        hover(button, true); // Direct entry acquires an otherwise unpainted child.
         QEvent leave(QEvent::Leave);
         QCoreApplication::sendEvent(view.viewport(), &leave);
-        checkHover(false);
+        checkHover(false, false);
         CHECK(editor.setExpanded(QStringLiteral("a"), false));
-        checkHover(false);
-        movePointer(view, button, Qt::NoButton);
-        checkHover(true);
+        checkHover(false, false);
+        hover(button, true);
         editor.hide();
         CHECK(editor.setExpanded(QStringLiteral("a"), true));
-        checkHover(false);
+        checkHover(false, false);
+
+        // A leaf has no expansion child, including while selected and hovered.
+        showEditor(editor, QSize(1100, 900));
+        CHECK(editor.revealNode(QStringLiteral("b")));
+        editor.clearSelection();
+        for (bool selectedLeaf : {false, true}) {
+            if (selectedLeaf) CHECK(editor.selectNode(QStringLiteral("b")));
+            movePointer(view, labelPoint(editor, QStringLiteral("Beta")), Qt::NoButton);
+            auto *leaf = ownerItem(textItem(editor, QStringLiteral("Beta")));
+            CHECK(!belongsTo(view.itemAt(expansionPoint(editor, QStringLiteral("Beta"))), leaf));
+        }
+        CHECK(exported(editor) == original && changed.isEmpty() && undo.isEmpty() && redo.isEmpty());
     }
 }
 

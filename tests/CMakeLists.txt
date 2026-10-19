@@ -65,6 +65,10 @@ if(M3_BUILD_QT)
     target_link_libraries(m3_test_qt_editor PRIVATE m3::qt_editor Qt${QT_DEFAULT_MAJOR_VERSION}::Test m3::core)
     target_include_directories(m3_test_qt_editor SYSTEM PRIVATE ../third_party)
     m3_target_defaults(m3_test_qt_editor)
+    if(MSVC)
+        # The case-dispatched Qt regression suite exceeds standard COFF section limits.
+        target_compile_options(m3_test_qt_editor PRIVATE /bigobj)
+    endif()
     set_target_properties(m3_test_qt_editor PROPERTIES
         AUTOMOC ON CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
     set(_m3_qt_cases html html_edges markdown document tree_edits collapse graph_edits render balanced_clockwise navigation outline_navigation find multi_selection controls configuration shortcuts lifetime inline_edit host_commit read_only history link_interaction node_drag properties formatting_toolbar branch_color clipboard hyperlinks images node_shortcuts shortcut_help orphans)

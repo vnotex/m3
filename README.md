@@ -100,7 +100,12 @@ Select a single node to show its top-right create-link button (Lucide `external-
 
 Right-click a single node and choose **Expand All** or **Collapse All** to unfold or fold that node and every descendant. Other branches and orphan trees keep their current folds. Both actions work in read-only maps and are disabled on leaf nodes. Folding remains local view state: it does not change the saved map, undo/redo history or layout positions.
 
-The expand/collapse circle and create-link button highlight on hover using the current palette; moving away restores their normal appearance.
+The expand/collapse circle sits outside the node's right edge and appears only while hovering
+its body, child content, gap or circle; selection alone does not show it. Crossing the gap keeps
+it visible, hovering the circle highlights it, and leaving hides it. Leaf nodes have no circle.
+The separate, selection-driven create-link button highlights on hover and returns to neutral on leave.
+Both controls use the current palette. Painter exports omit the interactive expansion control;
+HTML exports retain an inert external fold indicator.
 
 Default node outlines, tree connectors and cross-links blend the palette's text color into the
 canvas background, starting at 65% foreground. The foreground share increases as needed to retain
