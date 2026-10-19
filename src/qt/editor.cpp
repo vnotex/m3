@@ -920,7 +920,7 @@ public:
     MindMapView *view;
     MindMapController *controller;
     QLabel *error;
-    QAction *addChild, *addSibling, *addSiblingBefore, *editSelection, *deleteSelection, *toggleExpanded, *move, *up, *down, *addLink;
+    QAction *addChild, *addSibling, *addSiblingBefore, *editSelection, *deleteSelection, *toggleExpanded, *move, *up, *down;
     QAction *rootSelection, *clearSelectionAction, *editLink, *toggleProperties, *copySelection, *pasteSelection;
     QAction *addOrphan, *detachNode;
     QAction *undoAction, *redoAction;
@@ -1321,7 +1321,7 @@ public:
         undoAction->setEnabled(controller->canUndo());
         redoAction->setEnabled(controller->canRedo());
         addOrphan->setEnabled(writable);
-        addChild->setEnabled(writable && node); addLink->setEnabled(writable && node);
+        addChild->setEnabled(writable && node);
         addSibling->setEnabled(writable && node); addSiblingBefore->setEnabled(writable && node);
         for (auto *action : nodeNavigation) action->setEnabled(node);
         for (auto *action : nodeEditingActions) {
@@ -1391,27 +1391,27 @@ public:
         }
         if (!target.isEmpty()) controller->selectNode(target);
     }
-    void linkDialog(bool insert) {
+    void editLinkDialog() {
         if (controller->isReadOnly()) return;
         const auto nodes = controller->choices();
         if (nodes.empty()) return;
         const QString id = controller->selectedLinkId();
-        const auto link = insert ? LinkPresentation{} : controller->linkChoice(id);
-        if (!insert && link.id.isEmpty()) return;
+        const auto link = controller->linkChoice(id);
+        if (link.id.isEmpty()) return;
         const QPointer<MindMapEditor> guard(host);
         QPointer<QDialog> dialog(new QDialog(host));
         mutationDialog = dialog;
-        dialog->setWindowTitle(insert ? tr("Add link") : tr("Edit link"));
+        dialog->setWindowTitle(tr("Edit link"));
         auto *form = new QFormLayout(dialog);
         auto *source = new QComboBox(dialog), *target = new QComboBox(dialog);
         source->setObjectName(QStringLiteral("sourceNode")); target->setObjectName(QStringLiteral("targetNode"));
         populate(source, nodes); populate(target, nodes);
-        source->setCurrentIndex(source->findData(insert ? controller->selectedNodeId() : link.source));
-        target->setCurrentIndex(target->findData(insert ? controller->selectedNodeId() : link.target));
+        source->setCurrentIndex(source->findData(link.source));
+        target->setCurrentIndex(target->findData(link.target));
         auto *topic = new QLineEdit(link.topic, dialog);
         topic->setObjectName(QStringLiteral("linkTopic"));
         auto *directed = new QCheckBox(tr("Directed"), dialog);
-        directed->setObjectName(QStringLiteral("directed")); directed->setChecked(!insert && link.direction != LinkDirection::None);
+        directed->setObjectName(QStringLiteral("directed")); directed->setChecked(link.direction != LinkDirection::None);
         form->addRow(tr("Source"), source); form->addRow(tr("Target"), target);
         form->addRow(tr("Topic"), topic); form->addRow(directed);
         auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
@@ -1426,13 +1426,7 @@ public:
         const bool isDirected = directed->isChecked();
         delete dialog.data();
         if (!guard) return;
-        if (insert) {
-            const QString created = controller->addLink(sourceId, targetId, isDirected, linkTopic);
-            if (guard && !created.isEmpty() && controller->selectedLinkId() == created) {
-                host->activateWindow();
-                if (guard) view->beginLinkTopicEdit(created, config.shortcuts.acceptTopic);
-            }
-        } else controller->updateLink(id, sourceId, targetId, isDirected, linkTopic);
+        controller->updateLink(id, sourceId, targetId, isDirected, linkTopic);
     }
     void moveDialog() {
         if (controller->isReadOnly()) return;
@@ -1535,8 +1529,7 @@ public:
         });
         up = action("moveUp", tr("Move Up"), config.shortcuts.moveUp, [this] { reorder(-1); });
         down = action("moveDown", tr("Move Down"), config.shortcuts.moveDown, [this] { reorder(1); });
-        addLink = action("addLink", tr("Add link"), config.shortcuts.addLink, [this] { linkDialog(true); });
-        editLink = action("editLink", tr("Link properties..."), {}, [this] { linkDialog(false); });
+        editLink = action("editLink", tr("Link properties..."), {}, [this] { editLinkDialog(); });
         auto *zoomIn = action("zoomIn", tr("Zoom In"), config.shortcuts.zoomIn, [this] { view->zoom(1.2); });
         auto *zoomOut = action("zoomOut", tr("Zoom Out"), config.shortcuts.zoomOut, [this] { view->zoom(1 / 1.2); });
         auto *resetZoom = action("resetZoom", tr("100%"), config.shortcuts.resetZoom, [this] { view->resetZoom(); });

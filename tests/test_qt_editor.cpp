@@ -9247,7 +9247,7 @@ static void read_only_case() {
 
     dialogs({}, [&] {
         for (const char *name : {"addChild", "addSibling", "addSiblingBefore", "editSelection", "deleteSelection",
-                                 "editTopic", "moveNode", "moveUp", "moveDown", "addLink", "editLink",
+                                 "editTopic", "moveNode", "moveUp", "moveDown", "editLink",
                                  "toggleBold", "toggleItalic", "resetStyle", "textColor", "fillColor", "editTags", "editIcons", "editNote"}) {
             auto &action = editAction(editor, name);
             CHECK(!action.isEnabled());
@@ -9255,7 +9255,7 @@ static void read_only_case() {
         }
         for (Qt::Key key : {Qt::Key_Tab, Qt::Key_Insert, Qt::Key_Return, Qt::Key_Delete,
                            Qt::Key_F2, Qt::Key_E, Qt::Key_B, Qt::Key_I, Qt::Key_R}) shortcut(editor, key);
-        for (Qt::Key key : {Qt::Key_M, Qt::Key_L, Qt::Key_Up, Qt::Key_Down}) shortcut(editor, key, Qt::ControlModifier);
+        for (Qt::Key key : {Qt::Key_M, Qt::Key_Up, Qt::Key_Down}) shortcut(editor, key, Qt::ControlModifier);
     });
     CHECK(exported(editor) == before && changed.isEmpty() && !editor.hasPendingEdit() && !activeTopicInput(editor));
     clickLabel(editor, QStringLiteral("Beta"));
@@ -9951,7 +9951,7 @@ static void shortcut_help_case() {
     QList<QKeySequence> Shortcuts::*const members[] = {
         &Shortcuts::addChild, &Shortcuts::addSibling, &Shortcuts::addSiblingBefore, &Shortcuts::editSelection,
         &Shortcuts::acceptTopic, &Shortcuts::deleteSelection, &Shortcuts::toggleExpanded, &Shortcuts::moveNode,
-        &Shortcuts::moveUp, &Shortcuts::moveDown, &Shortcuts::addLink, &Shortcuts::selectParent,
+        &Shortcuts::moveUp, &Shortcuts::moveDown, &Shortcuts::selectParent,
         &Shortcuts::selectChild, &Shortcuts::previousSibling, &Shortcuts::nextSibling, &Shortcuts::selectRoot,
         &Shortcuts::clearSelection, &Shortcuts::zoomIn, &Shortcuts::zoomOut, &Shortcuts::resetZoom, &Shortcuts::fit,
         &Shortcuts::toggleBold, &Shortcuts::toggleItalic, &Shortcuts::resetStyle, &Shortcuts::textColor,
@@ -9977,7 +9977,10 @@ static void shortcut_help_case() {
         showEditor(editor, QSize(760, 440));
         shortcut(editor, Qt::Key_Question);
         CHECK(!popup(editor));
-        auto configuredHelp = [&] { return open(editor, Qt::Key_F31, Qt::ControlModifier | Qt::AltModifier); };
+        auto configuredHelp = [&] {
+            const auto binding = config.shortcuts.showHelp.front()[0];
+            return open(editor, binding.key(), binding.keyboardModifiers());
+        };
         auto *browser = configuredHelp();
         const QString original = browser->toPlainText();
         const QStringList lines = original.split(QLatin1Char('\n'));
@@ -11357,6 +11360,23 @@ static void shortcuts_case() {
     RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(editorFixture())));
     showEditor(editor);
+    const Json initial = exported(editor);
+    const QString initialSelection = editor.selectedNodeId();
+    dialogs({}, [&] { shortcut(editor, Qt::Key_L, Qt::ControlModifier); });
+    CHECK(exported(editor) == initial && editor.selectedNodeId() == initialSelection);
+    {
+        // Link creation no longer owns Ctrl+L; hosts may bind it with canvas focus.
+        QAction hostShortcut(&editor);
+        hostShortcut.setShortcut(QKeySequence(Qt::CTRL | Qt::Key_L));
+        hostShortcut.setShortcutContext(Qt::WindowShortcut);
+        editor.addAction(&hostShortcut);
+        QSignalSpy triggered(&hostShortcut, &QAction::triggered);
+        dialogs({}, [&] { shortcut(editor, Qt::Key_L, Qt::ControlModifier); });
+        CHECK(triggered.size() == 1);
+        CHECK(exported(editor) == initial && editor.selectedNodeId() == initialSelection);
+    }
+    CHECK(!activeTopicInput(editor));
+
     QSignalSpy changed(&editor, &Editor::documentChanged);
     shortcut(editor, Qt::Key_Tab);
     CHECK(QApplication::activeModalWidget() == nullptr);
@@ -11498,7 +11518,6 @@ static void controls_case() {
     CHECK(editAction(editor, "addChild").isEnabled());
     CHECK(editAction(editor, "editSelection").isEnabled());
     CHECK(editAction(editor, "toggleExpanded").isEnabled());
-    CHECK(editAction(editor, "addLink").isEnabled());
     CHECK(!editAction(editor, "deleteSelection").isEnabled());
     CHECK(!editAction(editor, "moveNode").isEnabled());
     CHECK(!editAction(editor, "moveUp").isEnabled());
@@ -11610,33 +11629,11 @@ static void controls_case() {
 
     shortcut(editor, Qt::Key_Space); // Keep a hidden endpoint in the picker.
     CHECK(texts(editor, QStringLiteral("Double click topic")).isEmpty());
-    CHECK(editor.selectNode(QStringLiteral("b")));
-    const Json beforeLink = exported(editor);
-    dialogs({[&](QDialog *dialog) {
-        auto *source = dialog->findChild<QComboBox *>(QStringLiteral("sourceNode"));
-        auto *target = dialog->findChild<QComboBox *>(QStringLiteral("targetNode"));
-        auto *topic = dialog->findChild<QLineEdit *>(QStringLiteral("linkTopic"));
-        auto *directed = dialog->findChild<QCheckBox *>(QStringLiteral("directed"));
-        CHECK(source != nullptr && target != nullptr && topic != nullptr && directed != nullptr);
-        CHECK(pickerIds(*source) == preorderIds(beforeLink) && pickerIds(*target) == preorderIds(beforeLink));
-        CHECK(source->currentText().endsWith(QStringLiteral("[b]")));
-        CHECK(pickerIds(*target).contains(added));
-        chooseId(*source, QStringLiteral("b"));
-        chooseId(*target, QStringLiteral("b"));
-        topic->setText(QStringLiteral("UI self link"));
-        directed->setChecked(true);
-        dialog->accept();
-    }}, [&] { shortcut(editor, Qt::Key_L, Qt::ControlModifier); });
-    const QString uiLink = editor.selectedLinkId();
-    CHECK(!uiLink.isEmpty() && !hasRecord(beforeLink, "crossLinks", uiLink));
-    CHECK(editor.selectedNodeId().isEmpty());
-    CHECK(record(exported(editor), "crossLinks", uiLink).at("source") == "b");
-    CHECK(record(exported(editor), "crossLinks", uiLink).at("target") == "b");
-    CHECK(record(exported(editor), "crossLinks", uiLink).at("directed") == true);
+    const QString uiLink = editor.addLink(QStringLiteral("b"), QStringLiteral("b"), true,
+                                          QStringLiteral("UI self link"));
+    CHECK(!uiLink.isEmpty());
     const Json beforeLinkCancel = exported(editor);
     const auto linkCount = changed.size();
-    CHECK(topicInput(editor).toPlainText() == QStringLiteral("UI self link"));
-    topicKey(editor, Qt::Key_Escape);
     shortcut(editor, Qt::Key_F2);
     topicInput(editor).setPlainText(QStringLiteral("Canceled link"));
     topicKey(editor, Qt::Key_Escape);
@@ -11647,6 +11644,8 @@ static void controls_case() {
         auto *topic = dialog->findChild<QLineEdit *>(QStringLiteral("linkTopic"));
         auto *directed = dialog->findChild<QCheckBox *>(QStringLiteral("directed"));
         CHECK(source != nullptr && target != nullptr && topic != nullptr && directed != nullptr);
+        CHECK(pickerIds(*source) == preorderIds(beforeLinkCancel) && pickerIds(*target) == preorderIds(beforeLinkCancel));
+        CHECK(pickerIds(*target).contains(added));
         CHECK(source->currentText().endsWith(QStringLiteral("[b]")) && target->currentText().endsWith(QStringLiteral("[b]")));
         CHECK(topic->text() == QStringLiteral("UI self link") && directed->isChecked());
         chooseId(*target, added);
@@ -11760,7 +11759,7 @@ static void demo_controls_case() {
     };
     for (const char *name : {"undo", "redo", "addChild", "addSibling", "addSiblingBefore",
             "editSelection", "deleteSelection", "toggleExpanded", "moveNode", "moveUp",
-            "moveDown", "addLink", "editLink", "zoomIn", "zoomOut", "resetZoom", "fitWidth", "fit", "selectRoot"})
+            "moveDown", "editLink", "zoomIn", "zoomOut", "resetZoom", "fitWidth", "fit", "selectRoot"})
         button(name);
     QSignalSpy changed(&editor, &Editor::documentChanged);
     QSignalSpy layouts(&editor, &Editor::layoutDirectionChanged);
@@ -12765,7 +12764,7 @@ static void multi_selection_case() {
         CHECK(editor.selectedNodeIds() == QStringList({a, b, d}));
         CHECK(selected.size() == 2 && selected.back().at(0).toString().isEmpty());
         for (const char *name : {"addChild", "addSibling", "addSiblingBefore", "editSelection", "editTopic", "moveNode",
-                                "moveUp", "moveDown", "toggleExpanded", "addLink", "editLink", "toggleBold", "toggleItalic",
+                                "moveUp", "moveDown", "toggleExpanded", "editLink", "toggleBold", "toggleItalic",
                                 "resetStyle", "textColor", "fillColor", "editTags", "editIcons", "editNote", "toggleProperties"})
             CHECK(!editAction(editor, name).isEnabled());
         CHECK(editAction(editor, "deleteSelection").isEnabled());

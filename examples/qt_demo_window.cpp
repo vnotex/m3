@@ -97,7 +97,7 @@ void DemoWindow::setupEditorToolBars() {
             QStringLiteral("addSiblingBefore"), QStringLiteral("editSelection"),
             QStringLiteral("deleteSelection"), QStringLiteral("toggleExpanded"),
             QStringLiteral("moveNode"), QStringLiteral("moveUp"), QStringLiteral("moveDown"),
-            QStringLiteral("addLink"), QStringLiteral("editLink")}) add(editing, name);
+            QStringLiteral("editLink")}) add(editing, name);
 
     addToolBarBreak();
     auto *view = addToolBar(tr("View"));

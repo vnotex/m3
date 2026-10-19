@@ -280,12 +280,6 @@
     </message>
     <message>
         <location line="+56"/>
-        <location line="+125"/>
-        <source>Add link</source>
-        <translation>링크 추가</translation>
-    </message>
-    <message>
-        <location line="-125"/>
         <source>Edit link</source>
         <translation>링크 편집</translation>
     </message>

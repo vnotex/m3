@@ -280,12 +280,6 @@
     </message>
     <message>
         <location line="+55"/>
-        <location line="+124"/>
-        <source>Add link</source>
-        <translation>添加关联线</translation>
-    </message>
-    <message>
-        <location line="-124"/>
         <source>Edit link</source>
         <translation>编辑关联线</translation>
     </message>

@@ -280,12 +280,6 @@
     </message>
     <message>
         <location line="+55"/>
-        <location line="+124"/>
-        <source>Add link</source>
-        <translation>リンクを追加</translation>
-    </message>
-    <message>
-        <location line="-124"/>
         <source>Edit link</source>
         <translation>リンクを編集</translation>
     </message>

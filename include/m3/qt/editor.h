@@ -67,7 +67,7 @@ class QRectF;
 // With no selection the menu offers Focus Main Node, Fit Width, Fit Page, 100%, Zoom In and Zoom Out,
 // followed by Add Orphan Node and Shortcuts Help (the existing keyboard shortcuts overlay).
 // Move and Detach Subtree act on non-main nodes; detach is available only for an attached
-// subtree. Collapse/Expand and Add Link are commands.
+// subtree. Collapse/Expand is also available as a command.
 // Drag a non-main node, including an orphan root, onto another node to reattach it.
 // Dropping on empty space cancels; detachment requires Detach Subtree.
 // A single selected node shows a small arrow outside its top-right corner. Drag it onto
@@ -178,9 +178,9 @@ struct FindResult { int totalMatches = 0; int currentMatch = -1; };
 // click dismisses it; Escape returns focus to the canvas without clearing selection.
 // acceptTopic applies only during
 // inline editing, while map shortcuts are suspended. UI node creation inserts a
-// blank node and starts inline editing. UI link creation (arrow drag or Add Link
-// dialog) selects the new visible link and starts inline editing; the dialog also
-// defaults to undirected. Escape cancels only the draft, keeping the created node
+// blank node and starts inline editing. Dragging the create-link arrow creates an
+// undirected link, selects it and starts inline editing. There is no link-creation
+// shortcut or dialog. Escape cancels only the draft, keeping the created node
 // or link; clicking outside saves. Programmatic addNode/addLink do not start editing.
 // Example: config.shortcuts.addChild = {QKeySequence(QStringLiteral("Ctrl+J"))};
 //          MindMapEditor editor(config);
@@ -207,7 +207,6 @@ struct EditorConfig {
         QList<QKeySequence> moveNode{QKeySequence(Qt::CTRL | Qt::Key_M)};
         QList<QKeySequence> moveUp{QKeySequence(Qt::CTRL | Qt::Key_Up)};
         QList<QKeySequence> moveDown{QKeySequence(Qt::CTRL | Qt::Key_Down)};
-        QList<QKeySequence> addLink{QKeySequence(Qt::CTRL | Qt::Key_L)};
         // Logical tree navigation, independent of layout direction. A collapsed
         // node has no selectable child; Space expands it before navigating.
         QList<QKeySequence> selectParent{QKeySequence(Qt::Key_Left)};
@@ -291,7 +290,7 @@ public:
     // The editor owns lifetime, shortcuts and enablement. Hosts may present actions
     // in toolbars/menus, but must not delete, reparent or override those policies.
     // Names: undo, redo, addChild, addOrphan, addSibling, addSiblingBefore, editSelection,
-    // deleteSelection, toggleExpanded, moveNode, detachNode, moveUp, moveDown, addLink, editLink,
+    // deleteSelection, toggleExpanded, moveNode, detachNode, moveUp, moveDown, editLink,
     // zoomIn, zoomOut, resetZoom, fit (Fit Page), fitWidth, selectRoot, selectParent, selectChild,
     // previousSibling, nextSibling, copy, paste, clearSelection, toggleBold, toggleItalic,
     // resetStyle, textColor, fillColor, editTags, editIcons, editNote, toggleProperties,
