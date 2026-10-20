@@ -8,6 +8,13 @@ QLabel#nodePropertiesTitle {
     font-weight: bold;
 }
 
+QFrame#nodePropertiesSeparator {
+    border: none;
+    background: palette(mid);
+    min-height: 1px;
+    max-height: 1px;
+}
+
 QToolButton#nodeBold,
 QToolButton#nodeItalic,
 QToolButton#nodeResetAppearance,

@@ -524,8 +524,7 @@ public:
         });
         content->addWidget(palette);
         auto *separator = new QFrame(body);
-        separator->setFrameShape(QFrame::HLine);
-        separator->setFrameShadow(QFrame::Sunken);
+        separator->setObjectName(QStringLiteral("nodePropertiesSeparator"));
         content->addWidget(separator);
         section(tr("Details"));
         auto *fields = new QFormLayout;

@@ -76,6 +76,11 @@ target_link_libraries(my_app PRIVATE m3::qt_editor)
 
 [`m3::qt::MindMapEditor`](include/m3/qt/editor.h) is a `QWidget` that owns its model. Hosts provide a `QApplication`, use the GUI thread, and retain control of file handling and URL activation. Selection, layout direction, zoom and pan are view state, not persisted JSON. Core-only package discovery does not require Qt.
 
+The node-properties divider is a flat one-pixel line matching its control borders.
+Properties styles use the Qt application palette's `Mid` role for borders/dividers
+and `Midlight` for hover fills. Hosts with custom themes must update those application
+roles; Qt stylesheet `palette(...)` values do not use per-widget palette overrides.
+
 With canvas focus, `Ctrl+H/J/K/L` act like Left/Down/Up/Right: select the parent, next sibling, previous sibling, or first child. Arrow keys remain available. Navigation follows the logical tree in every layout, does not enter collapsed branches, and works in read-only maps. Text editing keeps its own key handling. Hosts can replace or clear the corresponding `EditorConfig::Shortcuts` lists.
 
 Right-click empty canvas and choose **Add Orphan Node** to start an independent tree. Add children normally, or use **Detach Subtree** on an attached node to make its whole branch independent. Drag an orphan root onto a node, or use **Move**, to reattach it. All trees support folding, properties, cross-links, undo/redo and save/reopen. Layout arranges the trees independently in a vertical stack; **Focus Main Node** still targets the main tree. Only that main root is protected from moving or deletion.
