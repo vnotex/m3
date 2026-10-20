@@ -67,6 +67,7 @@ struct HtmlArticleImage {
 struct HtmlMap {
     QRectF bounds;
     QPalette palette;
+    QColor tagBorder;
     std::vector<HtmlNode> nodes;
     std::vector<HtmlTreeEdge> treeEdges;
     std::vector<HtmlLink> links;

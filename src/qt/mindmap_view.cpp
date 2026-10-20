@@ -35,14 +35,17 @@
 
 namespace m3::qt {
 namespace {
+QColor blendColor(const QColor &foreground, const QColor &background, int percent) {
+    const qreal weight = percent * foreground.alphaF() / 100;
+    return QColor(qRound(foreground.red() * weight + background.red() * (1 - weight)),
+                  qRound(foreground.green() * weight + background.green() * (1 - weight)),
+                  qRound(foreground.blue() * weight + background.blue() * (1 - weight)));
+}
 QColor defaultStrokeColor(const QPalette &palette) {
     const QColor foreground = palette.color(QPalette::Text);
     const QColor background = palette.color(QPalette::Base);
     const auto blend = [&](int percent) {
-        const qreal weight = percent * foreground.alphaF() / 100;
-        return QColor(qRound(foreground.red() * weight + background.red() * (1 - weight)),
-                      qRound(foreground.green() * weight + background.green() * (1 - weight)),
-                      qRound(foreground.blue() * weight + background.blue() * (1 - weight)));
+        return blendColor(foreground, background, percent);
     };
     const auto luminance = [](const QColor &color) {
         const auto linear = [](qreal channel) {
@@ -337,18 +340,18 @@ public:
     QRectF rect;
     std::vector<QRectF> tagRectangles;
     QPalette colors;
-    QColor backgroundColor, branchColor, strokeColor;
+    QColor backgroundColor, branchColor, strokeColor, tagStrokeColor;
     QGraphicsTextItem *label;
     std::optional<NodeImage> image;
     NodeImageItem *imageItem = nullptr;
     NodeExpansionItem *expansionItem = nullptr;
     NodeItem(NodePresentation node, const QPalette &palette, const QColor &stroke,
-             HtmlNode *html = nullptr)
+             const QColor &tagStroke, HtmlNode *html = nullptr)
         : id(node.id), topic(std::move(node.topic)), hyperlink(node.hyperlink),
           expanded(node.expanded), hasChildren(node.hasChildren), childrenOnLeft(node.childrenOnLeft),
           rect(QPointF(), node.rectangle.size()), colors(palette),
           backgroundColor(node.style.backgroundColor.isValid() ? node.style.backgroundColor : palette.color(QPalette::Button)),
-          branchColor(node.style.branchColor), strokeColor(stroke) {
+          branchColor(node.style.branchColor), strokeColor(stroke), tagStrokeColor(tagStroke) {
         if (html) {
             html->id = id;
             html->hyperlink = hyperlink;
@@ -450,7 +453,7 @@ public:
                        dropTarget || isSelected() ? 3 : 1, dropTarget ? Qt::DashLine : Qt::SolidLine));
         p->setBrush(backgroundColor);
         p->drawRoundedRect(rect, 8, 8);
-        p->setPen(QPen(colors.color(QPalette::Mid), 1));
+        p->setPen(QPen(tagStrokeColor, 1));
         p->setBrush(colors.color(QPalette::Base));
         for (const auto &rectangle : tagRectangles)
             p->drawRoundedRect(rectangle.adjusted(0.5, 0.5, -0.5, -0.5), tagCornerRadius, tagCornerRadius);
@@ -752,7 +755,9 @@ std::unique_ptr<QGraphicsScene> buildScene(Presentation presentation, const QFon
                                            const QPalette &palette, HtmlMap *html = nullptr) {
     auto replacement = std::make_unique<QGraphicsScene>();
     const QColor stroke = defaultStrokeColor(palette);
+    const QColor tagStroke = blendColor(palette.color(QPalette::Text), palette.color(QPalette::Base), 40);
     if (html) {
+        html->tagBorder = tagStroke;
         html->nodes.reserve(presentation.nodes.size());
         html->treeEdges.reserve(presentation.treeEdges.size());
         html->links.reserve(presentation.links.size());
@@ -842,7 +847,8 @@ std::unique_ptr<QGraphicsScene> buildScene(Presentation presentation, const QFon
     // The index above borrows stable presentation nodes; do not read it after moving them.
     for (auto &node : presentation.nodes) {
         if (html) html->nodes.emplace_back();
-        auto *item = new NodeItem(std::move(node), palette, stroke, html ? &html->nodes.back() : nullptr);
+        auto *item = new NodeItem(std::move(node), palette, stroke, tagStroke,
+                                  html ? &html->nodes.back() : nullptr);
         replacement->addItem(item);
     }
     replacement->setSceneRect(replacement->itemsBoundingRect().adjusted(-32, -32, 32, 32));

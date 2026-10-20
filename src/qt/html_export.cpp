@@ -221,6 +221,7 @@ void visualMap(QString &out, const HtmlMap &map, QHash<qint64, QString> &images)
     }
     const QString base = color(map.palette.color(QPalette::Base));
     const QString mid = color(map.palette.color(QPalette::Mid));
+    const QString tagBorder = color(map.tagBorder);
     for (const auto &node : map.nodes) {
         out += QStringLiteral("<div class=\"m3-node\" id=\"m3-map-node-") + QString::fromLatin1(node.id.toUtf8().toHex()) +
                QStringLiteral("\" data-node-id=\"") + attribute(node.id) + QStringLiteral("\" style=\"") +
@@ -232,7 +233,7 @@ void visualMap(QString &out, const HtmlMap &map, QHash<qint64, QString> &images)
                   QStringLiteral("\" draggable=\"false\""), true);
         for (const auto &tag : node.tags) {
             out += QStringLiteral("<div class=\"m3-tag\" style=\"") + rectangleStyle(tag.rectangle) +
-                   QStringLiteral("background:") + base + QStringLiteral(";outline:1px solid ") + mid + QStringLiteral(";\">\n");
+                   QStringLiteral("background:") + base + QStringLiteral(";outline:1px solid ") + tagBorder + QStringLiteral(";\">\n");
             textBlock(out, tag.text, QStringLiteral("m3-tag-text"));
             out += QStringLiteral("</div>\n");
         }

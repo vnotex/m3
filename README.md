@@ -120,6 +120,10 @@ at least 3:1 contrast against the opaque canvas; if the theme's original foregro
 below that threshold, it is kept without further dimming. Explicit branch colors still override
 node outlines and tree connectors; selection highlights remain unchanged. HTML exports use the same strokes.
 
+Tag outlines use a fixed 40% of the palette's text color over the tag's base background,
+including the text color's alpha, without the node-stroke contrast adjustment. Tag text
+and fill remain theme-derived even on custom-colored nodes. Native and exported maps match.
+
 A node with a URL shows a chain-link indicator (Lucide `link`) beside its topic. Clicking it emits `nodeLinkActivated`; the host decides how to open the URL. The expansion button, create-link button and URL indicator share a 20×20 logical-pixel box at 100% zoom and scale together with the node.
 
 Right-click a node's URL indicator and choose **Copy Link** to copy its stored URL verbatim, including relative paths, without opening it. This works in read-only maps and does not depend on which node is selected. Node bodies, empty canvas, cross-links and multi-selections retain their usual context menus.
