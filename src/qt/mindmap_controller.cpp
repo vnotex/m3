@@ -1362,8 +1362,10 @@ bool MindMapController::removeLink(const QString &id) {
 }
 bool MindMapController::setLayoutDirection(MindMapEditor::LayoutDirection requested) {
     const QPointer<MindMapController> guard(this);
+    const auto revision = documentRevision;
     try {
         auto presentation = prepare(currentSnapshot, requested, collapsedNodes);
+        const QString root = presentation.nodes.front().id;
         install(std::move(presentation), false);
         if (!guard) return true;
         const bool changed = direction != requested;
@@ -1374,6 +1376,10 @@ bool MindMapController::setLayoutDirection(MindMapEditor::LayoutDirection reques
         }
         restoreSelection();
         if (!guard) return true;
+        if (changed && revision == documentRevision && direction == requested) {
+            view.centerNode(selectedNodes.isEmpty() ? root : selectedNodes.front());
+            if (!guard) return true;
+        }
         success();
         return true;
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }

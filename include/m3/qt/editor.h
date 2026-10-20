@@ -446,6 +446,10 @@ public:
     // panel), otherwise selected node topics in selection order joined by LF,
     // or the selected link topic.
     QString selectedText() const;
+    // Actual changes center the first selected node in a shown editor, or the
+    // main root for empty/link-only selection. Retain zoom, selection and drafts;
+    // keyboard focus remains caller-owned. Unchanged/rejected requests do not
+    // recenter the view.
     bool setLayoutDirection(LayoutDirection direction);
     LayoutDirection layoutDirection() const;
     // One-shot camera fitting; hidden requests wait for a visible viewport.

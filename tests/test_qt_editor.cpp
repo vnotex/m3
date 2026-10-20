@@ -11535,6 +11535,76 @@ static void shortcuts_case() {
 }
 
 static void controls_case() {
+    for (const bool readOnly : {false, true}) {
+        RawLabelConfig config;
+        config.separateNodePropertiesPanel = true;
+        RawLabelEditor map(config);
+        CHECK(map.loadJson(encoded(editorFixture())));
+        showEditor(map);
+        CHECK(map.renameNode(QStringLiteral("a"), QStringLiteral("History marker")));
+        CHECK(map.renameNode(QStringLiteral("a"), QStringLiteral("Redo marker")));
+        CHECK(map.undo());
+        const Json before = exported(map);
+        const QString rootTopic = qs(record(before, "nodes", QStringLiteral("r")).at("topic"));
+        auto &view = graphics(map);
+        map.zoom(1.25);
+        map.setReadOnly(readOnly);
+        const auto zoom = view.transform();
+        const bool undo = map.canUndo(), redo = map.canRedo();
+        QSignalSpy changed(&map, &Editor::documentChanged);
+        auto panAway = [&] {
+            view.setSceneRect(view.sceneRect().adjusted(-3000, -3000, 3000, 3000));
+            view.centerOn(QPointF(2000, 2000));
+            pump();
+        };
+        for (int selection = 0; selection < 4; ++selection) {
+            CHECK(map.selectNode(QStringLiteral("a")));
+            if (selection == 1) map.clearSelection();
+            if (selection == 2) CHECK(map.selectLink(QStringLiteral("l1")));
+            if (selection == 3) {
+                view.centerOn(topicRect(map, QStringLiteral("Beta")).center());
+                QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ControlModifier,
+                                  labelPoint(map, QStringLiteral("Beta")));
+                CHECK(map.selectedNodeIds() == QStringList({QStringLiteral("a"), QStringLiteral("b")}));
+            }
+            const auto nodes = map.selectedNodeIds();
+            const auto link = map.selectedLinkId();
+            const QString target = nodes.isEmpty() ? rootTopic : QStringLiteral("History marker");
+            QSignalSpy selected(&map, &Editor::selectionChanged);
+            for (auto direction : {Editor::LayoutDirection::Outline, Editor::LayoutDirection::Left,
+                                   Editor::LayoutDirection::Right, Editor::LayoutDirection::Balanced}) {
+                panAway();
+                CHECK(map.setLayoutDirection(direction));
+                pump();
+                CHECK(QLineF(view.mapFromScene(topicRect(map, target).center()),
+                             view.viewport()->rect().center()).length() <= 2.0);
+                CHECK(view.transform() == zoom && map.selectedNodeIds() == nodes && map.selectedLinkId() == link);
+                CHECK(exported(map) == before && changed.isEmpty() && selected.isEmpty());
+                CHECK(map.canUndo() == undo && map.canRedo() == redo);
+            }
+        }
+        panAway();
+        const QPointF center = view.mapToScene(view.viewport()->rect().center());
+        CHECK(map.setLayoutDirection(map.layoutDirection()));
+        CHECK(QLineF(center, view.mapToScene(view.viewport()->rect().center())).length() <= 2.0);
+        rejectUnchanged(map, [&] { return map.setLayoutDirection(static_cast<Editor::LayoutDirection>(91)); });
+        CHECK(QLineF(center, view.mapToScene(view.viewport()->rect().center())).length() <= 2.0);
+    }
+    {
+        RawLabelEditor map;
+        CHECK(map.loadJson(encoded(editorFixture())));
+        showEditor(map);
+        QPointF replacementCenter;
+        QObject::connect(&map, &Editor::layoutDirectionChanged, &map, [&] {
+            // Reuse the root ID so an unguarded recenter would move the new document.
+            CHECK(map.loadJson(QByteArray(R"({"schemaVersion":1,"rootId":"r","nodes":[{"id":"r","topic":"Replacement"}]})")));
+            graphics(map).setSceneRect(QRectF(-3000, -3000, 6000, 6000));
+            graphics(map).centerOn(QPointF(1000, 1000));
+            replacementCenter = graphics(map).mapToScene(graphics(map).viewport()->rect().center());
+        });
+        CHECK(map.setLayoutDirection(Editor::LayoutDirection::Left));
+        CHECK(QLineF(replacementCenter, graphics(map).mapToScene(graphics(map).viewport()->rect().center())).length() <= 2.0);
+    }
     RawLabelEditor editor;
     CHECK(editor.loadJson(encoded(editorFixture())));
     showEditor(editor);
