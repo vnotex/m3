@@ -37,6 +37,7 @@
 #include <QPointer>
 #include <QResource>
 #include <QScopedValueRollback>
+#include <QScopeGuard>
 #include <QScrollArea>
 #include <QScreen>
 #include <QShortcut>
@@ -128,7 +129,7 @@ public:
         setObjectName(QStringLiteral("shortcutHelpPopup"));
         setWindowTitle(tr("Keyboard shortcuts"));
         auto *layout = new QVBoxLayout(this);
-        auto *browser = new QTextBrowser(this);
+        browser = new QTextBrowser(this);
         browser->setObjectName(QStringLiteral("shortcutHelpBrowser"));
         browser->setAccessibleName(tr("Keyboard shortcuts"));
         browser->setLineWrapMode(QTextEdit::NoWrap);
@@ -137,6 +138,7 @@ public:
         layout->addWidget(new QLabel(tr("Press %1 or click outside to close").arg(QKeySequence(Qt::Key_Escape).toString(QKeySequence::NativeText)), this));
         setFocusProxy(browser);
     }
+    void setHelpText(const QString &help) { browser->setHtml(help); }
 protected:
     void keyPressEvent(QKeyEvent *event) override {
         if (event->matches(QKeySequence::Cancel)) {
@@ -154,6 +156,7 @@ protected:
     }
 private:
     QPointer<MindMapView> view;
+    QTextBrowser *browser;
 };
 constexpr int fontSizePresetCount = 13;
 void populateFontSizes(QComboBox *combo) {
@@ -584,17 +587,18 @@ public:
         scroll->setWidget(body);
         layout->addWidget(scroll, 1);
         textColor->setChecked(true);
-        if (!separated) {
-            connect(toggle, &QToolButton::toggled, this, [this] {
-                const QPointer<NodePropertiesPanel> guard(this);
-                pendingColorRow = 0;
-                reposition();
-                if (guard) toggle->setFocus(Qt::OtherFocusReason);
-            });
-            auto *collapse = new QShortcut(QKeySequence(Qt::Key_Escape), this);
-            collapse->setContext(Qt::WidgetWithChildrenShortcut);
-            connect(collapse, &QShortcut::activated, this, [this] { this->collapse(); });
-        }
+        connect(toggle, &QToolButton::toggled, this, [this](bool expanded) {
+            if (separated || relocating) return;
+            const QPointer<NodePropertiesPanel> guard(this);
+            embeddedExpanded = expanded;
+            pendingColorRow = 0;
+            reposition();
+            if (guard) toggle->setFocus(Qt::OtherFocusReason);
+        });
+        collapseShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+        collapseShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+        collapseShortcut->setEnabled(!separated);
+        connect(collapseShortcut, &QShortcut::activated, this, [this] { collapse(); });
         connect(fontSize, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this] {
             const double size = fontSize->currentData().toDouble();
             applyStyle({{QStringLiteral("fontSize"), size > 0 ? QJsonValue(size) : QJsonValue(QJsonValue::Null)}});
@@ -641,6 +645,37 @@ public:
         view->installEventFilter(this);
         view->viewport()->installEventFilter(this);
         hide();
+    }
+    void setSeparated(bool separate) {
+        if (separated == separate || !editor) return;
+        const QPointer<NodePropertiesPanel> guard(this);
+        relocating = true;
+        separated = separate;
+        if (separated) installEventFilter(this);
+        else removeEventFilter(this);
+        pendingColorRow = 0;
+        collapseShortcut->setEnabled(!separated);
+        hide();
+        if (!guard || !editor) return;
+        // The host has released its borrowed binding before either reparenting.
+        setParent(editor);
+        if (!guard) return;
+        toggle->setVisible(!separated);
+        if (!guard) return;
+        {
+            const QSignalBlocker blocker(toggle);
+            toggle->setChecked(separated || embeddedExpanded);
+        }
+        if (separated) {
+            title->show();
+            subtitle->show();
+            scroll->show();
+            heading->layout()->setContentsMargins(12, 8, 8, 9);
+        }
+        relocating = false;
+        // A pending first presentation also covers a currently hidden editor.
+        suppressPlacementReveal = !separated;
+        reposition();
     }
     void collapse() {
         if (separated) return;
@@ -705,6 +740,7 @@ public:
     }
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override {
+        if (relocating) return false;
         if (event->type() == QEvent::FocusOut || event->type() == QEvent::MouseButtonPress || event->type() == QEvent::Hide)
             pendingColorRow = 0;
         if (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) {
@@ -766,7 +802,11 @@ private:
     QPointer<MindMapEditor> editor;
     QPointer<MindMapView> view;
     QPointer<MindMapController> controller;
-    const bool separated;
+    bool separated;
+    bool embeddedExpanded = false;
+    bool relocating = false;
+    bool suppressPlacementReveal = false;
+    QShortcut *collapseShortcut;
     QWidget *heading, *body;
     QLabel *title, *subtitle;
     QScrollArea *scroll;
@@ -810,7 +850,7 @@ private:
         palette->setColor(color, fillColor->isChecked() ? tr("Use the default fill") : tr("Use the default text color"));
     }
     void refresh() {
-        if (!controller || !editor) return;
+        if (relocating || !controller || !editor) return;
         const QPointer<NodePropertiesPanel> lifetime(this);
         const auto properties = controller->nodeProperties(controller->selectedNodeId());
         if (!lifetime) return;
@@ -864,8 +904,10 @@ private:
         reposition();
     }
     void reposition() {
-        if (separated || repositioning) return;
-        const QScopedValueRollback<bool> guard(repositioning, true);
+        if (separated || relocating || repositioning) return;
+        const QPointer<NodePropertiesPanel> lifetime(this);
+        repositioning = true;
+        const auto guard = qScopeGuard([lifetime] { if (lifetime) lifetime->repositioning = false; });
         const bool wasVisible = isVisible();
         if (!view || !editor || !controller || boundId.isEmpty()) {
             presentedNodeId.clear();
@@ -882,7 +924,8 @@ private:
             return;
         }
         const bool expanded = toggle->isChecked();
-        const bool reveal = expanded && (!wasVisible || boundId != presentedNodeId || !presentedExpanded);
+        const bool reveal = !suppressPlacementReveal && expanded &&
+            (!wasVisible || boundId != presentedNodeId || !presentedExpanded);
         title->setVisible(expanded);
         subtitle->setVisible(expanded);
         scroll->setVisible(expanded);
@@ -897,11 +940,14 @@ private:
         const int width = qMin(expanded ? 300 : header.width() + 2, available.width());
         const int height = qMin(header.height() + (expanded ? body->sizeHint().height() : 0) + 2, available.height());
         setGeometry(available.right() - width + 1, available.top(), width, height);
+        if (!lifetime) return;
         show();
+        if (!lifetime) return;
         raise();
-        if (!isVisible() || !view->isVisible()) return;
+        if (!lifetime || !isVisible() || !view || !view->isVisible()) return;
         presentedNodeId = boundId;
         presentedExpanded = expanded;
+        suppressPlacementReveal = false;
         if (reveal && !controller->isRestoringHistory()) {
             const QString id = boundId;
             if (!id.isEmpty() && id == controller->selectedNodeId()) {
@@ -926,6 +972,9 @@ public:
     QAction *boldAction = nullptr, *italicAction = nullptr;
     QList<QAction *> nodeNavigation;
     QPointer<NodePropertiesPanel> properties;
+    bool changingPropertiesPlacement = false;
+    bool requestedSeparateProperties = false;
+    bool topicEditing = false;
     QList<QAction *> nodeEditingActions;
     QList<QAction *> toolbarFormattingActions;
     FontSizeAction *fontSizeAction = nullptr;
@@ -1168,9 +1217,20 @@ public:
     enum class TopicOperation { Child, SiblingAfter, SiblingBefore };
     enum class Navigation { Parent, Child, PreviousSibling, NextSibling };
     QString shortcutHelpText;
+    bool shortcutHelpDirty = false;
     QPointer<ShortcutHelpPopup> helpPopup;
     QPointer<QDialog> mutationDialog;
+    void updateShortcutHelp() {
+        // A placement change during a draft waits until the action bindings are restored.
+        if (!shortcutHelpDirty || topicEditing) return;
+        shortcutHelpDirty = false;
+        shortcutHelpText = shortcutHelp();
+        if (helpPopup) helpPopup->setHelpText(shortcutHelpText);
+    }
     void showHelp() {
+        const QPointer<MindMapEditor> guard(host);
+        updateShortcutHelp();
+        if (!guard) return;
         if (!helpPopup) helpPopup = new ShortcutHelpPopup(host, view, shortcutHelpText);
         const QRect available = view->screen()->availableGeometry().adjusted(12, 12, -12, -12);
         const QSize size(qMin(640, available.width()), qMin(640, available.height()));
@@ -1246,8 +1306,10 @@ public:
         result->setToolTip(keys.isEmpty() ? text : text + QStringLiteral(" (%1)").arg(keys.join(QStringLiteral(", "))));
         result->setShortcutContext(Qt::WidgetWithChildrenShortcut);
         view->addAction(result);
-        QObject::connect(view, &MindMapView::topicEditingChanged, result, [result, shortcuts](bool editing) {
-            result->setShortcuts(editing ? QList<QKeySequence>{} : shortcuts);
+        QObject::connect(view, &MindMapView::topicEditingChanged, result, [this, result, shortcuts](bool editing) {
+            // Placement is live: ending a draft must not restore the constructor's P policy.
+            result->setShortcuts(editing || (result == toggleProperties && config.separateNodePropertiesPanel)
+                ? QList<QKeySequence>{} : result == toggleProperties ? config.shortcuts.toggleProperties : shortcuts);
         });
         QObject::connect(result, &QAction::triggered, host, [this, result, command = std::move(command)] {
             const QPointer<MindMapEditor> guard(host);
@@ -1480,6 +1542,7 @@ public:
         layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(0);
         view = new MindMapView(editor);
+        QObject::connect(view, &MindMapView::topicEditingChanged, this, [this](bool editing) { topicEditing = editing; });
         view->setStyle(config.style);
         error = new QLabel(editor);
         error->setTextFormat(Qt::PlainText); error->setWordWrap(true); error->hide();
@@ -1822,6 +1885,42 @@ QAction *MindMapEditor::commandAction(const QString &name) const {
 }
 QWidget *MindMapEditor::nodePropertiesPanel() const {
     return d->config.separateNodePropertiesPanel ? d->properties.data() : nullptr;
+}
+void MindMapEditor::setSeparateNodePropertiesPanel(bool separate) {
+    d->requestedSeparateProperties = separate;
+    if (d->changingPropertiesPlacement || d->config.separateNodePropertiesPanel == separate) return;
+    const QPointer<MindMapEditor> guard(this);
+    const QPointer<QWidget> focused = QApplication::focusWidget();
+    const bool restorePanelFocus = focused && d->properties && d->properties->isAncestorOf(focused);
+    d->changingPropertiesPlacement = true;
+    while (d->config.separateNodePropertiesPanel != d->requestedSeparateProperties) {
+        const bool target = d->requestedSeparateProperties;
+        emit nodePropertiesPanelAboutToChange();
+        if (!guard) return;
+        d->config.separateNodePropertiesPanel = target;
+        if (d->properties) d->properties->setSeparated(target);
+        if (!guard) return;
+        d->toggleProperties->setShortcuts(target || d->topicEditing
+            ? QList<QKeySequence>{} : d->config.shortcuts.toggleProperties);
+        if (!guard) return;
+        QStringList keys;
+        if (!target) for (const auto &key : d->config.shortcuts.toggleProperties)
+            keys.append(key.toString(QKeySequence::NativeText));
+        d->toggleProperties->setToolTip(keys.isEmpty() ? d->toggleProperties->text()
+            : d->toggleProperties->text() + QStringLiteral(" (%1)").arg(keys.join(QStringLiteral(", "))));
+        if (!guard) return;
+        // Only placement changes; do not refresh the model, fields, or formatting popups.
+        d->toggleProperties->setEnabled(d->properties && !target && isEnabled() && !d->controller->selectedNodeId().isEmpty());
+        if (!guard) return;
+        d->shortcutHelpDirty = true;
+        d->updateShortcutHelp();
+        if (!guard) return;
+        emit nodePropertiesPanelChanged();
+        if (!guard) return;
+    }
+    d->changingPropertiesPlacement = false;
+    if (restorePanelFocus && focused && focused->isVisible() && focused->isEnabled())
+        focused->setFocus(Qt::OtherFocusReason);
 }
 void MindMapEditor::collapseNodeProperties() { if (d->properties) d->properties->collapse(); }
 void MindMapEditor::setStyle(const EditorConfig::Style &style) {

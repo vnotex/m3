@@ -6687,11 +6687,354 @@ static void separated_properties_case() {
     }
 }
 
+static void live_properties_case() {
+    const QString a = QStringLiteral("a"), b = QStringLiteral("b");
+    for (bool initiallySeparate : {false, true}) {
+        RawLabelConfig config;
+        config.separateNodePropertiesPanel = initiallySeparate;
+        if (initiallySeparate) config.shortcuts.toggleProperties = {QKeySequence(Qt::CTRL | Qt::Key_P)};
+        QMainWindow window;
+        auto *editor = new RawLabelEditor(config, &window);
+        window.setCentralWidget(editor);
+        auto *dock = new QDockWidget(&window);
+        dock->setFixedWidth(360);
+        auto *tools = new QWidget(dock);
+        auto *toolsLayout = new QVBoxLayout(tools);
+        dock->setWidget(tools);
+        window.addDockWidget(Qt::RightDockWidgetArea, dock);
+        QPointer<QWidget> panel = editor->findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
+        CHECK(panel);
+        auto *toggle = panel->findChild<QToolButton *>(QStringLiteral("nodePropertiesToggle"));
+        auto *scroll = panel->findChild<QScrollArea *>();
+        auto *tags = panel->findChild<QLineEdit *>(QStringLiteral("nodeTags"));
+        CHECK(toggle && scroll && tags);
+        auto bind = [&] { toolsLayout->addWidget(panel); panel->show(); };
+        bool separated = initiallySeparate;
+        if (separated) bind();
+        QSignalSpy before(editor, &Editor::nodePropertiesPanelAboutToChange);
+        QSignalSpy after(editor, &Editor::nodePropertiesPanelChanged);
+        QObject::connect(editor, &Editor::nodePropertiesPanelAboutToChange, &window, [&] {
+            CHECK(before.size() == after.size() + 1);
+            CHECK(editor->nodePropertiesPanel() == (separated ? panel.data() : nullptr));
+            CHECK(panel->parentWidget() == (separated ? tools : editor));
+            // A real host releases the borrowed slot, leaving ownership to the native setter.
+            if (separated) { toolsLayout->removeWidget(panel); panel->hide(); }
+        });
+        QObject::connect(editor, &Editor::nodePropertiesPanelChanged, &window, [&] {
+            CHECK(before.size() == after.size());
+            separated = !separated;
+            CHECK(editor->nodePropertiesPanel() == (separated ? panel.data() : nullptr));
+            CHECK(panel->parentWidget() == editor);
+            auto &action = editAction(*editor, "toggleProperties");
+            CHECK(action.isEnabled() == (!separated && !editor->selectedNodeId().isEmpty()));
+            if (separated) {
+                CHECK(panel->isHidden() && action.shortcuts().isEmpty() && toggle->isHidden());
+                bind();
+            }
+        });
+        auto place = [&](bool separate) {
+            const int count = before.size();
+            const bool transition = separate != separated;
+            editor->setSeparateNodePropertiesPanel(separate);
+            pump();
+            CHECK(before.size() == count + int(transition) && after.size() == before.size());
+            CHECK(separated == separate && panel);
+            CHECK(panel->parentWidget() == (separate ? tools : editor));
+            CHECK(editor->nodePropertiesPanel() == (separate ? panel.data() : nullptr));
+        };
+        CHECK(editor->loadJson(encoded(editorFixture())) && editor->selectNode(a));
+        window.resize(1400, 900); window.show(); showEditor(*editor);
+        tags->setText(QStringLiteral("retained,  spaces, "));
+        const Json older = exported(*editor);
+        CHECK(editor->renameNode(b, QStringLiteral("History marker")));
+        const Json current = exported(*editor);
+        CHECK(editor->renameNode(b, QStringLiteral("Future marker")));
+        const Json future = exported(*editor);
+        CHECK(editor->undo() && editor->selectNode(a) && editor->setExpanded(a, false));
+        auto &view = graphics(*editor);
+        auto *scene = view.scene();
+        editor->zoom(1.25);
+        QSignalSpy changed(editor, &Editor::documentChanged), selected(editor, &Editor::selectionChanged);
+        QSignalSpy pending(editor, &Editor::pendingEditChanged), undo(editor, &Editor::undoAvailable);
+        QSignalSpy redo(editor, &Editor::redoAvailable), zoomed(editor, &Editor::zoomChanged);
+        for (bool expanded : {false, true}) {
+            place(false);
+            toggle->setChecked(expanded); pump();
+            for (bool target : {true, false}) {
+                shortcut(*editor, Qt::Key_F2);
+                // Preserve even a semantically equivalent noncanonical field spelling and caret.
+                tags->setSelection(2, 5);
+                const QString fieldText = tags->text();
+                const int fieldPosition = tags->cursorPosition();
+                const QString fieldSelection = tags->selectedText();
+                QPointer<QPlainTextEdit> draft = &topicInput(*editor);
+                const QString original = draft->toPlainText();
+                draft->selectAll(); draft->insertPlainText(QStringLiteral("Uncommitted relocation draft"));
+                auto cursor = draft->textCursor();
+                cursor.setPosition(2); cursor.setPosition(7, QTextCursor::KeepAnchor); draft->setTextCursor(cursor);
+                view.setSceneRect(view.sceneRect().adjusted(-2000, -2000, 2000, 2000));
+                view.centerOn(QPointF(1200, 1000));
+                pump();
+                const auto transform = view.transform();
+                const auto mode = editor->zoomMode();
+                const QPointF center = view.mapToScene(view.viewport()->rect().center());
+                changed.clear(); selected.clear(); pending.clear(); undo.clear(); redo.clear(); zoomed.clear();
+                auto retained = [&] {
+                    CHECK(panel && activeTopicInput(*editor) == draft.data() && draft->hasFocus());
+                    CHECK(draft->toPlainText() == QStringLiteral("Uncommitted relocation draft") && editor->hasPendingEdit());
+                    CHECK(draft->textCursor().anchor() == 2 && draft->textCursor().position() == 7);
+                    CHECK(draft->document()->isUndoAvailable());
+                    CHECK(tags->text() == fieldText && tags->cursorPosition() == fieldPosition && tags->selectedText() == fieldSelection);
+                    CHECK(exported(*editor) == current && editor->canUndo() && editor->canRedo());
+                    CHECK(editor->selectedNodeIds() == QStringList{a} && editor->selectedLinkId().isEmpty());
+                    CHECK(texts(*editor, QStringLiteral("Delta")).isEmpty() && view.scene() == scene);
+                    CHECK(view.transform() == transform && editor->zoomMode() == mode);
+                    CHECK(view.mapToScene(view.viewport()->rect().center()) == center);
+                    CHECK(changed.isEmpty() && selected.isEmpty() && pending.isEmpty() && undo.isEmpty() && redo.isEmpty() && zoomed.isEmpty());
+                    CHECK(editAction(*editor, "toggleProperties").shortcuts().isEmpty());
+                };
+                place(target); retained();
+                place(target); retained();
+                topicKey(*editor, Qt::Key_Z, Qt::ControlModifier);
+                CHECK(draft->toPlainText() == original && !editor->hasPendingEdit());
+                topicKey(*editor, Qt::Key_Y, Qt::ControlModifier);
+                CHECK(editor->hasPendingEdit());
+                topicKey(*editor, Qt::Key_Escape);
+                CHECK(!activeTopicInput(*editor) && exported(*editor) == current);
+                CHECK(editAction(*editor, "toggleProperties").shortcuts() ==
+                      (target ? QList<QKeySequence>{} : config.shortcuts.toggleProperties));
+                CHECK(scroll->isVisible() == (target || expanded));
+                if (target) {
+                    shortcut(*editor, Qt::Key_P, initiallySeparate ? Qt::ControlModifier : Qt::NoModifier);
+                    CHECK(scroll->isVisible() && panel->parentWidget() == tools);
+                    scroll->ensureWidgetVisible(tags); tags->setFocus(); pump();
+                    QTest::keyClick(tags, Qt::Key_Escape);
+                    editor->collapseNodeProperties();
+                    CHECK(tags->hasFocus() && scroll->isVisible() && editor->selectedNodeId() == a);
+                }
+            }
+            shortcut(*editor, Qt::Key_P, initiallySeparate ? Qt::ControlModifier : Qt::NoModifier);
+            CHECK(toggle->isChecked() != expanded && view.hasFocus());
+            shortcut(*editor, Qt::Key_P, initiallySeparate ? Qt::ControlModifier : Qt::NoModifier);
+            CHECK(toggle->isChecked() == expanded && scroll->isVisible() == expanded);
+        }
+        // The restored embedded Escape binding collapses, rather than clearing selection.
+        scroll->ensureWidgetVisible(tags); tags->setFocus(); pump();
+        QTest::keyClick(tags, Qt::Key_Escape); pump();
+        CHECK(!toggle->isChecked() && view.hasFocus() && editor->selectedNodeId() == a);
+        CHECK(exported(*editor) == current && editor->undo() && exported(*editor) == older);
+        CHECK(editor->redo() && exported(*editor) == current);
+        CHECK(editor->redo() && exported(*editor) == future);
+        CHECK(editor->undo() && exported(*editor) == current);
+        CHECK(texts(*editor, QStringLiteral("Delta")).isEmpty());
+        // Accepting a draft after a move also restores the live binding, not its initial one.
+        for (bool target : {true, false}) {
+            shortcut(*editor, Qt::Key_F2);
+            topicInput(*editor).selectAll();
+            topicInput(*editor).insertPlainText(QStringLiteral("Accepted relocation draft"));
+            place(target);
+            changed.clear();
+            CHECK(editor->commitActiveEdit());
+            CHECK(!activeTopicInput(*editor) && changed.size() == 1);
+            CHECK(editAction(*editor, "toggleProperties").shortcuts() ==
+                  (target ? QList<QKeySequence>{} : config.shortcuts.toggleProperties));
+            CHECK(record(exported(*editor), "nodes", a).at("topic") == "Accepted relocation draft");
+            CHECK(editor->undo() && exported(*editor) == current);
+        }
+        // The self-filter must also work after an initially embedded panel moves outside.
+        place(true);
+        auto *fill = panel->findChild<QToolButton *>(QStringLiteral("nodeFillColor"));
+        CHECK(fill);
+        fill->setChecked(true);
+        const Json beforeColor = exported(*editor);
+        changed.clear();
+        QTest::keyClick(panel, Qt::Key_2);
+        QTest::keyClick(panel, Qt::Key_2);
+        CHECK(changed.size() == 1 && exported(*editor) != beforeColor);
+        CHECK(editor->undo() && exported(*editor) == beforeColor);
+        // Help uses the current policy, including after its popup was already constructed.
+        QString embeddedHelp;
+        for (bool separate : {false, true, false}) {
+            place(separate);
+            trigger(*editor, "showHelp");
+            auto *help = editor->findChild<QTextBrowser *>(QStringLiteral("shortcutHelpBrowser"));
+            CHECK(help && help->isVisible());
+            CHECK(help->toPlainText().contains(QStringLiteral("Toggle properties panel")) == !separate);
+            CHECK(help->toPlainText().contains(QStringLiteral("Collapse properties panel")) == !separate);
+            if (!separate) embeddedHelp = help->toPlainText();
+            QSignalSpy helpChanged(help->document(), &QTextDocument::contentsChanged);
+            auto cursor = help->textCursor();
+            cursor.movePosition(QTextCursor::End);
+            const int endPosition = cursor.position();
+            cursor.setPosition(endPosition - 5); cursor.setPosition(endPosition, QTextCursor::KeepAnchor);
+            help->setTextCursor(cursor);
+            help->verticalScrollBar()->setValue(help->verticalScrollBar()->maximum());
+            const int scrollPosition = help->verticalScrollBar()->value();
+            QTest::keyClick(help, Qt::Key_Escape); pump();
+            place(separate); // Neither a no-op Apply nor reopening help replaces its document.
+            trigger(*editor, "showHelp");
+            CHECK(helpChanged.isEmpty() && help->textCursor().anchor() == endPosition - 5 && help->textCursor().position() == endPosition);
+            CHECK(help->verticalScrollBar()->value() == scrollPosition);
+            QTest::keyClick(help, Qt::Key_Escape); pump();
+        }
+        for (bool separate : {true, false}) {
+            shortcut(*editor, Qt::Key_F2);
+            topicInput(*editor).selectAll();
+            topicInput(*editor).insertPlainText(QStringLiteral("Help placement draft"));
+            place(separate); // All QAction shortcuts are temporarily empty here.
+            topicKey(*editor, Qt::Key_Escape);
+            trigger(*editor, "showHelp");
+            auto *help = editor->findChild<QTextBrowser *>(QStringLiteral("shortcutHelpBrowser"));
+            CHECK(help && help->isVisible());
+            const QString text = help->toPlainText();
+            CHECK(text.contains(QStringLiteral("Toggle properties panel")) == !separate);
+            CHECK(text.contains(QStringLiteral("Collapse properties panel")) == !separate);
+            CHECK(text.split(QLatin1Char('\n')).contains(QKeySequence(Qt::Key_Tab).toString(QKeySequence::NativeText)));
+            if (!separate) CHECK(text == embeddedHelp);
+            QTest::keyClick(help, Qt::Key_Escape); pump();
+        }
+    }
+    for (bool readOnly : {false, true}) for (int selection = 0; selection < 4; ++selection) {
+        RawLabelEditor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(a));
+        showEditor(editor);
+        if (selection == 1) editor.clearSelection();
+        if (selection == 2) CHECK(editor.selectLink(QStringLiteral("l1")));
+        if (selection == 3) {
+            QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::ControlModifier,
+                              labelPoint(editor, QStringLiteral("Beta")));
+            CHECK(editor.selectedNodeIds().size() == 2);
+        }
+        editor.setReadOnly(readOnly);
+        auto *panel = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
+        auto *tags = panel->findChild<QLineEdit *>(QStringLiteral("nodeTags"));
+        const auto nodes = editor.selectedNodeIds();
+        const auto link = editor.selectedLinkId();
+        const Json before = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        for (bool separate : {true, false, true, false}) {
+            editor.setSeparateNodePropertiesPanel(separate);
+            CHECK(editor.selectedNodeIds() == nodes && editor.selectedLinkId() == link && exported(editor) == before);
+            CHECK(changed.isEmpty() && selected.isEmpty());
+            CHECK(editor.isReadOnly() == readOnly);
+            CHECK(tags->isReadOnly() == (readOnly || selection != 0));
+            CHECK(editAction(editor, "toggleProperties").isEnabled() == (!separate && selection == 0));
+            if (selection != 0) CHECK(!tags->isEnabled() && tags->text().isEmpty());
+        }
+        editor.setEnabled(false);
+        editor.setSeparateNodePropertiesPanel(true);
+        CHECK(tags->isReadOnly() && !editAction(editor, "toggleProperties").isEnabled());
+        editor.setSeparateNodePropertiesPanel(false);
+        CHECK(tags->isReadOnly() && !editAction(editor, "toggleProperties").isEnabled());
+    }
+    {
+        RawLabelConfig config;
+        config.shortcuts.toggleProperties.clear();
+        RawLabelEditor editor(config);
+        showEditor(editor);
+        expandProperties(editor);
+        auto &view = graphics(editor);
+        editor.zoom(1.35);
+        view.setSceneRect(view.sceneRect().adjusted(-2000, -2000, 2000, 2000));
+        view.centerOn(QPointF(1200, 1000)); pump();
+        const auto center = view.mapToScene(view.viewport()->rect().center());
+        const auto transform = view.transform();
+        auto *panel = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
+        editor.hide(); pump();
+        for (bool separate : {true, true, false, false}) {
+            editor.setSeparateNodePropertiesPanel(separate);
+            CHECK(editor.isHidden() && !panel->isVisible());
+            CHECK(editAction(editor, "toggleProperties").shortcuts().isEmpty());
+        }
+        editor.show(); pump();
+        CHECK(panel->findChild<QScrollArea *>()->isVisible());
+        CHECK(view.transform() == transform && view.mapToScene(view.viewport()->rect().center()) == center);
+    }
+    {
+        RawLabelEditor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectLink(QStringLiteral("l1")));
+        showEditor(editor);
+        shortcut(editor, Qt::Key_F2);
+        QPointer<QPlainTextEdit> draft = &topicInput(editor);
+        draft->selectAll(); draft->insertPlainText(QStringLiteral("Uncommitted link draft"));
+        const auto before = exported(editor);
+        const auto transform = graphics(editor).transform();
+        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+        for (bool separate : {true, false, true, false}) {
+            editor.setSeparateNodePropertiesPanel(separate); pump();
+            CHECK(draft && activeTopicInput(editor) == draft.data() && draft->hasFocus());
+            CHECK(draft->toPlainText() == QStringLiteral("Uncommitted link draft") && editor.hasPendingEdit());
+            CHECK(editor.selectedNodeIds().isEmpty() && editor.selectedLinkId() == QStringLiteral("l1"));
+            CHECK(exported(editor) == before && changed.isEmpty() && selected.isEmpty());
+            CHECK(graphics(editor).transform() == transform);
+        }
+        topicKey(editor, Qt::Key_Escape);
+        CHECK(!editor.hasPendingEdit() && exported(editor) == before);
+    }
+    // A host/editor can disappear at either synchronous handoff boundary.
+    for (bool initial : {false, true}) for (bool atBefore : {false, true}) for (bool deleteEditor : {false, true}) {
+        RawLabelConfig config;
+        config.separateNodePropertiesPanel = initial;
+        QPointer<Editor> editor = new RawLabelEditor(config);
+        QPointer<QWidget> panel = editor->findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
+        QPointer<QWidget> external = new QWidget;
+        if (initial) panel->setParent(external);
+        int before = 0, after = 0, destroyed = 0;
+        QObject::connect(panel, &QObject::destroyed, qApp, [&] { ++destroyed; });
+        auto teardown = [&] {
+            if (deleteEditor) delete editor.data();
+            else {
+                panel->setParent(external);
+                delete external.data();
+            }
+        };
+        QObject::connect(editor, &Editor::nodePropertiesPanelAboutToChange, qApp, [&] {
+            ++before;
+            if (atBefore) teardown();
+        });
+        QObject::connect(editor, &Editor::nodePropertiesPanelChanged, qApp, [&] {
+            ++after;
+            if (!atBefore) teardown();
+        });
+        editor->setSeparateNodePropertiesPanel(!initial);
+        CHECK(before == 1 && after == (atBefore && deleteEditor ? 0 : 1));
+        CHECK(!panel && destroyed == 1);
+        if (editor) {
+            QObject::disconnect(editor, nullptr, qApp, nullptr);
+            editor->setSeparateNodePropertiesPanel(initial);
+            editor->setSeparateNodePropertiesPanel(!initial);
+            CHECK(!editor->nodePropertiesPanel());
+            CHECK(editor->findChildren<QWidget *>(QStringLiteral("nodePropertiesPanel")).isEmpty());
+            CHECK(editor->renameNode(QStringLiteral("root"), QStringLiteral("Surviving editor")));
+            CHECK(editor->undo() && editor->redo());
+            delete editor.data();
+        }
+        delete external.data();
+    }
+    for (bool atBefore : {false, true}) {
+        RawLabelEditor editor;
+        QStringList order;
+        QObject::connect(&editor, &Editor::nodePropertiesPanelAboutToChange, &editor, [&] {
+            order.append(editor.nodePropertiesPanel() ? QStringLiteral("before separate") : QStringLiteral("before embedded"));
+            if (atBefore && order.size() == 1) editor.setSeparateNodePropertiesPanel(false);
+        });
+        QObject::connect(&editor, &Editor::nodePropertiesPanelChanged, &editor, [&] {
+            order.append(editor.nodePropertiesPanel() ? QStringLiteral("after separate") : QStringLiteral("after embedded"));
+            if (!atBefore && order.size() == 2) editor.setSeparateNodePropertiesPanel(false);
+        });
+        editor.setSeparateNodePropertiesPanel(true);
+        CHECK(order == QStringList({QStringLiteral("before embedded"), QStringLiteral("after separate"),
+                                   QStringLiteral("before separate"), QStringLiteral("after embedded")}));
+        CHECK(!editor.nodePropertiesPanel() && editAction(editor, "toggleProperties").isEnabled());
+    }
+}
+
 static void properties_case() {
     properties_visibility_case();
     emoji_category_popup_case();
     emoji_productivity_case();
     separated_properties_case();
+    live_properties_case();
     {
         RawLabelEditor editor;
         CHECK(editor.loadJson(encoded(editorFixture())));

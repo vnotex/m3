@@ -263,9 +263,9 @@ struct EditorConfig {
     bool autoSectionNumbering = true;
     // Supported patterns: "1.1", "1.1.", "1.1)"; other values use "1.1.".
     QString sectionNumberPattern = QStringLiteral("1.1.");
-    // Construction-time placement of the editor's sole node-properties panel.
+    // Initial placement of the editor's sole node-properties panel.
     // False embeds an initially collapsed card; true leaves presentation to the host.
-    // Not persisted in the document and not changeable on an existing editor.
+    // Not persisted; change live with setSeparateNodePropertiesPanel().
     bool separateNodePropertiesPanel = false;
 };
 class M3_QT_API MindMapEditor : public QWidget {
@@ -318,6 +318,12 @@ public:
     // tearing down its model, even while externally parented. Independent deletion
     // by the host is supported: subsequent calls return null, with no replacement.
     QWidget *nodePropertiesPanel() const;
+    // Move the same panel without committing drafts or changing document/view state.
+    // Emits the paired signals below only on real transitions. Each direction first
+    // reparents the panel to this editor; separated presentation starts hidden.
+    // Returning embedded restores its previous expansion preference (initially collapsed).
+    // Reentrant requests are applied after the current signal pair, latest request wins.
+    void setSeparateNodePropertiesPanel(bool separate);
     // Collapse the embedded card and focus the canvas, including read-only or no selection.
     // Idempotent; keeps document, selection and zoom. No effect in separated mode.
     void collapseNodeProperties();
@@ -474,6 +480,12 @@ public:
     // the root cannot be selected.
     bool focusRoot();
 signals:
+    // Synchronous placement handoff: the old accessor remains valid during Before;
+    // hosts must release any borrowed dock binding without deleting the panel.
+    // Changed runs after the new accessor and action policy are ready for rebinding.
+    // A deleted panel is never replaced; no Changed signal follows editor destruction.
+    void nodePropertiesPanelAboutToChange();
+    void nodePropertiesPanelChanged();
     // View-only scale or zoomMode() changes, including new/load reset and deferred fit.
     // fit means Width or Page; query zoomMode() to distinguish them.
     // Mode transitions emit even at the same scale; pan never emits.

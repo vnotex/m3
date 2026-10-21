@@ -208,8 +208,8 @@ Coverage: `m3_qt_clipboard` plus VNote's `nodeClipboardRoundTrip` integration ca
 ### Node-properties placement
 
 Each editor owns one node-properties panel. `EditorConfig::separateNodePropertiesPanel`
-is a construction-time host policy, default `false`: the embedded card starts collapsed and
-retains its toggle preference across selection and document changes. With `true`,
+is the initial host policy, default `false`: the embedded card starts collapsed and
+retains its toggle preference across selection, document and live placement changes. With `true`,
 `nodePropertiesPanel()` returns that same widget, initially hidden; hosts may reparent it into
 a dock and control its geometry/visibility. No canvas toggle or collapse shortcut is shown,
 and `collapseNodeProperties()` does nothing. Non-node selections clear and disable fields;
@@ -221,7 +221,27 @@ font size and text color remain inherited from the host.
 The editor destroys a surviving externally parented panel before its model/view. Hosts may
 destroy the panel first; the accessor then returns null rather than creating a replacement.
 Never create a second properties widget or share the panel between editors. VNote defaults
-to separated mode and exposes the preference in Settings, effective on newly opened maps.
+to separated mode and applies its Settings preference to open maps without reopening them.
+
+Call `setSeparateNodePropertiesPanel(bool)` for live placement. A real transition emits
+`nodePropertiesPanelAboutToChange()` synchronously while the old accessor is valid; release
+any borrowed dock binding there without deleting the panel. Native code reparents the same
+widget to the editor in both directions, then emits `nodePropertiesPanelChanged()` after the
+new accessor and shortcut policies are ready. Bind/show the new external panel only in that
+second signal; it initially remains hidden. Repeated values do nothing. Reentrant requests
+wait until the current signal pair completes, with the latest request winning. Callback
+teardown is supported; deleting a panel never causes replacement.
+
+External mode expands the body, hides the toggle and disables embedded P/Escape behavior.
+Returning embedded restores the independent expansion preference and configured shortcuts,
+including after inline edit cycles. Relocation does not commit drafts, replace documents,
+reset JSON/history/selection/folds/zoom, or pan merely to clear the newly embedded card.
+An unrelated inline draft retains focus, caret and local undo; surviving property inputs keep
+their text/caret, but may lose focus when hidden or collapsed. Hosts must not commit/reload
+through placement callbacks. The external panel alone filters its own key/layout events;
+embedded geometry remains driven by the editor/view. Shortcut help retains its cached document
+between openings and refreshes only after actual placement changes, deferring until a draft's
+suspended action bindings are restored. Regression coverage is in the Qt editor `properties` case.
 
 When `documentChanged` is emitted inside a properties `QLineEdit::setText()` / `textChanged`
 operation, hosts must use `deleteLater()` to close the editor or panel: Qt still uses the line
