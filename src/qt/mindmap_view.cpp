@@ -278,7 +278,6 @@ public:
         : QGraphicsItem(parent), pixels(node.imagePixels), rect(node.imageRectangle),
           colors(palette), failed(node.imageFailed) {
         setAcceptedMouseButtons(Qt::NoButton);
-        setToolTip(QStringLiteral("<qt>%1</qt>").arg(node.image->url.toHtmlEscaped()));
         if (!pixels.isNull()) {
             handle = new ImageResizeHandle(palette, this);
             handle->setPos(rect.bottomRight());

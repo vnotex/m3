@@ -36,6 +36,7 @@
 #include <QGraphicsScene>
 #include <QGraphicsTextItem>
 #include <QGraphicsView>
+#include <QHelpEvent>
 #include <QImage>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
@@ -1095,10 +1096,19 @@ static QImage imagePixels(QColor left = QColor(231, 37, 53), QColor right = QCol
     return image;
 }
 static QGraphicsItem *nodeImageItem(Editor &editor, const QString &topic, const QString &url) {
+    const Json document = exported(editor);
+    bool matches = false;
+    for (const auto &node : document.at("nodes")) {
+        if (node.at("topic") == utf8(topic) && node.contains("image") &&
+            node.at("image").at("url") == utf8(url)) {
+            matches = true;
+            break;
+        }
+    }
+    if (!matches || url.isEmpty()) return nullptr;
     for (auto *child : ownerItem(textItem(editor, topic))->childItems())
         if (child->isVisible() && !dynamic_cast<QGraphicsTextItem *>(child) &&
-            child->cursor().shape() != Qt::PointingHandCursor &&
-            child->toolTip().contains(url.toHtmlEscaped()) && !url.isEmpty()) return child;
+            !child->hasCursor() && !child->acceptHoverEvents()) return child;
     return nullptr;
 }
 static QRectF nodeImageRect(Editor &editor, const QString &topic = QStringLiteral("Image root"),
@@ -2935,6 +2945,54 @@ static void images_case() {
         QObject::connect(&editor, &Editor::imageRequested, &editor,
             [&editor, pixels](const QString &source, quint64 id) { editor.provideImage(source, id, pixels); });
     };
+    QByteArray png;
+    QBuffer output(&png);
+    CHECK(output.open(QIODevice::WriteOnly) && pixels.save(&output, "PNG"));
+    const QString embedded = QStringLiteral("data:image/png;base64,") + QString::fromLatin1(png.toBase64());
+    for (const QString &source : {embedded, QStringLiteral("images/picture.png")}) {
+        RawLabelEditor editor;
+        QString requestSource;
+        quint64 requestId = 0;
+        QObject::connect(&editor, &Editor::imageRequested, &editor,
+            [&](const QString &resolved, quint64 id) {
+                requestSource = resolved;
+                requestId = id;
+            });
+        CHECK(editor.loadJson(encoded(imageDocument(source))));
+        showEditor(editor);
+        CHECK(QTest::qWaitFor([&] { return requestId != 0; }));
+        auto &view = graphics(editor);
+        const auto help = [&](const QPoint &point) {
+            CHECK(view.viewport()->rect().contains(point));
+            QHelpEvent event(QEvent::ToolTip, point, view.viewport()->mapToGlobal(point));
+            QCoreApplication::sendEvent(view.viewport(), &event);
+            pump();
+        };
+        // A pending placeholder, decoded image and failed placeholder must all stay silent.
+        for (int state = 0; state != 3; ++state) {
+            if (state == 1) {
+                editor.provideImage(requestSource, requestId, pixels);
+                CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, source); }));
+            } else if (state == 2) {
+                const quint64 previous = requestId;
+                editor.reloadImages();
+                CHECK(QTest::qWaitFor([&] { return requestId != previous; }));
+                editor.provideImage(requestSource, requestId, QImage());
+                pump();
+            }
+            for (bool readOnly : {false, true}) {
+                editor.setReadOnly(readOnly);
+                // Prove tooltip events reach the scene and unrelated link hints still work.
+                help(nodeLinkPoint(editor, topic));
+                CHECK(QTest::qWaitFor([] { return QToolTip::isVisible(); }));
+                QTextDocument tip;
+                tip.setHtml(QToolTip::text());
+                CHECK(tip.toPlainText() == QStringLiteral("opaque:anything"));
+                help(view.mapFromScene(nodeImageRect(editor, topic, source).center()));
+                CHECK(QTest::qWaitFor([] { return !QToolTip::isVisible(); }));
+            }
+        }
+    }
     {
         RawLabelEditor editor;
         std::vector<std::pair<QString, quint64>> requests;
