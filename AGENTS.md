@@ -364,4 +364,7 @@ acceptance. Keep Qt PrintSupport out of m3. VNote exercises the public API throu
 - Visual affordance regressions share gesture helpers such as `expansionPoint()` for target
   coordinates and render the node's scene bounds. Do not duplicate control offsets or sizes
   inside color checks; retain palette and hover/fold/leave/hide behavior checks.
+- `m3_qt_collapse` uses the long-case 120-second timeout: its aggregate hover/rendering
+  matrix exceeds the default 30 seconds in Windows Debug. Retain all matrix variants
+  and assertions; keep the default timeout for shorter Qt cases unchanged.
 - CI covers Windows/Linux core and Windows Qt, Debug/Release and shared/static core. Packaging changes also require the installed consumers and core-without-Qt checks in CI; these are not CTest registrations. No coverage percentage is configured.

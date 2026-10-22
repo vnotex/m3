@@ -90,7 +90,8 @@ if(M3_BUILD_QT)
         set_tests_properties(m3_qt_${case} PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=${_m3_qt_test_platform}" TIMEOUT 30)
     endforeach()
-    set_tests_properties(m3_qt_html_edges m3_qt_images m3_qt_branch_color
+    # Collapse includes the full hover/rendering matrix and exceeds 30s in Debug.
+    set_tests_properties(m3_qt_collapse m3_qt_html_edges m3_qt_images m3_qt_branch_color
         m3_qt_render m3_qt_properties m3_qt_formatting_toolbar m3_qt_history PROPERTIES TIMEOUT 120)
     if(M3_BUILD_QT_DEMO)
         set_tests_properties(m3_qt_demo_images PROPERTIES TIMEOUT 120)
