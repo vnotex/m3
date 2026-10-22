@@ -339,6 +339,12 @@ public:
     // Hosts own decoding/I/O; retain asynchronous editors with QObject context or
     // QPointer. Without a response, the widget keeps a placeholder and does no I/O.
     void provideImage(const QString &url, quint64 requestId, const QImage &image);
+    // GUI-thread cache lookup accepting the authored URL, resolved with this editor's
+    // resource-base policy. Returns shared pixels, or null if pending/unavailable/absent.
+    // No I/O, requests or decoding. The returned implicitly shared image remains valid
+    // after cache invalidation or editor destruction; callers must release their copies.
+    // New/Open and reloadImages clear the cache immediately.
+    QImage cachedImage(const QString &url) const;
     // Clears cached success/failure/pending responses without changing the base,
     // document, selection, zoom or inline draft; requests visible images again.
     void reloadImages();
@@ -507,6 +513,13 @@ signals:
     void selectionChanged(const QString &nodeId, const QString &linkId);
     void nodeLinkActivated(const QString &nodeId, const QString &url);
     void nodeImageActivated(const QString &nodeId, const QImage &image);
+    // Direct image/placeholder hit after committing an inline draft, including read-only.
+    // Connect synchronously on the GUI thread. The initially empty menu is borrowed only
+    // during this call: added actions replace the normal node menu; empty means fallback.
+    // nodeId is the clicked image's node, not necessarily the selected node. Group
+    // selections and resize handles do not dispatch. Do not retain/delete the menu;
+    // host actions must guard editor lifetime and revalidate their target when triggered.
+    void nodeImageContextMenuRequested(const QString &nodeId, QMenu *menu);
     void imageRequested(const QString &url, quint64 requestId);
     void errorOccurred(const QString &message);
     // Extend the no-selection menu after any inline draft is committed.

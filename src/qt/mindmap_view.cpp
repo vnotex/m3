@@ -1896,6 +1896,13 @@ QString MindMapView::nodeLinkAt(const QPoint &position) const {
         return static_cast<NodeItem *>(indicator->parentItem())->hyperlink;
     return {};
 }
+QString MindMapView::nodeImageAt(const QPoint &position) const {
+    if (!isEnabled() || selectedNodes.size() > 1) return {};
+    // Only the image itself, including placeholders; never ascend from its handle.
+    if (auto *image = dynamic_cast<NodeImageItem *>(itemAt(position)))
+        return static_cast<NodeItem *>(image->parentItem())->id;
+    return {};
+}
 QGraphicsItem *MindMapView::targetAt(const QPoint &position) const {
     for (auto *item = itemAt(position); item; item = item->parentItem()) {
         if (auto *handle = dynamic_cast<LinkEndpointHandle *>(item)) return handle->link;

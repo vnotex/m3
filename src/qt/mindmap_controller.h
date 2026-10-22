@@ -26,6 +26,7 @@ public:
     bool isReadOnly() const { return readOnly; }
     QString resolveResourceUrl(const QString &value) const;
     void provideImage(const QString &url, quint64 requestId, const QImage &image);
+    QImage cachedImage(const QString &url) const;
     void reloadImages();
     bool newDocument(const QString &topic);
     bool loadJson(const QByteArray &json);

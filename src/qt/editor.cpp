@@ -1671,6 +1671,7 @@ public:
         QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this, zoomIn, zoomOut, resetZoom, fit, fitWidth, helpAction](const QPoint &point) {
             const QPointer<MindMapEditor> guard(host);
             const QString linkUrl = view->nodeLinkAt(point);
+            const QString imageNodeId = view->nodeImageAt(point);
             const quint64 linkEpoch = formattingEpoch;
             if (!view->finishTopicEdit(true) || !guard) return;
             if (!linkUrl.isEmpty()) {
@@ -1682,6 +1683,24 @@ public:
                 });
                 menu.exec(view->viewport()->mapToGlobal(point));
                 return;
+            }
+            if (!imageNodeId.isEmpty()) {
+                if (linkEpoch != formattingEpoch || !host->isEnabled()) return;
+                // Parent ownership may destroy the menu inside a host callback or exec.
+                QPointer<QMenu> imageMenu = new QMenu(host);
+                emit host->nodeImageContextMenuRequested(imageNodeId, imageMenu.data());
+                if (!guard || !imageMenu) return;
+                if (linkEpoch != formattingEpoch || !host->isEnabled()) {
+                    delete imageMenu.data();
+                    return;
+                }
+                if (!imageMenu->isEmpty()) {
+                    imageMenu->exec(view->viewport()->mapToGlobal(point));
+                    if (imageMenu) delete imageMenu.data();
+                    return;
+                }
+                delete imageMenu.data();
+                if (!guard) return;
             }
             const QString nodeId = controller->selectedNodeId();
             const bool hasNode = nodeId.isEmpty() == false;
@@ -1994,6 +2013,7 @@ bool MindMapEditor::renderMap(QPainter &painter, const QRectF &target) const { r
 QString MindMapEditor::lastError() const { return d->controller->lastError(); }
 QString MindMapEditor::resourceBasePath() const { return d->controller->resourceBasePath(); }
 void MindMapEditor::provideImage(const QString &url, quint64 requestId, const QImage &image) { d->controller->provideImage(url, requestId, image); }
+QImage MindMapEditor::cachedImage(const QString &url) const { return d->controller->cachedImage(url); }
 void MindMapEditor::reloadImages() { d->controller->reloadImages(); }
 void MindMapEditor::setResourceBasePath(const QString &path) { d->controller->setResourceBasePath(path); }
 QString MindMapEditor::addNode(const QString &parent, const QString &topic, int index) { return d->controller->addNode(parent, topic, index); }

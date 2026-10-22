@@ -261,6 +261,10 @@ void MindMapController::provideImage(const QString &url, quint64 requestId, cons
     resource->completed = true;
     scheduleImageRefresh();
 }
+QImage MindMapController::cachedImage(const QString &url) const {
+    const auto resource = imageResources.constFind(resolveResourceUrl(url));
+    return resource == imageResources.cend() ? QImage() : resource->pixels;
+}
 void MindMapController::reloadImages() {
     imageResources.clear();
     ++imageGeneration;

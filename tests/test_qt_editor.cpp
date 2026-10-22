@@ -2937,10 +2937,266 @@ static void image_activation_case() {
     }
 }
 
+static bool imageContextMenu(Editor &editor, const QPoint &point,
+                             const std::function<void(QMenu &)> &visit) {
+    auto &view = graphics(editor);
+    CHECK(view.viewport()->rect().contains(point));
+    std::exception_ptr failure;
+    bool shown = false;
+    QTimer inspect, dismiss;
+    inspect.setSingleShot(true);
+    dismiss.setSingleShot(true);
+    QObject::connect(&inspect, &QTimer::timeout, &inspect, [&] {
+        QPointer<QMenu> menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+        if (!menu) return;
+        shown = true;
+        try { visit(*menu); }
+        catch (...) { failure = std::current_exception(); }
+        if (menu) menu->close();
+    });
+    QObject::connect(&dismiss, &QTimer::timeout, &dismiss, [] {
+        if (auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget())) menu->close();
+    });
+    inspect.start(0);
+    dismiss.start(5000);
+    QContextMenuEvent event(QContextMenuEvent::Mouse, point, view.viewport()->mapToGlobal(point));
+    QCoreApplication::sendEvent(view.viewport(), &event);
+    dismiss.stop();
+    pump();
+    if (failure) std::rethrow_exception(failure);
+    return shown;
+}
+
+static void image_context_menu_case() {
+    const QString root = QStringLiteral("r"), topic = QStringLiteral("Image root");
+    const QString url = QStringLiteral("memory:picture");
+    const QImage pixels = imagePixels();
+    auto prepare = [&](Editor &editor, int state = 0) {
+        QSignalSpy requests(&editor, &Editor::imageRequested);
+        CHECK(editor.loadJson(encoded(imageDocument())));
+        showEditor(editor, QSize(1200, 900));
+        CHECK(QTest::qWaitFor([&] { return requests.size() == 1; }, 5000));
+        if (state != 0) {
+            editor.provideImage(requests.front()[0].toString(), requests.front()[1].toULongLong(),
+                                state == 1 ? pixels : QImage());
+            pump();
+        }
+    };
+    const auto imagePoint = [](Editor &editor) {
+        return graphics(editor).mapFromScene(nodeImageRect(editor).center());
+    };
+    for (int state : {0, 1, 2}) {
+        RawLabelEditor editor;
+        prepare(editor, state);
+        QString activatedNode;
+        QImage copiedPixels;
+        QPointer<QAction> action;
+        QObject::connect(&editor, &Editor::nodeImageContextMenuRequested, &editor,
+            [&](const QString &id, QMenu *menu) {
+                CHECK(menu->isEmpty());
+                action = menu->addAction(QStringLiteral("Host image action"), &editor, [&, id] {
+                    activatedNode = id;
+                    copiedPixels = editor.cachedImage(url);
+                });
+            });
+        for (bool readOnly : {false, true}) {
+            editor.setReadOnly(readOnly);
+            CHECK(editor.selectNode(QStringLiteral("a")));
+            const QByteArray before = editor.toJson();
+            QSignalSpy changes(&editor, &Editor::documentChanged);
+            activatedNode.clear();
+            CHECK(imageContextMenu(editor, imagePoint(editor), [&](QMenu &menu) {
+                CHECK(menu.actions().size() == 1 && menu.actions().front() == action.data());
+                QTest::mouseClick(&menu, Qt::LeftButton, Qt::NoModifier,
+                                  menu.actionGeometry(action).center());
+            }));
+            // Programmatic context events must bind the hit image, not current selection.
+            CHECK(activatedNode == root && editor.selectedNodeId() == QStringLiteral("a"));
+            CHECK(copiedPixels == (state == 1 ? pixels : QImage()));
+            CHECK(editor.toJson() == before && changes.isEmpty() && action.isNull());
+        }
+    }
+    {
+        RawLabelEditor editor;
+        prepare(editor, 1);
+        const QByteArray before = editor.toJson();
+        auto fallback = [&](QMenu &menu) {
+            auto *copy = editor.commandAction(QStringLiteral("copy"));
+            CHECK(menu.actions().contains(copy) && copy->isEnabled());
+            copy->trigger();
+        };
+        QApplication::clipboard()->clear();
+        CHECK(imageContextMenu(editor, imagePoint(editor), fallback));
+        CHECK(QApplication::clipboard()->mimeData()->hasFormat(QStringLiteral("application/x-m3-nodes+json")));
+        int requested = 0;
+        const auto emptyHook = QObject::connect(&editor, &Editor::nodeImageContextMenuRequested, &editor,
+            [&](const QString &, QMenu *menu) { ++requested; CHECK(menu->isEmpty()); });
+        CHECK(imageContextMenu(editor, imagePoint(editor), fallback));
+        CHECK(requested == 1);
+        QObject::disconnect(emptyHook);
+        QObject::connect(&editor, &Editor::nodeImageContextMenuRequested, &editor,
+            [&](const QString &, QMenu *menu) {
+                ++requested;
+                menu->addAction(QStringLiteral("Unexpected image action"));
+            });
+        CHECK(imageContextMenu(editor, labelPoint(editor, topic), fallback));
+        CHECK(imageContextMenu(editor, imageHandlePoint(editor), fallback));
+        QApplication::clipboard()->clear();
+        CHECK(imageContextMenu(editor, nodeLinkPoint(editor, topic), [](QMenu &menu) {
+            CHECK(menu.actions().size() == 1);
+            menu.actions().front()->trigger();
+        }));
+        CHECK(QApplication::clipboard()->text() == QStringLiteral("opaque:anything"));
+        QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::ControlModifier,
+                          labelPoint(editor, QStringLiteral("Alpha")));
+        CHECK(editor.selectedNodeIds().size() == 2);
+        CHECK(imageContextMenu(editor, imagePoint(editor), fallback));
+        CHECK(editor.selectNode(root));
+        editor.setEnabled(false);
+        imageContextMenu(editor, imagePoint(editor), [](QMenu &) {});
+        CHECK(requested == 1 && editor.toJson() == before);
+    }
+    for (bool replaceDocument : {false, true}) {
+        RawLabelEditor editor;
+        prepare(editor);
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("Committed context-menu draft"));
+        bool changed = false, requested = false, activated = false;
+        QObject::connect(&editor, &Editor::documentChanged, &editor, [&] {
+            if (changed) return;
+            changed = true;
+            if (replaceDocument) CHECK(editor.loadJson(encoded(imageDocument())));
+            else CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Outline));
+        });
+        QObject::connect(&editor, &Editor::nodeImageContextMenuRequested, &editor,
+            [&](const QString &id, QMenu *menu) {
+                requested = true;
+                CHECK(id == root && !editor.hasPendingEdit());
+                menu->addAction(QStringLiteral("Inspect committed target"), &editor,
+                                [&] { activated = true; });
+            });
+        const bool shown = imageContextMenu(editor, imagePoint(editor), [](QMenu &menu) {
+            menu.actions().front()->trigger();
+        });
+        CHECK(changed && shown == !replaceDocument && requested == !replaceDocument);
+        CHECK(activated == !replaceDocument);
+        CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") ==
+              (replaceDocument ? "Alpha" : "Committed context-menu draft"));
+    }
+    for (bool replaceDocument : {false, true}) {
+        RawLabelEditor editor;
+        prepare(editor);
+        bool activated = false;
+        QPointer<QMenu> borrowed;
+        QObject::connect(&editor, &Editor::nodeImageContextMenuRequested, &editor,
+            [&](const QString &id, QMenu *menu) {
+                CHECK(id == root);
+                borrowed = menu;
+                menu->addAction(QStringLiteral("Replace scene again"), &editor, [&] {
+                    activated = true;
+                    CHECK(editor.newDocument(QStringLiteral("Replacement during menu")));
+                });
+                if (replaceDocument) CHECK(editor.loadJson(encoded(imageDocument())));
+                else CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Outline));
+            });
+        const bool shown = imageContextMenu(editor, imagePoint(editor), [](QMenu &menu) {
+            menu.actions().front()->trigger();
+        });
+        CHECK(shown == !replaceDocument && activated == !replaceDocument && borrowed.isNull());
+        CHECK(editor.selectedNodeId() == (replaceDocument ? root : QStringLiteral("root")));
+    }
+    for (bool deleteInCallback : {false, true}) {
+        auto editor = std::make_unique<RawLabelEditor>();
+        prepare(*editor);
+        QPointer<Editor> alive(editor.get());
+        QPointer<QMenu> borrowed;
+        bool requested = false;
+        QObject::connect(editor.get(), &Editor::nodeImageContextMenuRequested,
+            [&](const QString &id, QMenu *menu) {
+                CHECK(id == root);
+                requested = true;
+                borrowed = menu;
+                if (deleteInCallback) editor.reset();
+                else menu->addAction(QStringLiteral("Close editor"), menu, [&] { editor.reset(); });
+            });
+        const bool shown = imageContextMenu(*editor, imagePoint(*editor), [](QMenu &menu) {
+            menu.actions().front()->trigger();
+        });
+        CHECK(requested && shown == !deleteInCallback && alive.isNull() && borrowed.isNull());
+    }
+}
+
 static void images_case() {
+    image_context_menu_case();
     const QString root = QStringLiteral("r"), topic = QStringLiteral("Image root"), url = QStringLiteral("memory:picture");
     const QImage pixels = imagePixels();
     const QImage alternate = imagePixels(QColor(13, 181, 67), QColor(197, 29, 163));
+    for (bool resolve : {false, true}) {
+        QImage retained;
+        {
+            RawLabelConfig config;
+            config.resolveRelativeUrls = resolve;
+            config.resourceBasePath = QDir::currentPath();
+            RawLabelEditor editor(config);
+            const Editor &cache = editor;
+            const QString source = QStringLiteral("images/cache picture.png");
+            const QString resolved = resolve
+                ? QUrl::fromLocalFile(QDir(config.resourceBasePath).filePath(source)).toString(QUrl::FullyEncoded)
+                : source;
+            const QString replacement = QStringLiteral("memory:replacement");
+            QSignalSpy requests(&editor, &Editor::imageRequested);
+            CHECK(cache.cachedImage(source).isNull());
+            CHECK(editor.loadJson(encoded(imageDocument(source))));
+            CHECK(cache.cachedImage(source).isNull());
+            showEditor(editor);
+            CHECK(QTest::qWaitFor([&] { return requests.size() == 1; }, 5000));
+            CHECK(requests.front()[0].toString() == resolved);
+            CHECK(cache.cachedImage(source).isNull() && cache.cachedImage(resolved).isNull());
+            const quint64 oldRequest = requests.front()[1].toULongLong();
+            editor.provideImage(resolved, oldRequest, pixels);
+            // Lookup observes publication immediately, without waiting for scene refresh.
+            retained = cache.cachedImage(source);
+            CHECK(retained == pixels && retained.constBits() == pixels.constBits());
+            CHECK(cache.cachedImage(resolved) == pixels);
+            const QByteArray before = editor.toJson();
+            QSignalSpy changed(&editor, &Editor::documentChanged);
+            for (int i = 0; i < 3; ++i) {
+                CHECK(cache.cachedImage(source) == pixels);
+                CHECK(cache.cachedImage(QStringLiteral("memory:unrequested")).isNull());
+                CHECK(cache.cachedImage(QString()).isNull());
+            }
+            pump();
+            CHECK(requests.size() == 1 && changed.isEmpty() && editor.toJson() == before);
+            editor.reloadImages();
+            CHECK(cache.cachedImage(source).isNull() && cache.cachedImage(resolved).isNull());
+            editor.provideImage(resolved, oldRequest, pixels);
+            CHECK(cache.cachedImage(source).isNull() && retained == pixels);
+            CHECK(QTest::qWaitFor([&] { return requests.size() == 2; }, 5000));
+            editor.provideImage(resolved, requests.back()[1].toULongLong(), alternate);
+            CHECK(cache.cachedImage(source) == alternate);
+            pump();
+            CHECK(requests.size() == 2 && changed.isEmpty() && editor.toJson() == before);
+            // Even a load reusing identical authored URLs must discard the old pixels.
+            CHECK(editor.loadJson(encoded(imageDocument(source))));
+            CHECK(cache.cachedImage(source).isNull() && cache.cachedImage(resolved).isNull());
+            CHECK(QTest::qWaitFor([&] { return requests.size() == 3; }, 5000));
+            const quint64 previousRequest = requests.back()[1].toULongLong();
+            editor.provideImage(resolved, previousRequest, pixels);
+            CHECK(cache.cachedImage(source) == pixels);
+            CHECK(editor.loadJson(encoded(imageDocument(replacement))));
+            CHECK(cache.cachedImage(source).isNull() && cache.cachedImage(replacement).isNull());
+            editor.provideImage(resolved, previousRequest, alternate);
+            CHECK(cache.cachedImage(source).isNull());
+            CHECK(QTest::qWaitFor([&] { return requests.size() == 4; }, 5000));
+            CHECK(requests.back()[0].toString() == replacement);
+            editor.provideImage(replacement, requests.back()[1].toULongLong(), alternate);
+            CHECK(cache.cachedImage(replacement) == alternate && cache.cachedImage(source).isNull());
+            pump();
+            CHECK(requests.size() == 4);
+        }
+        CHECK(retained == pixels);
+    }
     auto serve = [&](Editor &editor) {
         QObject::connect(&editor, &Editor::imageRequested, &editor,
             [&editor, pixels](const QString &source, quint64 id) { editor.provideImage(source, id, pixels); });

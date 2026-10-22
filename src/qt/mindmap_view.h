@@ -49,6 +49,7 @@ public:
     void resetZoom();
     void scrollSteps(int horizontal, int vertical);
     QString nodeLinkAt(const QPoint &position) const;
+    QString nodeImageAt(const QPoint &position) const;
 signals:
     void zoomChanged(qreal factor, bool fit);
     void pendingEditChanged(bool pending);
