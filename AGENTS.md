@@ -215,6 +215,13 @@ a dock and control its geometry/visibility. No canvas toggle or collapse shortcu
 and `collapseNodeProperties()` does nothing. Non-node selections clear and disable fields;
 editor enabled/read-only policy still gates edits outside the editor subtree.
 
+Override the protected `MindMapEditor::createNoteEditor(QWidget *parent)` to customize the
+Note field; the default returns a `QPlainTextEdit`. Only this input is created lazily, on
+first panel display, separated-panel access, or Edit Note. Show/query the panel only after
+derived-class initialization so the override dispatches correctly. Return a new non-null
+input parented to the argument, without reentering editor APIs. m3 owns its text, read-only
+policy and lifetime; first initialization does not modify the document. Panel relocation
+keeps the same input. Inline topic editing is unchanged.
 The Topic heading uses the same bold weight as Appearance and the other section headings;
 font size and text color remain inherited from the host.
 

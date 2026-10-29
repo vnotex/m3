@@ -406,7 +406,9 @@ QStringList commaValues(const QString &text) {
     }
     return values;
 }
-class NodePropertiesPanel final : public QFrame {
+} // namespace
+
+class MindMapEditor::NodePropertiesPanel final : public QFrame {
     Q_DECLARE_TR_FUNCTIONS(m3::qt::NodePropertiesPanel)
 public:
     NodePropertiesPanel(MindMapEditor *host, MindMapView *canvas, MindMapController *model, bool separate)
@@ -530,12 +532,12 @@ public:
         separator->setObjectName(QStringLiteral("nodePropertiesSeparator"));
         content->addWidget(separator);
         section(tr("Details"));
-        auto *fields = new QFormLayout;
+        fields = new QFormLayout;
         fields->setContentsMargins(0, 0, 0, 0);
         fields->setSpacing(8);
         fields->setRowWrapPolicy(QFormLayout::WrapLongRows);
         fields->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-        auto line = [this, fields](const char *name, const QString &label, const QString &accessible, QLineEdit *input = nullptr) {
+        auto line = [this](const char *name, const QString &label, const QString &accessible, QLineEdit *input = nullptr) {
             if (!input) input = new QLineEdit(body);
             input->setObjectName(QString::fromLatin1(name));
             input->setAccessibleName(accessible);
@@ -572,16 +574,6 @@ public:
             "<td align=\"left\" valign=\"top\">Close picker</td></tr>"
             "</table></qt>"));
         url->setPlaceholderText(tr("URL or reference"));
-        note = new QPlainTextEdit(body);
-        note->setObjectName(QStringLiteral("nodeNote"));
-        note->setAccessibleName(tr("Note"));
-        note->setPlaceholderText(tr("Add a note"));
-        note->setTabChangesFocus(true);
-        note->setMinimumHeight(78);
-        note->setMaximumHeight(100);
-        auto *noteLabel = new QLabel(tr("&Note"), body);
-        noteLabel->setBuddy(note);
-        fields->addRow(noteLabel, note);
         content->addLayout(fields);
         content->addStretch();
         scroll->setWidget(body);
@@ -631,9 +623,6 @@ public:
                 {QStringLiteral("width"), currentImage ? currentImage->width : 0},
                 {QStringLiteral("height"), currentImage ? currentImage->height : 0}}}});
         });
-        connect(note, &QPlainTextEdit::textChanged, this, [this] {
-            apply({{QStringLiteral("note"), note->toPlainText()}});
-        });
         connect(controller, &MindMapController::selectionChanged, this, [this] { refresh(); });
         connect(controller, &MindMapController::documentChanged, this, [this] { refresh(); });
         connect(qApp, &QApplication::focusChanged, this, [this] { pendingColorRow = 0; });
@@ -645,6 +634,25 @@ public:
         view->installEventFilter(this);
         view->viewport()->installEventFilter(this);
         hide();
+    }
+    void ensureNoteEditor() {
+        if (note) return;
+        note = editor->createNoteEditor(body);
+        note->setObjectName(QStringLiteral("nodeNote"));
+        note->setAccessibleName(tr("Note"));
+        note->setPlaceholderText(tr("Add a note"));
+        note->setTabChangesFocus(true);
+        note->setMinimumHeight(78);
+        note->setMaximumHeight(100);
+        auto *noteLabel = new QLabel(tr("&Note"), body);
+        noteLabel->setBuddy(note);
+        fields->addRow(noteLabel, note);
+        connect(note, &QPlainTextEdit::textChanged, this, [this] {
+            apply({{QStringLiteral("note"), note->toPlainText()}});
+        });
+        const QSignalBlocker blocker(note);
+        note->setPlainText(controller->nodeProperties(controller->selectedNodeId()).note);
+        updateEditability();
     }
     void setSeparated(bool separate) {
         if (separated == separate || !editor) return;
@@ -695,7 +703,7 @@ public:
         for (auto *button : {bold, italic, reset, textColor, fillColor}) button->setEnabled(!value);
         palette->setEnabled(!value);
         for (auto *input : {tags, static_cast<QLineEdit *>(icons), url, imageUrl}) input->setReadOnly(value);
-        note->setReadOnly(value);
+        if (note) note->setReadOnly(value);
     }
     enum class Action { ToggleBold, ToggleItalic, ResetStyle, TextColor, FillColor, Tags, Icons, Note, ToggleProperties };
     void activate(Action action) {
@@ -721,7 +729,7 @@ public:
         case Action::FillColor: target = fillColor; break;
         case Action::Tags: target = tags; break;
         case Action::Icons: target = icons; break;
-        case Action::Note: target = note; break;
+        case Action::Note: ensureNoteEditor(); target = note; break;
         }
         if (!separated) {
             toggle->setChecked(true);
@@ -739,6 +747,10 @@ public:
         target->setFocus(Qt::OtherFocusReason);
     }
 protected:
+    void showEvent(QShowEvent *event) override {
+        ensureNoteEditor();
+        QFrame::showEvent(event);
+    }
     bool eventFilter(QObject *watched, QEvent *event) override {
         if (relocating) return false;
         if (event->type() == QEvent::FocusOut || event->type() == QEvent::MouseButtonPress || event->type() == QEvent::Hide)
@@ -814,7 +826,8 @@ private:
     QToolButton *toggle, *bold, *italic, *reset, *textColor, *fillColor;
     QLineEdit *tags, *url, *imageUrl;
     EmojiLineEdit *icons;
-    QPlainTextEdit *note;
+    QFormLayout *fields;
+    QPlainTextEdit *note = nullptr;
     NodeColorPalette *palette;
     QString boundId;
     QString presentedNodeId;
@@ -880,7 +893,7 @@ private:
             const QSignalBlocker blocker(imageUrl);
             imageUrl->setText(imageText);
         }
-        if (!sameNode || note->toPlainText() != properties.note) {
+        if (note && (!sameNode || note->toPlainText() != properties.note)) {
             const QSignalBlocker blocker(note);
             note->setPlainText(properties.note);
         }
@@ -956,7 +969,6 @@ private:
         }
     }
 };
-}
 class MindMapEditor::Private : public QObject {
     Q_DECLARE_TR_FUNCTIONS(m3::qt::MindMapEditor)
 public:
@@ -1911,7 +1923,9 @@ QAction *MindMapEditor::commandAction(const QString &name) const {
     return name.isEmpty() ? nullptr : findChild<QAction *>(name, Qt::FindDirectChildrenOnly);
 }
 QWidget *MindMapEditor::nodePropertiesPanel() const {
-    return d->config.separateNodePropertiesPanel ? d->properties.data() : nullptr;
+    if (!d->config.separateNodePropertiesPanel || !d->properties) return nullptr;
+    d->properties->ensureNoteEditor();
+    return d->properties.data();
 }
 void MindMapEditor::setSeparateNodePropertiesPanel(bool separate) {
     d->requestedSeparateProperties = separate;
@@ -1978,6 +1992,7 @@ void MindMapEditor::insertFromMimeData(const QString &nodeId, const QMimeData *s
     const QJsonObject patch{{QStringLiteral("hyperLink"), QUrl::fromLocalFile(path).toString(QUrl::FullyEncoded)}};
     updateNode(nodeId, QJsonDocument(patch).toJson(QJsonDocument::Compact));
 }
+QPlainTextEdit *MindMapEditor::createNoteEditor(QWidget *parent) { return new QPlainTextEdit(parent); }
 void MindMapEditor::onAddUrl(const QString &) {}
 void MindMapEditor::onAddImage(const QString &) {}
 bool MindMapEditor::newDocument(const QString &topic) {

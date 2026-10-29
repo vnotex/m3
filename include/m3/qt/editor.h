@@ -14,6 +14,7 @@ class QAction;
 class QMenu;
 class QMimeData;
 class QPainter;
+class QPlainTextEdit;
 class QRectF;
 
 #ifdef M3_QT_STATIC
@@ -527,6 +528,10 @@ signals:
     // during this call. Hosts own their actions and file/export policy.
     void backgroundContextMenuRequested(QMenu *menu);
 protected:
+    // Created once on first panel access/show or Edit Note, not in this constructor.
+    // Return a new non-null input parented to parent; do not reenter editor APIs.
+    // The panel owns its text, editability and lifetime. Default: QPlainTextEdit.
+    virtual QPlainTextEdit *createNoteEditor(QWidget *parent);
     // Native node clipboard data is handled internally before these resource hooks.
     // Pure, cheap eligibility query: no IO, decoding, dialogs or document changes.
     // The default accepts one absolute local-file URL for Drop, never Clipboard.
@@ -543,6 +548,7 @@ protected:
     virtual void onAddUrl(const QString &nodeId);
     virtual void onAddImage(const QString &nodeId);
 private:
+    class NodePropertiesPanel;
     class Private;
     std::unique_ptr<Private> d;
 };
