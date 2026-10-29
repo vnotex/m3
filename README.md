@@ -130,6 +130,15 @@ Right-click a node's URL indicator for **Open Link**, followed by **Copy Link**.
 
 The link context menu contains **Rename/Edit**, a separator, the exclusive direction choices `---`, `<---`, `--->`, `<--->`, another separator, and **Delete**. Arrows refer to stored source/target order, not left/right screen positions. **Link properties** remains in the toolbar. Direction choices preserve endpoint order and unrelated metadata. Native JSON retains reverse/both arrows in `style.arrowDirection` (`"backward"`/`"both"`) with `directed: true`; without either recognized value, `directed` retains its usual forward/undirected rendering. The Qt view, HTML articles and Markdown cross-references honor this style; other styles remain presentation-only in Markdown. Endpoint squares are selection UI only and are never saved or exported.
 
+### Content image references
+
+`m3_mindmap_collect_image_references(json, &images)` parses the same input formats as
+`m3_mindmap_from_json()` and returns an owned JSON array of image URL strings. It visits
+all nodes in main-tree then orphan-tree preorder, including folded descendants, retaining
+duplicates and empty URLs. It does not fetch, resolve, filter or rewrite references and
+never mutates the input. Release the snapshot with `m3_string_free()`; a supplied output
+slot is null on failure. Hosts own path admission, URL decoding and resource copying.
+
 ### Markdown export
 
 `m3_mindmap_to_markdown()` and `MindMapEditor::toMarkdown()` produce a readable document,

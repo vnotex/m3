@@ -115,6 +115,90 @@ static void outline() {
     CHECK(Json::parse(blank_text.get()) == Json({{"id", root}, {"topic", ""}, {"children", Json::array()}}));
 }
 
+static void images() {
+    const auto collect = [](const std::string &input) {
+        char *raw = nullptr;
+        const auto status = m3_mindmap_collect_image_references(input.c_str(), &raw);
+        Text owned(raw, m3_string_free);
+        ok(status);
+        CHECK(owned && !*m3_last_error());
+        return Json::parse(owned.get());
+    };
+    const Json expected = Json::array({"assets/pixel%20one.png#part?query", "duplicate.png",
+        "画像/🌍.png", "duplicate.png", "", "https://example.invalid/image.png",
+        "data:image/png;base64,AA==", "../outside.png", "C:\\images\\pixel.png"});
+    Text owned(nullptr, m3_string_free);
+    {
+        // Records and IDs deliberately differ from preorder; legacy folding is ignored.
+        std::string input = R"json({"schemaVersion":1,"rootId":"r","orphanIds":["orphan-z","orphan-a"],"nodes":[
+          {"id":"drive","image":{"url":"C:\\images\\pixel.png","width":0,"height":0}},
+          {"id":"orphan-a","image":{"url":"../outside.png","width":0,"height":0},"children":["drive"]},
+          {"id":"deep","image":{"url":"\u753b\u50cf/\ud83c\udf0d.png","width":1,"height":2}},
+          {"id":"none","image":null,"hyperLink":"not-an-image.png","note":"![ignored](note.png)",
+           "style":{"image":{"url":"style.png"}}},
+          {"id":"empty","image":{"url":"","width":0,"height":0}},
+          {"id":"a","image":{"url":"duplicate.png","width":0,"height":0}},
+          {"id":"orphan-child","image":{"url":"data:image/png;base64,AA==","width":0,"height":0}},
+          {"id":"z","expanded":false,"image":{"url":"duplicate.png","width":0,"height":0},"children":["deep"]},
+          {"id":"orphan-z","expanded":false,"image":{"url":"https://example.invalid/image.png","width":0,"height":0},
+           "children":["orphan-child"]},
+          {"id":"r","expanded":false,"image":{"url":"assets/pixel%20one.png#part?query","width":0,"height":0},
+           "children":["z","a","empty","none"]}],
+          "crossLinks":[{"id":"link","source":"orphan-child","target":"deep","directed":true}]})json";
+        const auto before = input;
+        char *raw = nullptr;
+        ok(m3_mindmap_collect_image_references(input.c_str(), &raw));
+        owned.reset(raw);
+        CHECK(owned && !*m3_last_error());
+        CHECK(input == before);
+        CHECK(Json::parse(owned.get()) == expected);
+        CHECK(collect(input) == expected);
+        std::fill(input.begin(), input.end(), 'x');
+    }
+    CHECK(Json::parse(owned.get()) == expected); // Input storage has been overwritten and released.
+    CHECK(collect("{}") == Json::array());
+    CHECK(collect(R"({"schemaVersion":1,"rootId":"r","nodes":[{"id":"r"}]})") == Json::array());
+    CHECK(collect(R"({"image":{},"expanded":false,"children":[
+        {"image":{"url":"//server/share/image.png"}},
+        {"image":{"url":"/absolute.png"}},
+        {"image":{"url":"assets/../images/quoted\"\\name.png"}}]})") ==
+        Json::array({"", "//server/share/image.png", "/absolute.png", "assets/../images/quoted\"\\name.png"}));
+    // Mind Elixir image fields are ignored by its importer, not interpreted by this API.
+    CHECK(collect(R"({"nodeData":{"image":{"url":"ignored.png"},"children":[{"image":42}]}})") == Json::array());
+
+    char *invalid = reinterpret_cast<char *>(1);
+    CHECK(m3_mindmap_collect_image_references(nullptr, &invalid) == M3_ERR_INVALID_ARGUMENT);
+    CHECK(invalid == nullptr && *m3_last_error());
+    CHECK(m3_mindmap_collect_image_references("{}", nullptr) == M3_ERR_INVALID_ARGUMENT);
+    CHECK(*m3_last_error());
+    CHECK(m3_mindmap_collect_image_references(nullptr, nullptr) == M3_ERR_INVALID_ARGUMENT);
+    CHECK(*m3_last_error());
+    const auto reject = [](const std::string &input, M3Status expected_status) {
+        const auto before = input;
+        char *out = reinterpret_cast<char *>(1);
+        const auto status = m3_mindmap_collect_image_references(input.c_str(), &out);
+        Text result(out == reinterpret_cast<char *>(1) ? nullptr : out, m3_string_free);
+        CHECK(status == expected_status && out == nullptr && *m3_last_error());
+        CHECK(input == before);
+        M3Mindmap *map_raw = nullptr;
+        const auto import_status = m3_mindmap_from_json(input.c_str(), &map_raw);
+        Map map(map_raw, m3_mindmap_destroy);
+        CHECK(import_status == status && !map && *m3_last_error());
+    };
+    for (const char *input : {"", " \t\r\n", "{", "{} trailing",
+        R"({"image":{"url":"a","url":"b"}})", R"({"image":{"url":"\ud800"}})"})
+        reject(input, M3_ERR_JSON);
+    reject(std::string("{\"image\":{\"url\":\"") + char(0xff) + "\"}}", M3_ERR_JSON);
+    for (const char *input : {"null", "[]", R"({"image":{"url":3}})",
+        R"({"image":{"url":"\u0000"}})", R"({"image":{"width":-1}})",
+        R"({"schemaVersion":1,"rootId":"r","nodes":[{"id":"r","image":{"url":"a"}}]})",
+        R"({"schemaVersion":1,"rootId":"r","nodes":[{"id":"r","expanded":1}]})",
+        R"({"schemaVersion":1,"rootId":"r","nodes":[{"id":"r"},{"id":"detached"}]})",
+        R"({"orphanIds":[]})", R"({"nodeData":{},"schemaVersion":1})"})
+        reject(input, M3_ERR_SCHEMA);
+    CHECK(collect("{}") == Json::array()); // A successful scan clears the last failure.
+}
+
 static Text markdown_text(const Map &map) {
     char *raw = nullptr;
     const auto status = m3_mindmap_to_markdown(map.get(), &raw);
@@ -967,6 +1051,7 @@ int main(int argc, char **argv) {
         if (name == "roundtrip") roundtrip();
         else if (name == "outline") outline();
         else if (name == "orphans") orphans();
+        else if (name == "images") images();
         else if (name == "markdown") markdown();
         else if (name == "markdown_edges") markdown_edges();
         else if (name == "validation") validation();

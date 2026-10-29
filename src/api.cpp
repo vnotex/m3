@@ -51,6 +51,17 @@ M3Status m3_mindmap_from_json(const char *json, M3Mindmap **out_map) {
         *out_map = map.release();
     });
 }
+M3Status m3_mindmap_collect_image_references(const char *json_utf8, char **out_json) {
+    if (out_json) *out_json = nullptr;
+    return boundary([&] {
+        argument(json_utf8 && out_json);
+        const auto model = m3::decode_document(m3::parse(json_utf8));
+        auto images = m3::Json::array();
+        for (const auto *node : m3::preorder(model))
+            if (node->attrs.image) images.push_back(node->attrs.image->url);
+        *out_json = snapshot(images);
+    });
+}
 M3Status m3_mindmap_to_json(const M3Mindmap *map, char **out_json) {
     if (out_json) *out_json = nullptr;
     return boundary([&] { argument(map && out_json); *out_json = snapshot(m3::encode_document(map->model)); });

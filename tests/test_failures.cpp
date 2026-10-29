@@ -45,15 +45,16 @@ static void output_failures(const char *label, Call call, Free release, bool swe
     throw std::runtime_error(std::string(label) + ": allocation sweep did not reach success");
 }
 
-static void schema_failure_unwinding() {
+template<class T, class Call>
+static void schema_failure_unwinding(const char *label, Call call) {
     // A schema exception destroys a nonempty parsed document while unwinding.
     // The injector must leave cleanup allocations alone, not throw a second
     // exception from the dependency's noexcept destructor.
     constexpr const char *invalid = R"({"schemaVersion":1,"rootId":"r","nodes":[{"id":"r"}],"unknown":[]})";
     for (size_t after = 0; after < 4096; ++after) {
-        M3Mindmap *out = reinterpret_cast<M3Mindmap *>(1);
+        T *out = reinterpret_cast<T *>(1);
         FailAllocations failure(after);
-        const auto status = m3_mindmap_from_json(invalid,&out);
+        const auto status = call(invalid,&out);
         const bool diagnostic = *m3_last_error() != '\0';
         const auto stats = failure.stop();
         CHECK(out == nullptr && diagnostic);
@@ -61,15 +62,16 @@ static void schema_failure_unwinding() {
             CHECK(stats.failures == 1 && status == M3_ERR_OUT_OF_MEMORY);
         } else {
             CHECK(status == M3_ERR_SCHEMA);
-            std::cout << "schema rejection: cleanup survived unwinding\n";
+            std::cout << label << ": cleanup survived unwinding\n";
             return;
         }
     }
-    throw std::runtime_error("Schema rejection sweep did not finish");
+    throw std::runtime_error(std::string(label) + ": schema rejection sweep did not finish");
 }
 
 static void outputs() {
-    schema_failure_unwinding();
+    schema_failure_unwinding<M3Mindmap>("schema rejection", m3_mindmap_from_json);
+    schema_failure_unwinding<char>("image scanner schema rejection", m3_mindmap_collect_image_references);
     const std::string root_id(96,'r'), topic(192,'t');
     output_failures<M3Mindmap>("create", [&](M3Mindmap **out) {
         return m3_mindmap_create(root_id.c_str(),topic.c_str(),out);
@@ -80,6 +82,10 @@ static void outputs() {
     output_failures<M3Mindmap>("import", [&](M3Mindmap **out) {
         return m3_mindmap_from_json(encoded.c_str(),out);
     }, m3_mindmap_destroy);
+    output_failures<char>("image scanner", [&](char **out) {
+        return m3_mindmap_collect_image_references(encoded.c_str(),out);
+    }, m3_string_free);
+    CHECK(encoded == baseline.dump());
     output_failures<char>("export", [&](char **out) {
         return m3_mindmap_to_json(map.get(),out);
     }, m3_string_free);
@@ -115,6 +121,10 @@ static void outputs() {
     output_failures<M3Mindmap>("forest import", [&](M3Mindmap **out) {
         return m3_mindmap_from_json(forest_encoded.c_str(),out);
     }, m3_mindmap_destroy);
+    output_failures<char>("forest image scanner", [&](char **out) {
+        return m3_mindmap_collect_image_references(forest_encoded.c_str(),out);
+    }, m3_string_free);
+    CHECK(forest_encoded == forest_baseline.dump());
     output_failures<char>("forest snapshot", [&](char **out) {
         return m3_mindmap_to_json(forest.get(),out);
     }, m3_string_free);
@@ -125,6 +135,21 @@ static void outputs() {
         return m3_mindmap_to_markdown(forest.get(),out);
     }, m3_string_free, true);
     CHECK(document(forest) == forest_baseline);
+
+    {
+        char *images = reinterpret_cast<char *>(1);
+        FailAllocations exhausted(0, true);
+        const auto status = m3_mindmap_collect_image_references(encoded.c_str(), &images);
+        const bool diagnostic = *m3_last_error() != '\0';
+        m3_string_free(images);
+        const auto stats = exhausted.stop();
+        CHECK(status == M3_ERR_OUT_OF_MEMORY && images == nullptr && diagnostic);
+        CHECK(stats.attempts == 1 && stats.failures == 1);
+        ok(m3_mindmap_collect_image_references(encoded.c_str(), &images));
+        Text recovered(images, m3_string_free);
+        CHECK(recovered && !*m3_last_error());
+        CHECK(Json::parse(recovered.get()) == Json::array({"memory:絵"}));
+    }
 
     M3Mindmap *out = reinterpret_cast<M3Mindmap *>(1);
     FailAllocations exhausted(0, true);

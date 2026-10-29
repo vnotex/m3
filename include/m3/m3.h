@@ -77,6 +77,16 @@ M3_API M3Status m3_mindmap_create(const char *root_id, const char *topic, M3Mind
  * ignored fields. JSON export always uses native schemaVersion 1. Node insertion,
  * node patches and link mutations continue accepting only native records. */
 M3_API M3Status m3_mindmap_from_json(const char *json_utf8, M3Mindmap **out_map);
+/* Collect image URLs from any JSON document accepted by m3_mindmap_from_json.
+ * Returns an owned JSON array of strings in main-tree-then-orphan-tree preorder,
+ * including all descendants regardless of editor visibility. Each present image
+ * contributes one URL, including duplicates and empty strings. URLs are not
+ * fetched, filtered, normalized or decoded beyond JSON string decoding.
+ * Input is borrowed and unchanged; the snapshot survives input release and must
+ * be freed with m3_string_free. Both arguments are required; a supplied output
+ * slot is set to NULL before work, including on failure. Empty/malformed JSON
+ * and invalid schemas retain the importer's status and diagnostic conventions. */
+M3_API M3Status m3_mindmap_collect_image_references(const char *json_utf8, char **out_json);
 M3_API M3Status m3_mindmap_to_json(const M3Mindmap *map, char **out_json);
 /* Lossy nested outline, not native schemaVersion 1 or a full-document export.
  * Each node is {"id":string,"topic":string,"children":[node,...]}.
