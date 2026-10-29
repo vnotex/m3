@@ -535,6 +535,10 @@
         <translation>创建副本</translation>
     </message>
     <message>
+        <source>Open Link</source>
+        <translation>打开链接</translation>
+    </message>
+    <message>
         <source>Copy Link</source>
         <translation>复制链接</translation>
     </message>

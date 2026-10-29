@@ -2937,7 +2937,7 @@ static void image_activation_case() {
     }
 }
 
-static bool imageContextMenu(Editor &editor, const QPoint &point,
+static bool contextMenu(Editor &editor, const QPoint &point,
                              const std::function<void(QMenu &)> &visit) {
     auto &view = graphics(editor);
     CHECK(view.viewport()->rect().contains(point));
@@ -3005,7 +3005,7 @@ static void image_context_menu_case() {
             const QByteArray before = editor.toJson();
             QSignalSpy changes(&editor, &Editor::documentChanged);
             activatedNode.clear();
-            CHECK(imageContextMenu(editor, imagePoint(editor), [&](QMenu &menu) {
+            CHECK(contextMenu(editor, imagePoint(editor), [&](QMenu &menu) {
                 CHECK(menu.actions().size() == 1 && menu.actions().front() == action.data());
                 QTest::mouseClick(&menu, Qt::LeftButton, Qt::NoModifier,
                                   menu.actionGeometry(action).center());
@@ -3026,12 +3026,12 @@ static void image_context_menu_case() {
             copy->trigger();
         };
         QApplication::clipboard()->clear();
-        CHECK(imageContextMenu(editor, imagePoint(editor), fallback));
+        CHECK(contextMenu(editor, imagePoint(editor), fallback));
         CHECK(QApplication::clipboard()->mimeData()->hasFormat(QStringLiteral("application/x-m3-nodes+json")));
         int requested = 0;
         const auto emptyHook = QObject::connect(&editor, &Editor::nodeImageContextMenuRequested, &editor,
             [&](const QString &, QMenu *menu) { ++requested; CHECK(menu->isEmpty()); });
-        CHECK(imageContextMenu(editor, imagePoint(editor), fallback));
+        CHECK(contextMenu(editor, imagePoint(editor), fallback));
         CHECK(requested == 1);
         QObject::disconnect(emptyHook);
         QObject::connect(&editor, &Editor::nodeImageContextMenuRequested, &editor,
@@ -3039,21 +3039,20 @@ static void image_context_menu_case() {
                 ++requested;
                 menu->addAction(QStringLiteral("Unexpected image action"));
             });
-        CHECK(imageContextMenu(editor, labelPoint(editor, topic), fallback));
-        CHECK(imageContextMenu(editor, imageHandlePoint(editor), fallback));
+        CHECK(contextMenu(editor, labelPoint(editor, topic), fallback));
+        CHECK(contextMenu(editor, imageHandlePoint(editor), fallback));
         QApplication::clipboard()->clear();
-        CHECK(imageContextMenu(editor, nodeLinkPoint(editor, topic), [](QMenu &menu) {
-            CHECK(menu.actions().size() == 1);
-            menu.actions().front()->trigger();
+        CHECK(contextMenu(editor, nodeLinkPoint(editor, topic), [](QMenu &menu) {
+            textAction(menu, {QStringLiteral("Copy Link")}).trigger();
         }));
         CHECK(QApplication::clipboard()->text() == QStringLiteral("opaque:anything"));
         QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::ControlModifier,
                           labelPoint(editor, QStringLiteral("Alpha")));
         CHECK(editor.selectedNodeIds().size() == 2);
-        CHECK(imageContextMenu(editor, imagePoint(editor), fallback));
+        CHECK(contextMenu(editor, imagePoint(editor), fallback));
         CHECK(editor.selectNode(root));
         editor.setEnabled(false);
-        imageContextMenu(editor, imagePoint(editor), [](QMenu &) {});
+        contextMenu(editor, imagePoint(editor), [](QMenu &) {});
         CHECK(requested == 1 && editor.toJson() == before);
     }
     for (bool replaceDocument : {false, true}) {
@@ -3076,7 +3075,7 @@ static void image_context_menu_case() {
                 menu->addAction(QStringLiteral("Inspect committed target"), &editor,
                                 [&] { activated = true; });
             });
-        const bool shown = imageContextMenu(editor, imagePoint(editor), [](QMenu &menu) {
+        const bool shown = contextMenu(editor, imagePoint(editor), [](QMenu &menu) {
             menu.actions().front()->trigger();
         });
         CHECK(changed && shown == !replaceDocument && requested == !replaceDocument);
@@ -3100,7 +3099,7 @@ static void image_context_menu_case() {
                 if (replaceDocument) CHECK(editor.loadJson(encoded(imageDocument())));
                 else CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Outline));
             });
-        const bool shown = imageContextMenu(editor, imagePoint(editor), [](QMenu &menu) {
+        const bool shown = contextMenu(editor, imagePoint(editor), [](QMenu &menu) {
             menu.actions().front()->trigger();
         });
         CHECK(shown == !replaceDocument && activated == !replaceDocument && borrowed.isNull());
@@ -3120,7 +3119,7 @@ static void image_context_menu_case() {
                 if (deleteInCallback) editor.reset();
                 else menu->addAction(QStringLiteral("Close editor"), menu, [&] { editor.reset(); });
             });
-        const bool shown = imageContextMenu(*editor, imagePoint(*editor), [](QMenu &menu) {
+        const bool shown = contextMenu(*editor, imagePoint(*editor), [](QMenu &menu) {
             menu.actions().front()->trigger();
         });
         CHECK(requested && shown == !deleteInCallback && alive.isNull() && borrowed.isNull());
@@ -4697,6 +4696,85 @@ static void hyperlinks_case() {
         accessible->setText(QAccessible::Value, value);
         pump();
     };
+    // A URL menu targets the hit node, not the selection, and honors host URL policy.
+    QTemporaryDir linkDirectory;
+    CHECK(linkDirectory.isValid());
+    const QString menuRelativeUrl = QStringLiteral("target%20%231%25.txt");
+    for (bool resolve : {false, true}) {
+        RawLabelConfig config;
+        config.resourceBasePath = linkDirectory.path();
+        config.resolveRelativeUrls = resolve;
+        RawLabelEditor editor(config);
+        prepare(editor);
+        CHECK(editor.updateNode(a, encoded(Json{{"hyperLink", utf8(menuRelativeUrl)}})));
+        CHECK(editor.selectNode(b));
+        for (bool readOnly : {false, true}) {
+            editor.setReadOnly(readOnly);
+            auto &view = graphics(editor);
+            const QPoint point = linkPoint(editor, alpha);
+            const Json before = exported(editor);
+            const QTransform zoom = view.transform();
+            const QPointF center = view.mapToScene(view.viewport()->rect().center());
+            QSignalSpy activated(&editor, &Editor::nodeLinkActivated);
+            QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
+            CHECK(contextMenu(editor, point, [](QMenu &menu) {
+                auto &open = textAction(menu, {QStringLiteral("Open Link")});
+                CHECK(open.isEnabled());
+                QTest::mouseClick(&menu, Qt::LeftButton, Qt::NoModifier, menu.actionGeometry(&open).center());
+            }));
+            const QString expected = resolve
+                ? QUrl::fromLocalFile(linkDirectory.filePath(QStringLiteral("target #1%.txt"))).toString(QUrl::FullyEncoded)
+                : menuRelativeUrl;
+            CHECK(activated.size() == 1 && activated.front().at(0).toString() == a &&
+                  activated.front().at(1).toString() == expected);
+            QApplication::clipboard()->clear();
+            CHECK(contextMenu(editor, point, [](QMenu &menu) {
+                auto &copy = textAction(menu, {QStringLiteral("Copy Link")});
+                QTest::mouseClick(&menu, Qt::LeftButton, Qt::NoModifier, menu.actionGeometry(&copy).center());
+            }));
+            CHECK(QApplication::clipboard()->text() == menuRelativeUrl && activated.size() == 1);
+            CHECK(exported(editor) == before && changed.isEmpty() && selected.isEmpty());
+            CHECK(editor.selectedNodeId() == b && editor.selectedLinkId().isEmpty());
+            CHECK(view.transform() == zoom && view.mapToScene(view.viewport()->rect().center()) == center);
+        }
+    }
+    for (bool replaceDocument : {false, true}) {
+        RawLabelEditor editor;
+        prepare(editor);
+        QSignalSpy activated(&editor, &Editor::nodeLinkActivated);
+        CHECK(contextMenu(editor, linkPoint(editor, alpha), [&](QMenu &menu) {
+            auto &open = textAction(menu, {QStringLiteral("Open Link")});
+            // Even the same IDs and URL in a replacement document cannot revive this menu.
+            if (replaceDocument) CHECK(editor.loadJson(encoded(linkedInput)));
+            else editor.setEnabled(false);
+            open.trigger();
+        }));
+        CHECK(activated.isEmpty());
+    }
+    for (bool destroy : {false, true}) {
+        auto editor = std::make_unique<RawLabelEditor>();
+        prepare(*editor);
+        QPointer<Editor> alive(editor.get());
+        QPointer<QMenu> borrowed;
+        QSignalSpy activated(editor.get(), &Editor::nodeLinkActivated);
+        bool delivered = false;
+        QObject::connect(editor.get(), &Editor::nodeLinkActivated, [&](const QString &id, const QString &url) {
+            CHECK(id == a && url == rawUrl);
+            delivered = true;
+            if (destroy) editor.reset();
+            else CHECK(editor->newDocument(QStringLiteral("Replacement during URL activation")));
+            // Signal arguments must outlive the destroyed QAction's capture storage.
+            CHECK(id == a && url == rawUrl);
+        });
+        CHECK(contextMenu(*editor, linkPoint(*editor, alpha), [&](QMenu &menu) {
+            borrowed = &menu;
+            textAction(menu, {QStringLiteral("Open Link")}).trigger();
+        }));
+        CHECK(delivered && activated.size() == 1 && borrowed.isNull() && alive.isNull() == destroy);
+        CHECK(activated.front().at(0).toString() == a && activated.front().at(1).toString() == rawUrl);
+        if (!destroy) CHECK(record(exported(*editor), "nodes", QStringLiteral("root")).at("topic") ==
+                            "Replacement during URL activation");
+    }
     {
         RawLabelEditor editor;
         prepare(editor, false);

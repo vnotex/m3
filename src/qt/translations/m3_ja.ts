@@ -535,6 +535,10 @@
         <translation>複製</translation>
     </message>
     <message>
+        <source>Open Link</source>
+        <translation>リンクを開く</translation>
+    </message>
+    <message>
         <source>Copy Link</source>
         <translation>リンクをコピー</translation>
     </message>

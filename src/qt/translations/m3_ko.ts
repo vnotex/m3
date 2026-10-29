@@ -535,6 +535,10 @@
         <translation>복제</translation>
     </message>
     <message>
+        <source>Open Link</source>
+        <translation>링크 열기</translation>
+    </message>
+    <message>
         <source>Copy Link</source>
         <translation>링크 복사</translation>
     </message>

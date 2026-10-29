@@ -1890,10 +1890,12 @@ void MindMapView::resetZoom() {
     currentZoomMode = ZoomMode::Custom;
     if (wasFit || !qFuzzyCompare(previous, transform().m11())) emit zoomChanged(transform().m11(), false);
 }
-QString MindMapView::nodeLinkAt(const QPoint &position) const {
+MindMapView::NodeLink MindMapView::nodeLinkAt(const QPoint &position) const {
     if (selectedNodes.size() > 1) return {};
-    if (auto *indicator = dynamic_cast<NodeLinkItem *>(itemAt(position)))
-        return static_cast<NodeItem *>(indicator->parentItem())->hyperlink;
+    if (auto *indicator = dynamic_cast<NodeLinkItem *>(itemAt(position))) {
+        const auto *node = static_cast<NodeItem *>(indicator->parentItem());
+        return {node->id, node->hyperlink};
+    }
     return {};
 }
 QString MindMapView::nodeImageAt(const QPoint &position) const {

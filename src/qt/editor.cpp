@@ -1670,18 +1670,26 @@ public:
         view->setContextMenuPolicy(Qt::CustomContextMenu);
         QObject::connect(view, &QWidget::customContextMenuRequested, editor, [this, zoomIn, zoomOut, resetZoom, fit, fitWidth, helpAction](const QPoint &point) {
             const QPointer<MindMapEditor> guard(host);
-            const QString linkUrl = view->nodeLinkAt(point);
+            const auto nodeLink = view->nodeLinkAt(point);
             const QString imageNodeId = view->nodeImageAt(point);
             const quint64 linkEpoch = formattingEpoch;
             if (!view->finishTopicEdit(true) || !guard) return;
-            if (!linkUrl.isEmpty()) {
+            if (!nodeLink.url.isEmpty()) {
                 if (linkEpoch != formattingEpoch || !host->isEnabled()) return;
-                QMenu menu(host);
-                menu.addAction(tr("Copy Link"), host, [this, linkUrl, linkEpoch] {
+                QPointer<QMenu> menu = new QMenu(host);
+                menu->addAction(tr("Open Link"), host, [this, nodeLink, linkEpoch] {
+                    if (linkEpoch != formattingEpoch || !host->isEnabled()) return;
+                    // The host may destroy this action and editor during activation.
+                    const QString nodeId = nodeLink.nodeId;
+                    const QString url = controller->resolveResourceUrl(nodeLink.url);
+                    emit host->nodeLinkActivated(nodeId, url);
+                });
+                menu->addAction(tr("Copy Link"), host, [this, linkUrl = nodeLink.url, linkEpoch] {
                     if (linkEpoch == formattingEpoch && host->isEnabled())
                         QApplication::clipboard()->setText(linkUrl);
                 });
-                menu.exec(view->viewport()->mapToGlobal(point));
+                menu->exec(view->viewport()->mapToGlobal(point));
+                if (menu) delete menu.data();
                 return;
             }
             if (!imageNodeId.isEmpty()) {
