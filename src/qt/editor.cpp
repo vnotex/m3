@@ -1682,7 +1682,7 @@ public:
                     // The host may destroy this action and editor during activation.
                     const QString nodeId = nodeLink.nodeId;
                     const QString url = controller->resolveResourceUrl(nodeLink.url);
-                    emit host->nodeLinkActivated(nodeId, url);
+                    emit host->nodeLinkActivated(nodeId, url, true);
                 });
                 menu->addAction(tr("Copy Link"), host, [this, linkUrl = nodeLink.url, linkEpoch] {
                     if (linkEpoch == formattingEpoch && host->isEnabled())
@@ -1849,7 +1849,7 @@ public:
         QObject::connect(view, &MindMapView::nodeSelectionToggled, controller, &MindMapController::toggleNodeSelection);
         QObject::connect(view, &MindMapView::nodeLinkActivated, editor, [this, editor](const QString &id, const QString &url) {
             const QString resolved = controller->resolveResourceUrl(url);
-            emit editor->nodeLinkActivated(id, resolved);
+            emit editor->nodeLinkActivated(id, resolved, false);
         });
         QObject::connect(view, &MindMapView::nodeImageActivated, editor, [editor](const QString &id, const QImage &image) {
             if (editor->isEnabled()) emit editor->nodeImageActivated(id, image);

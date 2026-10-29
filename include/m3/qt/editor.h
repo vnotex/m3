@@ -120,7 +120,7 @@ class QRectF;
 // Direct typing still saves immediately; glyph availability depends on host fonts.
 // Empty icons reserve no space. Nonempty URLs
 // show an indicator beside the topic. Activating it emits nodeLinkActivated with
-// the node ID and target: relative paths become absolute file URLs unless
+// the node ID, target and context-menu origin. Relative paths become absolute file URLs unless
 // resolveRelativeUrls is false. The host decides whether and how to open it.
 // Canvas node Copy publishes a native forest (application/x-m3-nodes+json) plus text.
 // It includes hidden descendants, deduplicates overlapping selections in document order,
@@ -511,7 +511,7 @@ signals:
     // Fires for every membership change. For multiple nodes both arguments are
     // empty; query selectedNodeIds() to distinguish a group from no selection.
     void selectionChanged(const QString &nodeId, const QString &linkId);
-    void nodeLinkActivated(const QString &nodeId, const QString &url);
+    void nodeLinkActivated(const QString &nodeId, const QString &url, bool fromContextMenu);
     void nodeImageActivated(const QString &nodeId, const QImage &image);
     // Direct image/placeholder hit after committing an inline draft, including read-only.
     // Connect synchronously on the GUI thread. The initially empty menu is borrowed only

@@ -4726,7 +4726,7 @@ static void hyperlinks_case() {
                 ? QUrl::fromLocalFile(linkDirectory.filePath(QStringLiteral("target #1%.txt"))).toString(QUrl::FullyEncoded)
                 : menuRelativeUrl;
             CHECK(activated.size() == 1 && activated.front().at(0).toString() == a &&
-                  activated.front().at(1).toString() == expected);
+                  activated.front().at(1).toString() == expected && activated.front().at(2).toBool());
             QApplication::clipboard()->clear();
             CHECK(contextMenu(editor, point, [](QMenu &menu) {
                 auto &copy = textAction(menu, {QStringLiteral("Copy Link")});
@@ -4816,6 +4816,7 @@ static void hyperlinks_case() {
         QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
         pump();
         CHECK(activated.size() == 1 && activated.front().at(0).toString() == a && activated.front().at(1).toString() == rawUrl);
+        CHECK(!activated.front().at(2).toBool());
         CHECK(exported(editor) == before && changed.isEmpty() && selected.isEmpty());
         CHECK(editor.selectedNodeId() == b && editor.selectedLinkId().isEmpty() && activeTopicInput(editor) == nullptr);
         CHECK(view.transform() == zoom && view.mapToScene(view.viewport()->rect().center()) == center);
