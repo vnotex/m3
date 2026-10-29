@@ -65,6 +65,7 @@ struct NodePresentation {
     QImage imagePixels;
     bool imageFailed = false;
     NodeStyle style;
+    QPointF textPosition, iconPosition;
     std::unique_ptr<QTextDocument> text, iconText;
 };
 enum class LinkDirection { None, Backward, Forward, Both };

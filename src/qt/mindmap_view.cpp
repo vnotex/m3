@@ -408,13 +408,11 @@ public:
             return item;
         };
         const QColor textColor = node.style.textColor.isValid() ? node.style.textColor : colors.color(QPalette::Text);
-        qreal topicTop = 8;
         if (node.iconText) {
-            topicTop += node.iconText->size().height() + 4;
             if (html) html->icons.emplace();
-            addText(std::move(node.iconText), QPointF(12, 8), textColor, html ? &*html->icons : nullptr);
+            addText(std::move(node.iconText), node.iconPosition, textColor, html ? &*html->icons : nullptr);
         }
-        label = addText(std::move(node.text), QPointF(12, topicTop), textColor, html ? &html->topic : nullptr);
+        label = addText(std::move(node.text), node.textPosition, textColor, html ? &html->topic : nullptr);
         tagRectangles.reserve(node.tags.size());
         if (html) html->tags.reserve(node.tags.size());
         for (auto &tag : node.tags) {
@@ -1506,9 +1504,18 @@ void MindMapView::prepare(NodePresentation &node) const {
     node.iconText = icons.trimmed().isEmpty() ? nullptr : prepareText(icons, textFont, 240);
     const QSizeF textSize = node.text->size();
     const QSizeF iconSize = node.iconText ? node.iconText->size() : QSizeF(0, 0);
+    node.iconPosition = node.textPosition = QPointF(12, 8);
     qreal contentWidth = qMax(textSize.width(), iconSize.width());
-    const qreal topicTop = 8 + (node.iconText ? iconSize.height() + 4 : 0);
-    qreal contentBottom = topicTop + textSize.height();
+    if (node.iconText) {
+        if (node.icons.size() < 4) {
+            node.textPosition.rx() += iconSize.width() + 4;
+            contentWidth = iconSize.width() + 4 + textSize.width();
+        } else {
+            node.textPosition.ry() += iconSize.height() + 4;
+        }
+    }
+    qreal contentBottom = qMax(node.textPosition.y() + textSize.height(),
+                              node.iconPosition.y() + iconSize.height());
     if (!node.tags.empty()) {
         QFont tagFont = font();
         tagFont.setWeight(QFont::Normal);

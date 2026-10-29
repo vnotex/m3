@@ -111,9 +111,10 @@ class QRectF;
 // resize handle: motion previews only; release persists one width/height edit.
 // Escape or interrupted gestures cancel without a semantic change. Loading images
 // never changes the document; hosts supply pixels through the GUI-thread protocol.
-// Tags/icons accept comma-separated entries. Icons display as
-// literal Unicode text above the topic, wrapping within the node; names are not
-// mapped to an icon library. The Icons field opens a searchable, categorized
+// Tags/icons accept comma-separated entries. Icons display as literal Unicode text:
+// one to three entries sit to the left of the topic on the same row; four or more
+// sit above it. Both text blocks wrap within the node; names are not mapped to an
+// icon library. The Icons field opens a searchable, categorized
 // Unicode 15.1 emoji picker on focus; a choice replaces the current entry or a
 // selection within it, never adjacent entries. Ctrl+H/J/K/L moves the picker
 // selection left/down/up/right without editing the input text.

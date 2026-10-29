@@ -13,7 +13,7 @@ A C++17 mind-map library with a public C API and an optional Qt Widgets editor. 
 - **Structured maps:** a main tree and independent orphan trees, ordered node hierarchies, cross-links, notes, hyperlinks, tags, icons and styles.
 - **Portable documents:** native JSON preserves the semantic map. Import also accepts simple nested trees and compatible Mind Elixir documents.
 - **Export:** Markdown and outline JSON projections in the core; standalone HTML with selectable node text and SVG connectors in the Qt editor. These exports are not full-fidelity round-trip formats.
-- **Layout:** balanced, left, right and outline layouts, with collapsed branches retained in the document.
+- **Layout:** balanced, left, right and outline layouts, with collapsed branches retained in the document. Nodes with one to three icon entries place them to the left of the topic on the same row; four or more stay above it, including in visual exports.
 - **Interactive editing:** inline node/link topics, drag-to-link creation, drag-and-drop moving, node properties, configurable shortcuts, zoom and pan.
 
 ## Build the core

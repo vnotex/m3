@@ -8045,10 +8045,6 @@ static void properties_case() {
         CHECK(exported(tagged) == cleared && edits.size() == 1);
         CHECK(tagged.selectedNodeId() == QStringLiteral("r") && tagged.selectedLinkId().isEmpty() && selections.isEmpty());
         CHECK(canvas.transform() == transform && canvas.mapToScene(canvas.viewport()->rect().center()) == center);
-        auto *topicLabel = textItem(tagged, topic);
-        auto *owner = ownerItem(topicLabel);
-        for (auto *item : owner->childItems()) if (auto *text = dynamic_cast<QGraphicsTextItem *>(item))
-            CHECK(text == topicLabel || text->sceneBoundingRect().bottom() <= topicLabel->sceneBoundingRect().top());
         CHECK(topicRect(tagged, topic).size() == topicRect(untagged, topic).size());
         CHECK(topicRect(tagged, topic).height() < taggedSize.height());
     }
