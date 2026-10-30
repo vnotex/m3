@@ -60,6 +60,7 @@ signals:
     void nodePicked(const QString &id);
     void nodeSelectionToggled(const QString &id);
     void nodeLinkActivated(const QString &nodeId, const QString &url);
+    void noteEditRequested(const QString &nodeId);
     void nodeImageActivated(const QString &nodeId, const QImage &image);
     void imageResizeRequested(const QString &nodeId, const QString &url, const QSizeF &originalSize, const QSizeF &size);
     void mimeDataDropped(const QString &nodeId, const QMimeData *source);
@@ -105,6 +106,7 @@ private:
     QPointF panPosition;
     QHash<QString, QString> nodeParents;
     QGraphicsItem *linkCreationHandle = nullptr;
+    QGraphicsItem *noteEditHandle = nullptr;
     QGraphicsItem *linkEndpointHandles[2] = {};
     QString reconnectedLinkId, originalEndpointId;
     QPoint reconnectPressPosition;
@@ -116,6 +118,12 @@ private:
     bool linkCreating = false, suppressLinkContextMenu = false;
     QString pressedLinkNodeId, pressedLinkUrl;
     QPoint linkPressPosition;
+    QString pressedNoteNodeId;
+    QPoint notePressPosition;
+    // A drag-away clears the target but still consumes this gesture through release.
+    bool noteEditPressActive = false;
+    // Document/read-only replacement can occur while the inline draft is committed.
+    quint64 noteEditGeneration = 0;
     QString draggedNodeId, dropTargetId;
     QPoint dragPressPosition;
     bool nodeDragging = false;
@@ -158,6 +166,8 @@ private:
     bool updateImageResize(const QPoint &position);
     void clearNodeLinkPress();
     bool handleNodeLinkEvent(QEvent *event);
+    void clearNoteEditPress();
+    bool handleNoteEditEvent(QEvent *event);
     void clearNodeDrag();
     bool handleNodeDragEvent(QEvent *event);
     bool pick(QMouseEvent *event, bool activate);

@@ -136,6 +136,27 @@ protected:
         } else CHECK(updateNode(id, encoded(Json{{"hyperLink", utf8(url)}})));
     }
 };
+// Mutate the captured target even if the host changes selection while opening its editor.
+class NoteEditor : public RawLabelEditor {
+public:
+    using RawLabelEditor::RawLabelEditor;
+    QStringList targets;
+    QString replacement = QString::fromUtf8("Changed β\nthird line");
+    QString selectDuringEdit;
+    std::function<void()> opening;
+protected:
+    void onEditNote(const QString &id) override {
+        targets.append(id);
+        CHECK(!hasPendingEdit());
+        if (!selectDuringEdit.isEmpty()) CHECK(selectNode(selectDuringEdit));
+        if (opening) {
+            const auto callback = opening;
+            callback();
+            return;
+        }
+        CHECK(updateNode(id, encoded(Json{{"note", utf8(replacement)}})));
+    }
+};
 static Json exported(const Editor &editor) {
     const QByteArray text = editor.toJson();
     CHECK(!text.isEmpty());
@@ -218,6 +239,56 @@ static QGraphicsItem *ownerItem(QGraphicsTextItem *text) {
 }
 static QRectF topicRect(Editor &editor, const QString &topic) {
     return ownerItem(textItem(editor, topic))->sceneBoundingRect();
+}
+static QGraphicsItem *nodeControl(Editor &editor, const QString &topic, bool note) {
+    auto *node = ownerItem(textItem(editor, topic));
+    for (auto *child : node->childItems()) {
+        if (!child->isVisible()) continue;
+        if (note ? child->cursor().shape() == Qt::PointingHandCursor &&
+                       child->toolTip() == QStringLiteral("Edit Note")
+                 : child->cursor().shape() == Qt::CrossCursor) return child;
+    }
+    return nullptr;
+}
+static QPoint nodeControlPoint(Editor &editor, const QString &topic, bool note) {
+    auto &view = graphics(editor);
+    auto *control = nodeControl(editor, topic, note);
+    CHECK(control);
+    const QRectF rect = control->deviceTransform(view.viewportTransform()).mapRect(control->boundingRect());
+    const QPoint point = rect.center().toPoint();
+    CHECK(view.viewport()->rect().contains(rect.toAlignedRect()) && view.itemAt(point) == control);
+    CHECK(!view.viewport()->childAt(point));
+    return point;
+}
+static QPoint linkHandlePoint(Editor &editor, const QString &topic) {
+    return nodeControlPoint(editor, topic, false);
+}
+static QPoint noteHandlePoint(Editor &editor, const QString &topic) {
+    return nodeControlPoint(editor, topic, true);
+}
+static void checkNodeControlRow(Editor &editor, const QString &topic) {
+    auto &view = graphics(editor);
+    auto *node = ownerItem(textItem(editor, topic));
+    auto *link = nodeControl(editor, topic, false);
+    auto *note = nodeControl(editor, topic, true);
+    CHECK(link && note && link != note);
+    const QRectF nodeRect = node->mapRectToScene(node->shape().boundingRect());
+    const QRectF linkRect = link->sceneBoundingRect(), noteRect = note->sceneBoundingRect();
+    CHECK(link->boundingRect() == QRectF(0, -20, 20, 20));
+    CHECK(note->boundingRect() == link->boundingRect());
+    CHECK(!link->flags().testFlag(QGraphicsItem::ItemIgnoresTransformations));
+    CHECK(!note->flags().testFlag(QGraphicsItem::ItemIgnoresTransformations));
+    CHECK(std::abs(noteRect.right() - nodeRect.right()) < 0.001);
+    CHECK(std::abs(nodeRect.top() - noteRect.bottom() - 4) < 0.001);
+    CHECK(std::abs(linkRect.bottom() - noteRect.bottom()) < 0.001);
+    CHECK(std::abs(noteRect.left() - linkRect.right() - 4) < 0.001);
+    CHECK(linkRect.bottom() < nodeRect.top() && noteRect.bottom() < nodeRect.top());
+    for (auto *control : {link, note}) {
+        const QRectF device = control->deviceTransform(view.viewportTransform()).mapRect(control->boundingRect());
+        CHECK(std::abs(device.width() - 20 * editor.zoomFactor()) < 0.001);
+    }
+    linkHandlePoint(editor, topic);
+    noteHandlePoint(editor, topic);
 }
 static QPoint expansionPoint(Editor &editor, const QString &topic) {
     const QRectF rect = topicRect(editor, topic).adjusted(2, 2, -2, -2);
@@ -1185,7 +1256,8 @@ static void releaseImageResize(Editor &editor, QPoint point) {
 static QPoint nodeLinkPoint(Editor &editor, const QString &topic) {
     auto &view = graphics(editor);
     for (auto *child : ownerItem(textItem(editor, topic))->childItems()) {
-        if (!child->isVisible() || child->cursor().shape() != Qt::PointingHandCursor) continue;
+        if (!child->isVisible() || child->cursor().shape() != Qt::PointingHandCursor ||
+            child->toolTip() == QStringLiteral("Edit Note")) continue;
         view.ensureVisible(child);
         pump();
         const QPoint point = view.mapFromScene(child->sceneBoundingRect().center());
@@ -4670,7 +4742,8 @@ static void hyperlinks_case() {
     };
     auto indicator = [](Editor &editor, const QString &topic) -> QGraphicsItem * {
         for (auto *child : ownerItem(textItem(editor, topic))->childItems())
-            if (child->isVisible() && child->cursor().shape() == Qt::PointingHandCursor && !child->toolTip().isEmpty())
+            if (child->isVisible() && child->cursor().shape() == Qt::PointingHandCursor &&
+                !child->toolTip().isEmpty() && child->toolTip() != QStringLiteral("Edit Note"))
                 return child;
         return nullptr;
     };
@@ -7423,6 +7496,37 @@ static void live_properties_case() {
 }
 
 static void properties_case() {
+    {
+        RawLabelEditor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        const QString initial = QString::fromUtf8("Original α\nsecond line");
+        CHECK(editor.updateNode(QStringLiteral("a"), encoded(Json{{"note", utf8(initial)}})));
+        CHECK(editor.updateNode(QStringLiteral("b"), encoded(Json{{"note", ""}})));
+        showEditor(editor);
+        editor.resetZoom();
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        const Json before = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        auto *note = editor.findChild<QPlainTextEdit *>(QStringLiteral("nodeNote"));
+        CHECK(note);
+        QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier,
+                          noteHandlePoint(editor, QStringLiteral("Alpha")));
+        pump();
+        CHECK(note->isVisible() && note->hasFocus() && note->toPlainText() == initial);
+        CHECK(exported(editor) == before && changed.isEmpty());
+        note->selectAll();
+        QTest::keyClicks(note, "Default note edit");
+        CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("note") == "Default note edit");
+        CHECK(record(exported(editor), "nodes", QStringLiteral("b")) == record(before, "nodes", QStringLiteral("b")));
+        CHECK(editor.selectNode(QStringLiteral("b")));
+        editor.collapseNodeProperties();
+        trigger(editor, "editNote");
+        CHECK(note->isVisible() && note->hasFocus() && note->toPlainText().isEmpty());
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        editor.collapseNodeProperties();
+        shortcut(editor, Qt::Key_N);
+        CHECK(note->isVisible() && note->hasFocus() && note->toPlainText() == QStringLiteral("Default note edit"));
+    }
     properties_visibility_case();
     emoji_category_popup_case();
     emoji_productivity_case();
@@ -9247,24 +9351,9 @@ static void inline_tags_case() {
     }
 }
 
-static QPoint linkHandlePoint(Editor &editor, const QString &topic) {
-    auto &view = graphics(editor);
-    auto *node = ownerItem(textItem(editor, topic));
-    const QRectF bounds = node->deviceTransform(view.viewportTransform()).mapRect(node->boundingRect());
-    for (auto *child : node->childItems()) {
-        if (!child->isVisible() || child->cursor().shape() != Qt::CrossCursor) continue;
-        const QRectF rect = child->deviceTransform(view.viewportTransform()).mapRect(child->boundingRect());
-        if (rect.center().x() > bounds.right() && rect.center().y() < bounds.top()) {
-            const QPoint point = rect.center().toPoint();
-            CHECK(view.viewport()->rect().contains(rect.toAlignedRect()) && view.itemAt(point) == child);
-            return point;
-        }
-    }
-    throw std::runtime_error("Missing selected-node link handle");
-}
 static void link_interaction_case() {
     {
-        // The create-link button stays visible at either end of a tall fitted map.
+        // Both controls stay hittable above the first and last nodes of a tall map.
         Json children = Json::array(), nodes = Json::array();
         for (int i = 0; i < 90; ++i) {
             const std::string id = "n" + std::to_string(i);
@@ -9279,11 +9368,23 @@ static void link_interaction_case() {
         CHECK(editor.selectNode(QStringLiteral("r")));
         const Json before = exported(editor);
         editor.fitToContents(); pump();
-        linkHandlePoint(editor, QStringLiteral("Tall root"));
-        CHECK(editor.selectNode(QStringLiteral("n89")));
-        linkHandlePoint(editor, QStringLiteral("Row 89"));
-        CHECK(editor.selectNode(QStringLiteral("r")));
-        linkHandlePoint(editor, QStringLiteral("Tall root"));
+        checkNodeControlRow(editor, QStringLiteral("Tall root"));
+        for (qreal zoom : {qreal(0.5), qreal(1), qreal(1.5)}) {
+            editor.resetZoom(); editor.zoom(zoom);
+            for (const QString &id : {QStringLiteral("n89"), QStringLiteral("n0"), QStringLiteral("r")}) {
+                CHECK(editor.selectNode(id));
+                pump();
+                const QString topic = qs(record(before, "nodes", id).at("topic"));
+                checkNodeControlRow(editor, topic);
+                QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier,
+                                  noteHandlePoint(editor, topic));
+                pump();
+                auto *note = editor.findChild<QPlainTextEdit *>(QStringLiteral("nodeNote"));
+                CHECK(note && note->isVisible() && note->hasFocus() && note->toPlainText().isEmpty());
+                CHECK(editor.selectedNodeId() == id);
+                editor.collapseNodeProperties();
+            }
+        }
         CHECK(exported(editor) == before);
     }
     {
@@ -9410,6 +9511,9 @@ static void link_interaction_case() {
         topicInput(editor).setPlainText(QStringLiteral("Uncommitted"));
         topicKey(editor, Qt::Key_Escape);
         CHECK(record(exported(editor), "crossLinks", id).at("topic") == "" && changed.size() == 1);
+        const Json inserted = exported(editor);
+        CHECK(editor.undo() && exported(editor) == before && !editor.canUndo());
+        CHECK(editor.redo() && exported(editor) == inserted && !editor.canRedo());
     }
     for (bool onSelection : {false, true}) {
         // Hosts may close the editor from either notification during link creation.
@@ -12266,7 +12370,260 @@ static void shortcuts_case() {
     CHECK(exported(editor) == inserted && changed.size() == 8);
 }
 
+static void note_controls_case() {
+    const QString a = QStringLiteral("a"), b = QStringLiteral("b");
+    const QString alpha = QStringLiteral("Alpha"), beta = QStringLiteral("Beta");
+    {
+        NoteEditor editor;
+        CHECK(editor.newDocument(QStringLiteral("I")));
+        showEditor(editor);
+        editor.resetZoom();
+        const QString root = editor.selectedNodeId();
+        for (auto direction : {Editor::LayoutDirection::Left, Editor::LayoutDirection::Right,
+                               Editor::LayoutDirection::Outline}) {
+            CHECK(editor.setLayoutDirection(direction));
+            checkNodeControlRow(editor, QStringLiteral("I"));
+            editor.replacement = QString::number(int(direction));
+            QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier,
+                              noteHandlePoint(editor, QStringLiteral("I")));
+            pump();
+            CHECK(record(exported(editor), "nodes", root).at("note") == utf8(editor.replacement));
+        }
+        CHECK(editor.targets == QStringList({root, root, root}));
+    }
+    for (qreal zoom : {qreal(0.5), qreal(1), qreal(1.5)}) for (int route = 0; route < 3; ++route) {
+        NoteEditor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+        showEditor(editor);
+        editor.resetZoom(); editor.zoom(zoom);
+        CHECK(editor.selectNode(a));
+        checkNodeControlRow(editor, alpha);
+        const Json before = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        editor.selectDuringEdit = b;
+        CHECK(editAction(editor, "editNote").text() == QStringLiteral("Edit Note"));
+        if (route == 0) {
+            auto &view = graphics(editor);
+            const QPoint point = noteHandlePoint(editor, alpha);
+            movePointer(view, point, Qt::NoButton);
+            CHECK(view.viewport()->cursor().shape() == Qt::PointingHandCursor);
+            QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+            CHECK(editor.targets.isEmpty() && changed.isEmpty() && exported(editor) == before);
+            QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+            pump();
+        } else if (route == 1) trigger(editor, "editNote");
+        else shortcut(editor, Qt::Key_N);
+        CHECK(editor.targets == QStringList({a}) && editor.selectedNodeId() == b);
+        CHECK(changed.size() == 1 && !activeTopicInput(editor));
+        Json expected = before;
+        for (auto &node : expected["nodes"]) if (node["id"] == "a") node["note"] = utf8(editor.replacement);
+        CHECK(exported(editor) == expected);
+        CHECK(editor.undo() && exported(editor) == before && !editor.canUndo());
+        CHECK(editor.redo() && exported(editor) == expected && !editor.canRedo());
+    }
+    {
+        // The host override remains usable after its separate properties widget is destroyed.
+        RawLabelConfig config;
+        config.separateNodePropertiesPanel = true;
+        NoteEditor editor(config);
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        delete editor.nodePropertiesPanel();
+        CHECK(!editor.nodePropertiesPanel() && editor.selectNode(a));
+        trigger(editor, "editNote");
+        CHECK(editor.targets == QStringList({a}));
+        CHECK(record(exported(editor), "nodes", a).at("note") == utf8(editor.replacement));
+        editor.replacement = QStringLiteral("Button without properties panel");
+        QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier,
+                          noteHandlePoint(editor, alpha));
+        pump();
+        CHECK(editor.targets == QStringList({a, a}));
+        CHECK(record(exported(editor), "nodes", a).at("note") == utf8(editor.replacement));
+    }
+    for (int gate = 0; gate < 5; ++gate) {
+        NoteEditor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        CHECK(editor.selectNode(a));
+        if (gate == 0) editor.setReadOnly(true);
+        else if (gate == 1) editor.clearSelection();
+        else if (gate == 2) CHECK(editor.selectLink(QStringLiteral("l1")));
+        else if (gate == 3) {
+            QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::ControlModifier,
+                              labelPoint(editor, beta));
+            pump();
+            CHECK(editor.selectedNodeIds().size() == 2);
+        } else editor.setEnabled(false);
+        const Json before = exported(editor);
+        CHECK(!editAction(editor, "editNote").isEnabled());
+        if (gate != 4) {
+            CHECK(!nodeControl(editor, alpha, true) && !nodeControl(editor, alpha, false));
+            CHECK(!nodeControl(editor, beta, true) && !nodeControl(editor, beta, false));
+        }
+        editAction(editor, "editNote").trigger();
+        shortcut(editor, Qt::Key_N);
+        CHECK(editor.targets.isEmpty() && exported(editor) == before);
+    }
+    enum class Cancel { DragAway, AcrossLink, AcrossNode, Escape, Selection, Group, Link, Reload,
+                        ReadOnly, Focus, ViewportFocus, Hide, ViewportHide, Ungrab, ViewportUngrab };
+    for (auto cancel : {Cancel::DragAway, Cancel::AcrossLink, Cancel::AcrossNode, Cancel::Escape,
+                        Cancel::Selection, Cancel::Group, Cancel::Link, Cancel::Reload, Cancel::ReadOnly, Cancel::Focus,
+                        Cancel::ViewportFocus, Cancel::Hide, Cancel::ViewportHide,
+                        Cancel::Ungrab, Cancel::ViewportUngrab}) {
+        NoteEditor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        editor.resetZoom();
+        CHECK(editor.selectNode(a));
+        auto &view = graphics(editor);
+        const QPoint point = noteHandlePoint(editor, alpha);
+        const Json before = exported(editor);
+        const QTransform zoom = view.transform();
+        const QPointF camera = view.mapToScene(view.viewport()->rect().center());
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        if (cancel == Cancel::DragAway || cancel == Cancel::AcrossLink || cancel == Cancel::AcrossNode) {
+            const QPoint away = cancel == Cancel::AcrossLink ? linkHandlePoint(editor, alpha)
+                : cancel == Cancel::AcrossNode ? view.mapFromScene(topicRect(editor, beta).center())
+                : point + QPoint(QApplication::startDragDistance() + 30, -30);
+            movePointer(view, away, Qt::LeftButton);
+            movePointer(view, point, Qt::LeftButton);
+            CHECK(view.mapToScene(view.viewport()->rect().center()) == camera);
+        } else if (cancel == Cancel::Escape) QTest::keyClick(view.viewport(), Qt::Key_Escape);
+        else if (cancel == Cancel::Selection) { CHECK(editor.selectNode(b)); CHECK(editor.selectNode(a)); }
+        else if (cancel == Cancel::Group) {
+            CHECK(editor.selectNode(b));
+            QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ControlModifier, labelPoint(editor, alpha));
+            CHECK(editor.selectedNodeIds().size() == 2);
+            CHECK(editor.selectNode(a));
+        } else if (cancel == Cancel::Link) { CHECK(editor.selectLink(QStringLiteral("l1"))); CHECK(editor.selectNode(a)); }
+        else if (cancel == Cancel::Reload) { CHECK(editor.loadJson(encoded(before))); CHECK(editor.selectNode(a)); }
+        else if (cancel == Cancel::ReadOnly) { editor.setReadOnly(true); editor.setReadOnly(false); }
+        else if (cancel == Cancel::Focus || cancel == Cancel::ViewportFocus) {
+            QFocusEvent event(QEvent::FocusOut, Qt::OtherFocusReason);
+            QCoreApplication::sendEvent(cancel == Cancel::Focus ? static_cast<QWidget *>(&view) : view.viewport(), &event);
+        } else if (cancel == Cancel::Hide) { editor.hide(); showEditor(editor); }
+        else if (cancel == Cancel::ViewportHide) { view.viewport()->hide(); view.viewport()->show(); pump(); }
+        else {
+            QEvent event(QEvent::UngrabMouse);
+            QCoreApplication::sendEvent(cancel == Cancel::Ungrab ? static_cast<QWidget *>(&view) : view.viewport(), &event);
+        }
+        const auto count = changed.size();
+        // Restore the same hit position, so a distance miss cannot disguise stale armed state.
+        view.centerOn(camera);
+        pump();
+        // Reacquire after every possible scene replacement; no scene-item pointers survive it.
+        const QPoint release = noteHandlePoint(editor, alpha);
+        CHECK((release - point).manhattanLength() < QApplication::startDragDistance());
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, release);
+        pump();
+        CHECK(editor.targets.isEmpty() && exported(editor) == before && changed.size() == count);
+        CHECK(editor.selectedNodeId() == a && editor.selectedLinkId().isEmpty());
+        CHECK(view.transform() == zoom && !activeTopicInput(editor));
+        // A cancelled press must not poison the next ordinary click.
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, noteHandlePoint(editor, alpha));
+        pump();
+        CHECK(editor.targets == QStringList({a}));
+        CHECK(record(exported(editor), "nodes", a).at("note") == utf8(editor.replacement));
+    }
+    for (bool buttonRoute : {false, true}) for (bool valid : {false, true}) {
+        NoteEditor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        editor.resetZoom();
+        CHECK(editor.selectNode(a));
+        auto &view = graphics(editor);
+        const QPoint point = noteHandlePoint(editor, alpha);
+        const Json before = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged), errors(&editor, &Editor::errorOccurred);
+        shortcut(editor, Qt::Key_F2);
+        // Same-width replacement keeps release within the button after the committed relayout.
+        const QString draft = valid ? QStringLiteral("Alphb") : QStringLiteral("Bad") + QChar(QChar::Null);
+        topicInput(editor).setPlainText(draft);
+        if (buttonRoute) {
+            QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+            const QPoint release = valid ? noteHandlePoint(editor, draft) : point;
+            QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, release);
+            pump();
+        } else trigger(editor, "editNote");
+        if (valid) {
+            CHECK(editor.targets == QStringList({a}) && changed.size() == 2);
+            CHECK(record(exported(editor), "nodes", a).at("topic") == utf8(draft));
+            CHECK(record(exported(editor), "nodes", a).at("note") == utf8(editor.replacement));
+            CHECK(editor.undo());
+            CHECK(record(exported(editor), "nodes", a).at("topic") == utf8(draft));
+            CHECK(editor.undo() && exported(editor) == before && !editor.canUndo());
+        } else {
+            CHECK(editor.targets.isEmpty() && changed.isEmpty() && !errors.isEmpty());
+            CHECK(exported(editor) == before && editor.hasPendingEdit());
+            CHECK(topicInput(editor).toPlainText() == draft);
+            topicKey(editor, Qt::Key_Escape);
+        }
+    }
+    for (bool buttonRoute : {false, true}) for (int reaction = 0; reaction < 6; ++reaction) {
+        QPointer<NoteEditor> editor = new NoteEditor;
+        CHECK(editor->loadJson(encoded(editorFixture())));
+        showEditor(*editor);
+        editor->resetZoom();
+        CHECK(editor->selectNode(a));
+        const QPoint point = noteHandlePoint(*editor, alpha);
+        const Json before = exported(*editor);
+        shortcut(*editor, Qt::Key_F2);
+        topicInput(*editor).setPlainText(QStringLiteral("Alphb"));
+        int opened = 0;
+        editor->opening = [&] { ++opened; };
+        bool reacted = false;
+        QObject::connect(editor.data(), &Editor::documentChanged, qApp, [&] {
+            if (reacted) return;
+            reacted = true;
+            if (reaction == 0) CHECK(editor->selectNode(b));
+            else if (reaction == 1) { CHECK(editor->loadJson(encoded(before))); CHECK(editor->selectNode(a)); }
+            else if (reaction == 2) editor->setReadOnly(true);
+            else if (reaction == 3) CHECK(editor->removeNode(a));
+            else if (reaction == 4) editor->setEnabled(false);
+            else delete editor.data();
+        });
+        if (buttonRoute) {
+            auto *viewport = graphics(*editor).viewport();
+            QMouseEvent press(QEvent::MouseButtonPress, QPointF(point), QPointF(viewport->mapToGlobal(point)),
+                              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(viewport, &press);
+            if (editor) QTest::mouseRelease(graphics(*editor).viewport(), Qt::LeftButton, Qt::NoModifier, point);
+            pump();
+        } else trigger(*editor, "editNote");
+        CHECK(reacted && opened == 0);
+        if (reaction == 5) CHECK(editor.isNull());
+        else {
+            CHECK(editor->targets.isEmpty());
+            if (reaction != 3)
+                CHECK(record(exported(*editor), "nodes", a).value("note", std::string()) ==
+                      record(before, "nodes", a).value("note", std::string()));
+        }
+        delete editor.data();
+    }
+    for (bool buttonRoute : {false, true}) {
+        QPointer<NoteEditor> editor = new NoteEditor;
+        CHECK(editor->loadJson(encoded(editorFixture())));
+        showEditor(*editor);
+        CHECK(editor->selectNode(a));
+        int opened = 0;
+        editor->opening = [&] { ++opened; delete editor.data(); };
+        if (buttonRoute) {
+            auto *viewport = graphics(*editor).viewport();
+            const QPoint point = noteHandlePoint(*editor, alpha);
+            QTest::mousePress(viewport, Qt::LeftButton, Qt::NoModifier, point);
+            QMouseEvent release(QEvent::MouseButtonRelease, QPointF(point), QPointF(viewport->mapToGlobal(point)),
+                                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(viewport, &release);
+        } else trigger(*editor, "editNote");
+        CHECK(editor.isNull() && opened == 1);
+        pump();
+    }
+}
+
 static void controls_case() {
+    note_controls_case();
     for (const bool readOnly : {false, true}) {
         RawLabelConfig config;
         config.separateNodePropertiesPanel = true;
@@ -13912,7 +14269,8 @@ static void multi_selection_case() {
         auto &view = graphics(editor);
         auto urlPoint = [&] {
             for (auto *child : ownerItem(textItem(editor, alpha))->childItems())
-                if (child->isVisible() && child->cursor().shape() == Qt::PointingHandCursor)
+                if (child->isVisible() && child->cursor().shape() == Qt::PointingHandCursor &&
+                    child->toolTip() != QStringLiteral("Edit Note"))
                     return view.mapFromScene(child->sceneBoundingRect().center());
             throw std::runtime_error("Missing URL indicator");
         };

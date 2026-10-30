@@ -507,7 +507,7 @@
     </message>
     <message>
         <location line="+1"/>
-        <source>Edit note</source>
+        <source>Edit Note</source>
         <translation>编辑备注</translation>
     </message>
     <message>

@@ -529,10 +529,18 @@ signals:
     // during this call. Hosts own their actions and file/export policy.
     void backgroundContextMenuRequested(QMenu *menu);
 protected:
-    // Created once on first panel access/show or Edit Note, not in this constructor.
+    // Created once on first panel access/show or the default Edit Note hook, not in this constructor.
     // Return a new non-null input parented to parent; do not reenter editor APIs.
     // The panel owns its text, editability and lifetime. Default: QPlainTextEdit.
     virtual QPlainTextEdit *createNoteEditor(QWidget *parent);
+    // Shared route for the selected node's Edit Note button and editNote action (N).
+    // Called synchronously on the GUI thread after accepting any inline topic draft,
+    // only for the enabled editor's singular selected writable node. nodeId is the
+    // captured target; hosts retaining it must revalidate document/target lifetime.
+    // Default: initialize/focus the properties Note field, or do nothing if its
+    // panel was destroyed. Overrides own presentation and resulting node updates;
+    // createNoteEditor() still customizes only the separate properties Note field.
+    virtual void onEditNote(const QString &nodeId);
     // Native node clipboard data is handled internally before these resource hooks.
     // Pure, cheap eligibility query: no IO, decoding, dialogs or document changes.
     // The default accepts one absolute local-file URL for Drop, never Clipboard.

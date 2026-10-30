@@ -507,7 +507,7 @@
     </message>
     <message>
         <location line="+1"/>
-        <source>Edit note</source>
+        <source>Edit Note</source>
         <translation>ノートを編集</translation>
     </message>
     <message>

@@ -1334,6 +1334,7 @@ public:
             }
             const bool boundTarget = result == boldAction || result == italicAction ||
                 result->objectName() == QStringLiteral("resetStyle") ||
+                result->objectName() == QStringLiteral("editNote") ||
                 result->objectName() == QStringLiteral("paste");
             const FormattingBinding binding = formattingBinding();
             const bool committed = view->finishTopicEdit(true);
@@ -1398,7 +1399,8 @@ public:
         addSibling->setEnabled(writable && node); addSiblingBefore->setEnabled(writable && node);
         for (auto *action : nodeNavigation) action->setEnabled(node);
         for (auto *action : nodeEditingActions) {
-            const bool panelAvailable = properties || action->objectName() == QStringLiteral("editTopic");
+            const bool panelAvailable = properties || action->objectName() == QStringLiteral("editTopic") ||
+                action->objectName() == QStringLiteral("editNote");
             action->setEnabled(node && panelAvailable && (writable || action == toggleProperties) &&
                 (action != toggleProperties || !config.separateNodePropertiesPanel));
         }
@@ -1655,7 +1657,10 @@ public:
             action("fillColor", tr("Fill color"), config.shortcuts.fillColor, [this] { if (properties) properties->activate(NodePropertiesPanel::Action::FillColor); }),
             action("editTags", tr("Edit tags"), config.shortcuts.editTags, [this] { if (properties) properties->activate(NodePropertiesPanel::Action::Tags); }),
             action("editIcons", tr("Edit icons"), config.shortcuts.editIcons, [this] { if (properties) properties->activate(NodePropertiesPanel::Action::Icons); }),
-            action("editNote", tr("Edit note"), config.shortcuts.editNote, [this] { if (properties) properties->activate(NodePropertiesPanel::Action::Note); }),
+            action("editNote", tr("Edit Note"), config.shortcuts.editNote, [this] {
+                const QString id = controller->selectedNodeId();
+                if (canFormat()) host->onEditNote(id);
+            }),
             toggleProperties = action("toggleProperties", tr("Toggle properties panel"),
                 config.separateNodePropertiesPanel ? QList<QKeySequence>{} : config.shortcuts.toggleProperties,
                 [this] { if (properties) properties->activate(NodePropertiesPanel::Action::ToggleProperties); }),
@@ -1859,6 +1864,9 @@ public:
         QObject::connect(QApplication::clipboard(), &QClipboard::dataChanged, editor, [this] { updateActions(); });
         QObject::connect(view, &MindMapView::nodePicked, controller, &MindMapController::selectNode);
         QObject::connect(view, &MindMapView::nodeSelectionToggled, controller, &MindMapController::toggleNodeSelection);
+        QObject::connect(view, &MindMapView::noteEditRequested, editor, [this](const QString &id) {
+            if (canFormat() && controller->selectedNodeId() == id) host->onEditNote(id);
+        });
         QObject::connect(view, &MindMapView::nodeLinkActivated, editor, [this, editor](const QString &id, const QString &url) {
             const QString resolved = controller->resolveResourceUrl(url);
             emit editor->nodeLinkActivated(id, resolved, false);
@@ -1993,6 +2001,13 @@ void MindMapEditor::insertFromMimeData(const QString &nodeId, const QMimeData *s
     updateNode(nodeId, QJsonDocument(patch).toJson(QJsonDocument::Compact));
 }
 QPlainTextEdit *MindMapEditor::createNoteEditor(QWidget *parent) { return new QPlainTextEdit(parent); }
+void MindMapEditor::onEditNote(const QString &nodeId) {
+    if (!d->canFormat() || d->controller->selectedNodeId() != nodeId || !d->properties) return;
+    const QPointer<MindMapEditor> guard(this);
+    const auto node = d->controller->nodeProperties(nodeId);
+    if (guard && node.id == nodeId && d->canFormat() && d->controller->selectedNodeId() == nodeId && d->properties)
+        d->properties->activate(NodePropertiesPanel::Action::Note);
+}
 void MindMapEditor::onAddUrl(const QString &) {}
 void MindMapEditor::onAddImage(const QString &) {}
 bool MindMapEditor::newDocument(const QString &topic) {
