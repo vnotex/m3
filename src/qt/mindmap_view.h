@@ -105,6 +105,9 @@ private:
     void fit(ZoomMode mode);
     QPointF panPosition;
     QHash<QString, QString> nodeParents;
+    // Scene-owned top-level controls share the endpoint-handle layer, above every node.
+    // Their non-owning node pointer is current-scene-only and cleared with both handles.
+    QGraphicsItem *nodeControlNode = nullptr;
     QGraphicsItem *linkCreationHandle = nullptr;
     QGraphicsItem *noteEditHandle = nullptr;
     QGraphicsItem *linkEndpointHandles[2] = {};
@@ -149,6 +152,8 @@ private:
     static QGraphicsTextItem *findTopicLabel(QGraphicsScene *scene, const QString &id, TopicKind kind);
     void beginTopicEdit(TopicKind kind, const QString &id, const QList<QKeySequence> &acceptShortcuts);
     void updateTopicEditorGeometry();
+    void clearNodeControls();
+    QGraphicsItem *nodeControlOwner(const QGraphicsItem *handle) const;
     void clearLinkCreation();
     bool handleLinkCreationEvent(QEvent *event);
     void updateLinkCreation(const QPoint &position);

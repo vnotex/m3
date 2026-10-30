@@ -242,11 +242,12 @@ static QRectF topicRect(Editor &editor, const QString &topic) {
 }
 static QGraphicsItem *nodeControl(Editor &editor, const QString &topic, bool note) {
     auto *node = ownerItem(textItem(editor, topic));
-    for (auto *child : node->childItems()) {
-        if (!child->isVisible()) continue;
-        if (note ? child->cursor().shape() == Qt::PointingHandCursor &&
-                       child->toolTip() == QStringLiteral("Edit Note")
-                 : child->cursor().shape() == Qt::CrossCursor) return child;
+    if (!node->isSelected() || editor.selectedNodeIds().size() != 1) return nullptr;
+    for (auto *item : graphics(editor).scene()->items()) {
+        if (item->parentItem() || !item->isVisible()) continue;
+        if (note ? item->cursor().shape() == Qt::PointingHandCursor &&
+                       item->toolTip() == QStringLiteral("Edit Note")
+                 : item->cursor().shape() == Qt::CrossCursor) return item;
     }
     return nullptr;
 }
@@ -284,6 +285,8 @@ static void checkNodeControlRow(Editor &editor, const QString &topic) {
     CHECK(std::abs(noteRect.left() - linkRect.right() - 4) < 0.001);
     CHECK(linkRect.bottom() < nodeRect.top() && noteRect.bottom() < nodeRect.top());
     for (auto *control : {link, note}) {
+        CHECK(!control->parentItem() && control->scene() == node->scene());
+        CHECK(control->zValue() == 3 && node->zValue() == 2);
         const QRectF device = control->deviceTransform(view.viewportTransform()).mapRect(control->boundingRect());
         CHECK(std::abs(device.width() - 20 * editor.zoomFactor()) < 0.001);
     }
@@ -1256,8 +1259,7 @@ static void releaseImageResize(Editor &editor, QPoint point) {
 static QPoint nodeLinkPoint(Editor &editor, const QString &topic) {
     auto &view = graphics(editor);
     for (auto *child : ownerItem(textItem(editor, topic))->childItems()) {
-        if (!child->isVisible() || child->cursor().shape() != Qt::PointingHandCursor ||
-            child->toolTip() == QStringLiteral("Edit Note")) continue;
+        if (!child->isVisible() || child->cursor().shape() != Qt::PointingHandCursor) continue;
         view.ensureVisible(child);
         pump();
         const QPoint point = view.mapFromScene(child->sceneBoundingRect().center());
@@ -4743,7 +4745,7 @@ static void hyperlinks_case() {
     auto indicator = [](Editor &editor, const QString &topic) -> QGraphicsItem * {
         for (auto *child : ownerItem(textItem(editor, topic))->childItems())
             if (child->isVisible() && child->cursor().shape() == Qt::PointingHandCursor &&
-                !child->toolTip().isEmpty() && child->toolTip() != QStringLiteral("Edit Note"))
+                !child->toolTip().isEmpty())
                 return child;
         return nullptr;
     };
@@ -5765,6 +5767,10 @@ static void properties_visibility_case() {
         for (auto *child : node->childItems()) {
             if (child->isVisible())
                 bounds = bounds.united(child->deviceTransform(view.viewportTransform()).mapRect(child->boundingRect()));
+        }
+        for (bool note : {false, true}) {
+            if (auto *control = nodeControl(editor, topic, note))
+                bounds = bounds.united(control->deviceTransform(view.viewportTransform()).mapRect(control->boundingRect()));
         }
         return bounds;
     };
@@ -11657,6 +11663,10 @@ static void node_shortcuts_case() {
                 if (child->isVisible())
                     envelope = envelope.united(child->deviceTransform(view.viewportTransform()).mapRect(child->boundingRect()));
             }
+            for (bool note : {false, true}) {
+                if (auto *control = nodeControl(editor, QStringLiteral("Alpha"), note))
+                    envelope = envelope.united(control->deviceTransform(view.viewportTransform()).mapRect(control->boundingRect()));
+            }
             const bool occluded = envelope.intersects(expandedPanel);
             QTest::keyClick(view.viewport(), Qt::Key_P); pump();
             CHECK(toggle->isChecked() == expanded && scroll->isVisible() == expanded && view.hasFocus());
@@ -12373,6 +12383,106 @@ static void shortcuts_case() {
 static void note_controls_case() {
     const QString a = QStringLiteral("a"), b = QStringLiteral("b");
     const QString alpha = QStringLiteral("Alpha"), beta = QStringLiteral("Beta");
+    for (qreal zoom : {qreal(0.5), qreal(1), qreal(1.5)}) for (bool coverLabels : {false, true}) {
+        Json children = Json::array(), nodes = Json::array();
+        for (int i = 1; i <= 8; ++i) {
+            const std::string id = "n" + std::to_string(i);
+            children.push_back(id);
+            nodes.push_back(Json{{"id", id}, {"topic", "Node " + std::to_string(i)},
+                                 {"style", {{"background", "#e74c3c"}}}});
+        }
+        nodes.push_back(Json{{"id", "r"}, {"topic", "Root"}, {"children", children}});
+        NoteEditor editor;
+        CHECK(editor.loadJson(encoded(Json{{"schemaVersion", 1}, {"rootId", "r"}, {"nodes", nodes}})));
+        showEditor(editor);
+        editor.resetZoom(); editor.zoom(zoom);
+        const QString source = QStringLiteral("n5"), topic = QStringLiteral("Node 5");
+        CHECK(editor.selectNode(source));
+        auto &view = graphics(editor);
+        auto overlapControls = [&] {
+            movePointer(view, blankPoint(view), Qt::NoButton);
+            auto *node = ownerItem(textItem(editor, topic));
+            auto *upperLabel = textItem(editor, QStringLiteral("Node 6"));
+            auto *upper = ownerItem(upperLabel);
+            auto *link = nodeControl(editor, topic, false), *note = nodeControl(editor, topic, true);
+            CHECK(link && note && upper->zValue() == node->zValue());
+            const QRectF row = link->sceneBoundingRect().united(note->sceneBoundingRect());
+            // Balanced left-side order puts the later-painted Node 6 above Node 5.
+            // Its real body overlaps the controls with the ordinary 20-unit gap.
+            // Also cover the whole row with its real label to exercise opaque content.
+            if (coverLabels) upper->setPos(upper->pos() + row.center() - upperLabel->sceneBoundingRect().center());
+            CHECK(upper->sceneBoundingRect().bottom() < node->sceneBoundingRect().bottom());
+            const QImage painted = paintScene(editor, row);
+            upper->hide();
+            const QImage isolated = paintScene(editor, row);
+            upper->show();
+            link->hide(); note->hide();
+            const QImage covered = paintScene(editor, row);
+            link->show(); note->show();
+            QList<QPoint> points;
+            for (auto *control : {link, note}) {
+                const QRectF rectangle = control->sceneBoundingRect();
+                const QRectF overlap = rectangle.intersected(upper->mapRectToScene(upper->shape().boundingRect()));
+                CHECK(!overlap.isEmpty());
+                if (coverLabels) CHECK(upperLabel->sceneBoundingRect().intersects(rectangle));
+                QPainterPath interior;
+                interior.addEllipse(rectangle.adjusted(2, 2, -2, -2));
+                int visiblePixels = 0, differentPixels = 0;
+                for (int y = 0; y < painted.height(); ++y) for (int x = 0; x < painted.width(); ++x) {
+                    const QPointF point(row.left() + (x + 0.5) * row.width() / painted.width(),
+                                        row.top() + (y + 0.5) * row.height() / painted.height());
+                    if (!interior.contains(point) || !upper->shape().contains(upper->mapFromScene(point))) continue;
+                    CHECK(painted.pixel(x, y) == isolated.pixel(x, y));
+                    ++visiblePixels;
+                    differentPixels += painted.pixel(x, y) != covered.pixel(x, y);
+                }
+                CHECK(visiblePixels >= 8 && differentPixels >= 8);
+                const QPoint hit = view.mapFromScene(overlap.center());
+                CHECK(view.viewport()->rect().contains(hit) && view.itemAt(hit) == control);
+                points.append(hit);
+            }
+            checkNodeControlRow(editor, topic);
+            return points;
+        };
+        const Json before = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        // Modified/right presses still resolve top-level controls to their node,
+        // never the underlying Node 6, empty canvas, or an unrelated selection.
+        for (int index : {0, 1}) {
+            auto points = overlapControls();
+            QTest::mouseClick(view.viewport(), Qt::RightButton, Qt::NoModifier, points[index]);
+            CHECK(editor.selectedNodeId() == source && editor.targets.isEmpty());
+            points = overlapControls();
+            QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ControlModifier, points[index]);
+            pump();
+            CHECK(editor.selectedNodeIds().isEmpty() && editor.targets.isEmpty());
+            CHECK(editor.selectNode(source));
+        }
+        CHECK(exported(editor) == before && changed.isEmpty());
+        editor.selectDuringEdit = QStringLiteral("n7");
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, overlapControls()[1]);
+        pump();
+        Json edited = before;
+        for (auto &node : edited["nodes"]) if (node["id"] == "n5") node["note"] = utf8(editor.replacement);
+        CHECK(editor.targets == QStringList({source}) && editor.selectedNodeId() == QStringLiteral("n7"));
+        CHECK(exported(editor) == edited && changed.size() == 1);
+        CHECK(editor.selectNode(source));
+        const QPoint target = labelPoint(editor, QStringLiteral("Node 1"));
+        const QPoint handle = overlapControls()[0];
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, handle);
+        movePointer(view, target, Qt::LeftButton);
+        CHECK(exported(editor) == edited && changed.size() == 1);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, target);
+        pump();
+        const QString linkId = editor.selectedLinkId();
+        CHECK(!linkId.isEmpty() && changed.size() == 2);
+        const Json linked = exported(editor), link = record(linked, "crossLinks", linkId);
+        CHECK(link.at("source") == "n5" && link.at("target") == "n1");
+        CHECK(linked.at("nodes") == edited.at("nodes") && editor.targets == QStringList({source}));
+        topicKey(editor, Qt::Key_Escape);
+        CHECK(editor.undo() && exported(editor) == edited);
+        CHECK(editor.undo() && exported(editor) == before && !editor.canUndo());
+    }
     {
         NoteEditor editor;
         CHECK(editor.newDocument(QStringLiteral("I")));
@@ -14269,8 +14379,7 @@ static void multi_selection_case() {
         auto &view = graphics(editor);
         auto urlPoint = [&] {
             for (auto *child : ownerItem(textItem(editor, alpha))->childItems())
-                if (child->isVisible() && child->cursor().shape() == Qt::PointingHandCursor &&
-                    child->toolTip() != QStringLiteral("Edit Note"))
+                if (child->isVisible() && child->cursor().shape() == Qt::PointingHandCursor)
                     return view.mapFromScene(child->sceneBoundingRect().center());
             throw std::runtime_error("Missing URL indicator");
         };

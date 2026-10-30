@@ -134,8 +134,8 @@ private:
 };
 class LinkCreationHandle final : public QGraphicsItem {
 public:
-    LinkCreationHandle(const QPalette &palette, QGraphicsItem *parent)
-        : QGraphicsItem(parent), colors(palette) {
+    explicit LinkCreationHandle(const QPalette &palette) : colors(palette) {
+        setZValue(3);
         setAcceptedMouseButtons(Qt::NoButton);
         setAcceptHoverEvents(true);
         setCursor(Qt::CrossCursor);
@@ -185,8 +185,8 @@ private:
 };
 class NoteEditHandle final : public QGraphicsItem {
 public:
-    NoteEditHandle(const QPalette &palette, QGraphicsItem *parent)
-        : QGraphicsItem(parent), colors(palette) {
+    explicit NoteEditHandle(const QPalette &palette) : colors(palette) {
+        setZValue(3);
         setAcceptedMouseButtons(Qt::NoButton);
         setAcceptHoverEvents(true);
         setCursor(Qt::PointingHandCursor);
@@ -952,6 +952,7 @@ void MindMapView::applyStyleFont() {
     setFont(effective);
 }
 MindMapView::~MindMapView() {
+    clearNodeControls();
     clearNoteEditPress();
     clearImageResize();
     qApp->removeEventFilter(this);
@@ -1135,10 +1136,7 @@ void MindMapView::setReadOnly(bool value) {
     setAcceptDrops(!value);
     clearLinkEndpointHandles();
     clearLinkCreation();
-    delete linkCreationHandle;
-    linkCreationHandle = nullptr;
-    delete noteEditHandle;
-    noteEditHandle = nullptr;
+    clearNodeControls();
     clearImageResize();
     clearNodeLinkPress();
     clearNoteEditPress();
@@ -1669,10 +1667,7 @@ void MindMapView::install(Presentation presentation, bool resetCamera) {
     clearNodeDrag();
     clearLinkEndpointHandles();
     clearLinkCreation();
-    delete linkCreationHandle;
-    linkCreationHandle = nullptr;
-    delete noteEditHandle;
-    noteEditHandle = nullptr;
+    clearNodeControls();
     clearImageResize();
     clearNodeLinkPress();
     clearNoteEditPress();
@@ -1753,10 +1748,7 @@ void MindMapView::showError(const QString &message) {
     panning = Qt::NoButton;
     clearLinkEndpointHandles();
     clearLinkCreation();
-    delete linkCreationHandle;
-    linkCreationHandle = nullptr;
-    delete noteEditHandle;
-    noteEditHandle = nullptr;
+    clearNodeControls();
     clearImageResize();
     clearNodeLinkPress();
     clearNoteEditPress();
@@ -1772,6 +1764,18 @@ void MindMapView::showError(const QString &message) {
     setScene(replacement);
     delete old;
     fitContents();
+}
+void MindMapView::clearNodeControls() {
+    delete linkCreationHandle;
+    linkCreationHandle = nullptr;
+    delete noteEditHandle;
+    noteEditHandle = nullptr;
+    nodeControlNode = nullptr;
+}
+QGraphicsItem *MindMapView::nodeControlOwner(const QGraphicsItem *handle) const {
+    if (!handle || (handle != linkCreationHandle && handle != noteEditHandle) ||
+        handle->scene() != scene() || !nodeControlNode || nodeControlNode->scene() != scene()) return nullptr;
+    return nodeControlNode;
 }
 void MindMapView::setSelection(const QStringList &nodes, const QString &link) {
     const QString selectedLink = link;
@@ -1789,16 +1793,9 @@ void MindMapView::setSelection(const QStringList &nodes, const QString &link) {
         finishTopicEdit(false);
         if (!guard) return;
     }
-    if (linkCreationHandle && (readOnly || selectedNode.isEmpty() || !selectedLink.isEmpty() ||
-        static_cast<NodeItem *>(linkCreationHandle->parentItem())->id != selectedNode)) {
-        delete linkCreationHandle;
-        linkCreationHandle = nullptr;
-    }
-    if (noteEditHandle && (readOnly || selectedNode.isEmpty() || !selectedLink.isEmpty() ||
-        static_cast<NodeItem *>(noteEditHandle->parentItem())->id != selectedNode)) {
-        delete noteEditHandle;
-        noteEditHandle = nullptr;
-    }
+    if (nodeControlNode && (readOnly || selectedNode.isEmpty() || !selectedLink.isEmpty() ||
+        nodeControlNode->scene() != scene() || static_cast<NodeItem *>(nodeControlNode)->id != selectedNode))
+        clearNodeControls();
     LinkItem *selectedLinkItem = nullptr;
     for (auto *item : scene()->items()) {
         if (auto *n = dynamic_cast<NodeItem *>(item)) {
@@ -1809,15 +1806,18 @@ void MindMapView::setSelection(const QStringList &nodes, const QString &link) {
             if (n->imageItem && n->imageItem->handle)
                 n->imageItem->handle->setVisible(!readOnly && selected && selectedNodes.size() == 1);
             if (!readOnly && selected && selectedNodes.size() == 1) {
+                nodeControlNode = n;
                 const QPointF anchor = n->rect.topRight();
                 if (!linkCreationHandle) {
-                    linkCreationHandle = new LinkCreationHandle(palette(), n);
-                    linkCreationHandle->setPos(anchor + QPointF(-2 * nodeControlSize - nodeControlGap, -nodeControlGap));
+                    linkCreationHandle = new LinkCreationHandle(palette());
+                    scene()->addItem(linkCreationHandle);
                 }
                 if (!noteEditHandle) {
-                    noteEditHandle = new NoteEditHandle(palette(), n);
-                    noteEditHandle->setPos(anchor + QPointF(-nodeControlSize, -nodeControlGap));
+                    noteEditHandle = new NoteEditHandle(palette());
+                    scene()->addItem(noteEditHandle);
                 }
+                linkCreationHandle->setPos(n->mapToScene(anchor + QPointF(-2 * nodeControlSize - nodeControlGap, -nodeControlGap)));
+                noteEditHandle->setPos(n->mapToScene(anchor + QPointF(-nodeControlSize, -nodeControlGap)));
             }
         } else if (auto *l = dynamic_cast<LinkItem *>(item)) {
             l->setSelected(l->id == selectedLink);
@@ -1838,7 +1838,7 @@ void MindMapView::ensureNodeVisible(const QString &id, const QRect &occlusion) {
             const QRectF nodeBounds = node->sceneBoundingRect();
             QRectF bounds = nodeBounds;
             for (auto *handle : {linkCreationHandle, noteEditHandle}) {
-                if (!handle || handle->parentItem() != node) continue;
+                if (nodeControlOwner(handle) != node) continue;
                 const QRect deviceBounds = handle->deviceTransform(viewportTransform())
                     .mapRect(handle->boundingRect()).toAlignedRect();
                 bounds = bounds.united(mapToScene(deviceBounds).boundingRect());
@@ -1865,7 +1865,7 @@ void MindMapView::ensureNodeVisible(const QString &id, const QRect &occlusion) {
             const QRectF mappedNode = viewportTransform().mapRect(nodeBounds);
             QRectF envelope = mappedNode;
             for (auto *handle : {linkCreationHandle, noteEditHandle}) {
-                if (!handle || handle->parentItem() != node) continue;
+                if (nodeControlOwner(handle) != node) continue;
                 envelope = envelope.united(handle->deviceTransform(viewportTransform())
                     .mapRect(handle->boundingRect()));
             }
@@ -2036,6 +2036,7 @@ QString MindMapView::nodeImageAt(const QPoint &position) const {
 }
 QGraphicsItem *MindMapView::targetAt(const QPoint &position) const {
     for (auto *item = itemAt(position); item; item = item->parentItem()) {
+        if (auto *node = nodeControlOwner(item)) return node;
         if (auto *handle = dynamic_cast<LinkEndpointHandle *>(item)) return handle->link;
         if (dynamic_cast<NodeItem *>(item) || dynamic_cast<LinkItem *>(item)) return item;
     }
@@ -2229,8 +2230,8 @@ void MindMapView::mousePressEvent(QMouseEvent *event) {
         QString source;
         {
             if (auto *handle = dynamic_cast<LinkCreationHandle *>(itemAt(event->pos()))) {
-                auto *node = static_cast<NodeItem *>(handle->parentItem());
-                if (node->isSelected() && node->isVisible()) source = node->id;
+                auto *node = static_cast<NodeItem *>(nodeControlOwner(handle));
+                if (node && node->isSelected() && node->isVisible()) source = node->id;
             }
         }
         if (!source.isEmpty()) {
@@ -2241,16 +2242,13 @@ void MindMapView::mousePressEvent(QMouseEvent *event) {
             setFocus(Qt::MouseFocusReason);
             if (!guard) return;
             // Draft commit may rebuild the scene; reacquire the selected source by ID.
-            for (auto *item : scene()->items()) {
-                auto *node = dynamic_cast<NodeItem *>(item);
-                if (!node || node->id != source || !node->isSelected() || !node->isVisible() ||
-                    !linkCreationHandle || linkCreationHandle->parentItem() != node || !linkCreationHandle->isVisible()) continue;
+            if (auto *node = static_cast<NodeItem *>(nodeControlOwner(linkCreationHandle));
+                node && node->id == source && node->isSelected() && node->isVisible() && linkCreationHandle->isVisible()) {
                 linkSourceId = source;
                 linkCreationPressPosition = position;
                 linkPreviewStart = node->mapToScene(node->rect.topRight());
                 linkPreviewEnd = mapToScene(position);
                 linkCreating = false;
-                break;
             }
             updatePanCursor(position);
             return;
@@ -2310,9 +2308,9 @@ void MindMapView::mousePressEvent(QMouseEvent *event) {
         QString id;
         {
             if (auto *handle = dynamic_cast<NoteEditHandle *>(itemAt(event->pos()))) {
-                auto *node = static_cast<NodeItem *>(handle->parentItem());
+                auto *node = static_cast<NodeItem *>(nodeControlOwner(handle));
                 if (isEnabled() && !readOnly && selectedNodes.size() == 1 &&
-                    node->isSelected() && node->isVisible()) id = node->id;
+                    node && node->isSelected() && node->isVisible()) id = node->id;
             }
         }
         if (!id.isEmpty()) {
@@ -2326,8 +2324,8 @@ void MindMapView::mousePressEvent(QMouseEvent *event) {
             // The commit may replace every item; only the captured identity survives it.
             if (isEnabled() && !readOnly && selectedNodes.size() == 1 && selectedNodes.contains(id) &&
                 noteEditHandle && noteEditHandle->isVisible()) {
-                auto *node = static_cast<NodeItem *>(noteEditHandle->parentItem());
-                if (node->id == id && node->isSelected() && node->isVisible()) {
+                auto *node = static_cast<NodeItem *>(nodeControlOwner(noteEditHandle));
+                if (node && node->id == id && node->isSelected() && node->isVisible()) {
                     pressedNoteNodeId = id;
                     notePressPosition = position;
                     noteEditPressActive = true;
@@ -2408,10 +2406,12 @@ void MindMapView::mouseMoveEvent(QMouseEvent *event) {
     }
     if (noteEditPressActive) {
         const QPoint position = event->pos();
+        const auto *node = static_cast<NodeItem *>(nodeControlOwner(noteEditHandle));
         if (!event->buttons().testFlag(Qt::LeftButton)) clearNoteEditPress();
         else if (!pressedNoteNodeId.isEmpty() && (!viewport()->rect().contains(position) ||
                  (position - notePressPosition).manhattanLength() >= QApplication::startDragDistance() ||
-                 !noteEditHandle || itemAt(position) != noteEditHandle))
+                 !node || node->id != pressedNoteNodeId || !node->isSelected() || !node->isVisible() ||
+                 itemAt(position) != noteEditHandle))
             pressedNoteNodeId.clear();
         updatePanCursor(position);
         event->accept();
@@ -2480,13 +2480,9 @@ void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
         const QString source = linkSourceId;
         QString target;
         if (linkCreating) {
-            for (auto *item : scene()->items()) {
-                if (auto *node = dynamic_cast<NodeItem *>(item);
-                    node && node->id == source && node->isSelected() && node->isVisible()) {
-                    target = linkTargetAt(event->pos(), linkSourceId);
-                    break;
-                }
-            }
+            if (auto *node = static_cast<NodeItem *>(nodeControlOwner(linkCreationHandle));
+                node && node->id == source && node->isSelected() && node->isVisible())
+                target = linkTargetAt(event->pos(), linkSourceId);
         }
         clearLinkCreation();
         // No preview state or scene pointers survive the synchronous mutation.
@@ -2521,8 +2517,8 @@ void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
             (position - notePressPosition).manhattanLength() < QApplication::startDragDistance()) {
             if (auto *handle = dynamic_cast<NoteEditHandle *>(itemAt(position));
                 handle && handle == noteEditHandle && handle->isVisible()) {
-                auto *node = static_cast<NodeItem *>(handle->parentItem());
-                activate = node->id == id && node->isSelected() && node->isVisible();
+                auto *node = static_cast<NodeItem *>(nodeControlOwner(handle));
+                activate = node && node->id == id && node->isSelected() && node->isVisible();
             }
         }
         clearNoteEditPress();
