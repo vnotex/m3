@@ -35,6 +35,7 @@ public:
     bool undo();
     bool redo();
     bool isRestoringHistory() const { return restoringHistory; }
+    quint64 revision() const { return documentRevision; }
     QByteArray toJson();
     QByteArray nodeJson(const QString &id);
     QString selectedText();

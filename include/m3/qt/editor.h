@@ -442,6 +442,10 @@ public:
     // explicitly or New/Open resets them; edits retain folds for surviving IDs.
     // Available read-only; invalid IDs leave the selection unchanged.
     bool revealNode(const QString &id);
+    // In a shown/enabled editor, commit any inline draft, reveal/select the node,
+    // center it at the current zoom and focus the canvas. Works read-only and
+    // never emits nodeClicked. Replacement/deletion during reveal cancels remaining focus.
+    bool focusNode(const QString &id);
     // One match per node/link topic: node preorder, then links in ID order.
     // Repeated calls wrap; a changed query starts first/last by direction.
     // Incremental calls retain the previous matching target or choose the first.

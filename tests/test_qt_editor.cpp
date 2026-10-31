@@ -8539,6 +8539,77 @@ static void focus_root_case() {
     CHECK(exported(editor) == expected);
 }
 
+static void focus_node_case() {
+    RawLabelEditor editor;
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+    showEditor(editor);
+    editor.zoom(1.35);
+    const QString topic = QStringLiteral("Far focused descendant");
+    const QString target = editor.addNode(QStringLiteral("a"), topic);
+    CHECK(!target.isEmpty());
+    CHECK(editor.selectNode(QStringLiteral("a")));
+    shortcut(editor, Qt::Key_F2);
+    topicInput(editor).setPlainText(QStringLiteral("Draft accepted by focusNode"));
+    CHECK(editor.focusNode(target));
+    CHECK(activeTopicInput(editor) == nullptr);
+    CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("topic") ==
+        "Draft accepted by focusNode");
+    CHECK(editor.setExpanded(QStringLiteral("a"), false));
+    editor.setReadOnly(true);
+    auto &view = graphics(editor);
+    view.clearFocus();
+    const QTransform zoom = view.transform();
+    const Json baseline = exported(editor);
+    QSignalSpy changes(&editor, &Editor::documentChanged), clicks(&editor, &Editor::nodeClicked);
+    const auto centered = [&] {
+        const QRect bounds = view.mapFromScene(topicRect(editor, topic)).boundingRect();
+        return QLineF(bounds.center(), view.viewport()->rect().center()).length() <= 2.0 &&
+            view.viewport()->rect().contains(bounds.adjusted(1, 1, -1, -1));
+    };
+    CHECK(editor.focusNode(target));
+    pump();
+    CHECK(editor.selectedNodeId() == target && centered() && view.hasFocus());
+    const QSize before = view.viewport()->size();
+    editor.resize(700, 480);
+    pump();
+    CHECK(view.viewport()->width() < before.width());
+    CHECK(centered() && view.transform() == zoom && view.hasFocus());
+    CHECK(exported(editor) == baseline && changes.isEmpty() && clicks.isEmpty());
+    CHECK(!editor.focusNode(QStringLiteral("missing")));
+    CHECK(editor.selectedNodeId() == target && exported(editor) == baseline);
+    editor.hide();
+    CHECK(!editor.focusNode(QStringLiteral("r")));
+    CHECK(editor.selectedNodeId() == target);
+
+    RawLabelEditor replacement;
+    CHECK(replacement.loadJson(encoded(editorFixture())));
+    showEditor(replacement);
+    bool replaced = false;
+    QObject::connect(&replacement, &Editor::selectionChanged, &replacement,
+        [&](const QString &id, const QString &) {
+            if (id != QStringLiteral("a") || replaced) return;
+            replaced = true;
+            CHECK(replacement.loadJson(QByteArrayLiteral(
+                R"({"schemaVersion":1,"rootId":"a","nodes":[{"id":"a","topic":"Replacement root"}]})")));
+            graphics(replacement).clearFocus();
+        });
+    CHECK(!replacement.focusNode(QStringLiteral("a")));
+    CHECK(replaced && replacement.selectedNodeId() == QStringLiteral("a"));
+    CHECK(!graphics(replacement).hasFocus());
+    CHECK(exported(replacement).at("nodes").at(0).at("topic") == "Replacement root");
+
+    auto doomed = std::make_unique<RawLabelEditor>();
+    CHECK(doomed->loadJson(encoded(editorFixture())));
+    showEditor(*doomed);
+    QObject::connect(doomed.get(), &Editor::selectionChanged, doomed.get(),
+        [&](const QString &id, const QString &) {
+            if (id == QStringLiteral("a")) doomed.reset();
+        });
+    CHECK(!doomed->focusNode(QStringLiteral("a")));
+    CHECK(!doomed);
+}
+
 static void shift_scroll_case() {
     const Json input{{"schemaVersion", 1}, {"rootId", "r"},
                      {"nodes", Json::array({{{"id", "r"}, {"topic", "Root"}, {"children", {"a"}}},
@@ -9273,6 +9344,7 @@ static void navigation_case() {
     zoom_modes_case();
     shift_scroll_case();
     focus_root_case();
+    focus_node_case();
     empty_space_panning_case();
     Json input = editorFixture();
     for (int i = 0; i < 10; ++i) {

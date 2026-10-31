@@ -2077,6 +2077,21 @@ bool MindMapEditor::updateLink(const QString &id, const QString &source, const Q
 bool MindMapEditor::removeLink(const QString &id) { return d->controller->removeLink(id); }
 QVector<OutlineEntry> MindMapEditor::outline() const { return d->controller->outline(); }
 bool MindMapEditor::revealNode(const QString &id) { return d->controller->revealNode(id); }
+bool MindMapEditor::focusNode(const QString &id) {
+    const QPointer<MindMapEditor> guard(this);
+    if (!isVisible() || !isEnabled() || !commitActiveEdit() || !guard) return false;
+    const auto revision = d->controller->revision();
+    const bool revealed = d->controller->revealNode(id);
+    const auto current = [&] {
+        return guard && isVisible() && isEnabled() && d->controller->revision() == revision &&
+            d->controller->selectedNodeId() == id;
+    };
+    if (!revealed || !current()) return false;
+    d->view->centerNode(id);
+    if (!current()) return false;
+    d->view->setFocus(Qt::OtherFocusReason);
+    return true;
+}
 FindResult MindMapEditor::findText(const QString &text, Qt::CaseSensitivity sensitivity, bool backward, bool incremental) {
     return d->controller->findText(text, sensitivity, backward, incremental);
 }

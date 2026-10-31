@@ -90,6 +90,13 @@ folding, dragging, decorations and other controls do not emit it. A hidden/disab
 or interrupted gesture is cancelled. The synchronous GUI-thread receiver may replace the
 document or destroy the editor; navigation/file policy remains the host's responsibility.
 
+`focusNode(nodeId)` accepts any inline draft, then reveals/selects and centers the requested
+node in a shown, enabled editor at its current zoom and gives the canvas keyboard focus.
+It works read-only, opens collapsed ancestors and does not emit `nodeClicked`. Unlike the
+minimal scrolling of `revealNode()`, centering preserves the focused node through later host
+resizes. Document replacement or editor destruction during reveal cancels the remaining focus;
+`focusRoot()` retains its existing root-only behavior.
+
 Right-click empty canvas and choose **Add Orphan Node** to start an independent tree. Add children normally, or use **Detach Subtree** on an attached node to make its whole branch independent. Drag an orphan root onto a node, or use **Move**, to reattach it. All trees support folding, properties, cross-links, undo/redo and save/reopen. Layout arranges the trees independently in a vertical stack; **Focus Main Node** still targets the main tree. Only that main root is protected from moving or deletion.
 
 Automatic section numbering is enabled by default. Main and orphan roots remain unnumbered;
