@@ -289,6 +289,10 @@ public:
     // Lowering a positive limit discards excess undo/redo states; 0 is unlimited.
     void setUndoLimit(int limit);
     void setConfirmSubtreeDeletion(bool enabled);
+    // Automatic branch palette for hosts constructing native JSON snapshots.
+    // Nonempty; excludes manual-only colors. Returned strings are #RRGGBB values.
+    // Does not require a widget or modify any document; palette order is not an API contract.
+    static QStringList automaticBranchColors();
     // Affects future direct children of any tree root only, never existing colors.
     void setAutoRandomBranchColor(bool enabled);
     // Borrowed command action by stable, case-sensitive name; null for empty/missing.

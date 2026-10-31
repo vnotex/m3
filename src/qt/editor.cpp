@@ -55,6 +55,7 @@
 #include <QWindow>
 #include <QWidgetAction>
 #include <algorithm>
+#include <iterator>
 #include <optional>
 
 static void initializeM3Resources() {
@@ -1986,6 +1987,16 @@ void MindMapEditor::setUndoLimit(int limit) {
     d->controller->setUndoLimit(d->config.undoLimit);
 }
 void MindMapEditor::setConfirmSubtreeDeletion(bool enabled) { d->config.confirmSubtreeDeletion = enabled; }
+QStringList MindMapEditor::automaticBranchColors() {
+    static const QStringList colors = [] {
+        QStringList result;
+        result.reserve(std::size(nodeColors));
+        for (const auto &entry : nodeColors)
+            if (entry.automaticBranch) result.append(QString::fromLatin1(entry.hex));
+        return result;
+    }();
+    return colors;
+}
 void MindMapEditor::setAutoRandomBranchColor(bool enabled) {
     d->config.autoRandomBranchColor = enabled;
     d->controller->setAutoRandomBranchColor(enabled);

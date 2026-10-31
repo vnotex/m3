@@ -120,6 +120,12 @@ at least 3:1 contrast against the opaque canvas; if the theme's original foregro
 below that threshold, it is kept without further dimming. Explicit branch colors still override
 node outlines and tree connectors; selection highlights remain unchanged. HTML exports use the same strokes.
 
+`MindMapEditor::automaticBranchColors()` returns the automatic branch palette (hex strings,
+excluding manual-only colors) without constructing a widget. Hosts generating complete native
+JSON snapshots can assign these to root children's `style.branchColor`; descendants inherit.
+`loadJson()` still preserves supplied colors and never recolors imported documents. The normal
+`autoRandomBranchColor` setting applies only to newly created branches, not loaded snapshots.
+
 Tag outlines use a fixed 40% of the palette's text color over the tag's base background,
 including the text color's alpha, without the node-stroke contrast adjustment. Tag text
 and fill remain theme-derived even on custom-colored nodes. Native and exported maps match.
