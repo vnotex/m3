@@ -517,6 +517,11 @@ signals:
     // Fires for every membership change. For multiple nodes both arguments are
     // empty; query selectedNodeIds() to distinguish a group from no selection.
     void selectionChanged(const QString &nodeId, const QString &linkId);
+    // Completed unmodified primary-button click on a node body/topic, on release.
+    // Includes read-only and already-selected nodes, and plain clicks collapsing a group.
+    // Never emitted by APIs, keyboard navigation, loading, dragging, or fold/link/note/image/icon/tag controls.
+    // Synchronous: receivers may replace the document or destroy the editor.
+    void nodeClicked(const QString &nodeId);
     void nodeLinkActivated(const QString &nodeId, const QString &url, bool fromContextMenu);
     void nodeImageActivated(const QString &nodeId, const QImage &image);
     // Direct image/placeholder hit after committing an inline draft, including read-only.

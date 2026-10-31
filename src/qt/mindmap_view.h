@@ -59,6 +59,7 @@ signals:
     void topicEditingChanged(bool editing);
     void nodePicked(const QString &id);
     void nodeSelectionToggled(const QString &id);
+    void nodeClicked(const QString &nodeId);
     void nodeLinkActivated(const QString &nodeId, const QString &url);
     void noteEditRequested(const QString &nodeId);
     void nodeImageActivated(const QString &nodeId, const QImage &image);
@@ -125,8 +126,10 @@ private:
     QPoint notePressPosition;
     // A drag-away clears the target but still consumes this gesture through release.
     bool noteEditPressActive = false;
-    // Document/read-only replacement can occur while the inline draft is committed.
-    quint64 noteEditGeneration = 0;
+    // Document/policy replacement and interrupted gestures invalidate pending activation.
+    quint64 gestureGeneration = 0;
+    QString pressedNodeId;
+    QPoint nodePressPosition;
     QString draggedNodeId, dropTargetId;
     QPoint dragPressPosition;
     bool nodeDragging = false;
@@ -173,6 +176,11 @@ private:
     bool handleNodeLinkEvent(QEvent *event);
     void clearNoteEditPress();
     bool handleNoteEditEvent(QEvent *event);
+    QString nodeBodyAt(const QPoint &position) const;
+    void beginNodeClickPress(const QString &id, QMouseEvent *event, quint64 generation);
+    void clearNodeClickPress();
+    void handleNodeClickEvent(QEvent *event);
+    QString takeNodeClick(QMouseEvent *event);
     void clearNodeDrag();
     bool handleNodeDragEvent(QEvent *event);
     bool pick(QMouseEvent *event, bool activate);

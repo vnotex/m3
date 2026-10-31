@@ -4500,6 +4500,331 @@ static void node_drag_case() {
     }
 }
 
+static void node_click_case() {
+    const QString r = QStringLiteral("r"), a = QStringLiteral("a"), b = QStringLiteral("b");
+    const QString root = QStringLiteral("Click root"), alpha = QStringLiteral("Alpha"), beta = QStringLiteral("Beta");
+    Json input = editorFixture();
+    setTopic(input, "r", root);
+    const QByteArray bytes = encoded(input);
+    auto prepare = [&](Editor &editor, bool readOnly = false) {
+        CHECK(editor.loadJson(bytes));
+        CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+        editor.setReadOnly(readOnly);
+        showEditor(editor);
+        assertFit(editor);
+    };
+    auto release = [](Editor &editor, const QPoint &point, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+        QTest::mouseRelease(graphics(editor).viewport(), Qt::LeftButton, modifiers, point);
+        pump();
+    };
+    auto group = [&](Editor &editor) {
+        CHECK(editor.selectNode(a));
+        QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::ControlModifier, labelPoint(editor, beta));
+        CHECK(editor.selectedNodeIds().size() == 2);
+    };
+    for (bool readOnly : {false, true}) {
+        RawLabelEditor editor;
+        QSignalSpy clicked(&editor, &Editor::nodeClicked);
+        CHECK(clicked.isValid());
+        prepare(editor, readOnly);
+        CHECK(editor.selectNode(a));
+        CHECK(editor.revealNode(b));
+        CHECK(editor.selectLink(QStringLiteral("l1")));
+        CHECK(editor.focusRoot());
+        shortcut(editor, Qt::Key_Right);
+        shortcut(editor, Qt::Key_Home);
+        editor.clearSelection();
+        CHECK(clicked.isEmpty());
+        const Json original = exported(editor);
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        for (const QString &id : {r, a}) {
+            const QString topic = id == r ? root : alpha;
+            const QPoint point = labelPoint(editor, topic);
+            const int count = clicked.size();
+            QTest::mousePress(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, point);
+            CHECK(clicked.size() == count && editor.selectedNodeId() == id);
+            release(editor, point);
+            CHECK(clicked.size() == count + 1 && clicked.back().front().toString() == id);
+            QSignalSpy selected(&editor, &Editor::selectionChanged);
+            clickLabel(editor, topic);
+            CHECK(clicked.size() == count + 2 && clicked.back().front().toString() == id && selected.isEmpty());
+
+            // Painted body padding is an activation surface, not just the text item.
+            auto &view = graphics(editor);
+            auto *owner = ownerItem(textItem(editor, topic));
+            const QRect area = view.mapFromScene(owner->sceneBoundingRect()).boundingRect();
+            QPoint body;
+            bool found = false;
+            for (int y = area.top(); y <= area.bottom() && !found; ++y)
+                for (int x = area.left(); x <= area.right(); ++x) {
+                    const QPoint candidate(x, y);
+                    if (view.viewport()->rect().contains(candidate) && view.itemAt(candidate) == owner) {
+                        body = candidate;
+                        found = true;
+                        break;
+                    }
+                }
+            CHECK(found);
+            QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, body);
+            CHECK(clicked.size() == count + 3 && clicked.back().front().toString() == id);
+        }
+        clicked.clear();
+        group(editor);
+        CHECK(clicked.isEmpty());
+        const QPoint collapse = labelPoint(editor, alpha);
+        QTest::mousePress(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, collapse);
+        CHECK(editor.selectedNodeId() == a && clicked.isEmpty());
+        release(editor, collapse);
+        CHECK(clicked.size() == 1 && clicked.front().front().toString() == a);
+        clicked.clear();
+        for (auto modifiers : {Qt::ShiftModifier, Qt::ControlModifier, Qt::AltModifier, Qt::MetaModifier}) {
+            CHECK(editor.selectNode(a));
+            QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, modifiers, labelPoint(editor, alpha));
+            CHECK(clicked.isEmpty());
+        }
+        for (auto button : {Qt::RightButton, Qt::MiddleButton}) {
+            CHECK(editor.selectNode(a));
+            QTest::mouseClick(graphics(editor).viewport(), button, Qt::NoModifier, labelPoint(editor, beta));
+            CHECK(clicked.isEmpty());
+        }
+        for (const QString &topic : {root, alpha}) {
+            const QPoint point = labelPoint(editor, topic);
+            QTest::mousePress(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, point);
+            movePointer(graphics(editor), point + QPoint(QApplication::startDragDistance(), 0), Qt::LeftButton);
+            movePointer(graphics(editor), point, Qt::LeftButton);
+            release(editor, point);
+            CHECK(clicked.isEmpty()); // Crossing the threshold is irreversible, including the immovable root.
+        }
+        group(editor);
+        const QPoint fold = expansionPoint(editor, alpha);
+        QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, fold);
+        CHECK(editor.selectedNodeId() == a && !texts(editor, QStringLiteral("Delta")).isEmpty());
+        CHECK(clicked.isEmpty()); // Group collapse on a control is not body activation or folding.
+        QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, fold);
+        CHECK(texts(editor, QStringLiteral("Delta")).isEmpty() && clicked.isEmpty());
+        QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, fold);
+        CHECK(!texts(editor, QStringLiteral("Delta")).isEmpty() && clicked.isEmpty());
+        clickLabel(editor, QStringLiteral("Related"));
+        CHECK(editor.selectedLinkId() == QStringLiteral("l1") && clicked.isEmpty());
+        QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, blankPoint(graphics(editor)));
+        CHECK(clicked.isEmpty() && exported(editor) == original && changed.isEmpty());
+    }
+    {
+        RawLabelEditor editor;
+        prepare(editor);
+        QSignalSpy clicked(&editor, &Editor::nodeClicked), changed(&editor, &Editor::documentChanged);
+        const QPoint from = labelPoint(editor, alpha), to = labelPoint(editor, beta);
+        QTest::mousePress(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, from);
+        movePointer(graphics(editor), to, Qt::LeftButton);
+        release(editor, to);
+        CHECK(clicked.isEmpty() && changed.size() == 1);
+        CHECK(record(exported(editor), "nodes", b).at("children").back() == "a");
+        CHECK(editor.selectedNodeId() == a);
+    }
+    for (bool readOnly : {false, true}) {
+        NoteEditor editor;
+        Json decorated = imageDocument();
+        const QString topic = QStringLiteral("Image root"), icon = QString::fromUtf8("★");
+        for (auto &node : decorated.at("nodes")) if (node.at("id") == "r") {
+            node["icons"] = Json::array({utf8(icon)});
+            node["hyperLink"] = "opaque:node-click";
+        }
+        QSignalSpy images(&editor, &Editor::imageRequested);
+        CHECK(editor.loadJson(encoded(decorated)));
+        CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+        editor.setReadOnly(readOnly);
+        showEditor(editor, QSize(1200, 900));
+        assertFit(editor);
+        CHECK(editor.selectNode(r));
+        QSignalSpy clicked(&editor, &Editor::nodeClicked), linked(&editor, &Editor::nodeLinkActivated);
+        const Json before = exported(editor);
+        auto &view = graphics(editor);
+        for (const QString &decoration : {icon, QStringLiteral("one"), QStringLiteral("two")}) {
+            clickLabel(editor, decoration);
+            CHECK(clicked.isEmpty() && editor.selectedNodeId() == r);
+        }
+        // Include the painted tag padding, which hits its parent node rather than its text item.
+        const QRectF tag = textItem(editor, QStringLiteral("one"))->sceneBoundingRect();
+        const QPoint padding = view.mapFromScene(QPointF(tag.left() - 3, tag.center().y()));
+        CHECK(view.itemAt(padding) == ownerItem(textItem(editor, topic)));
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, padding);
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier,
+                          view.mapFromScene(nodeImageRect(editor).center()));
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, nodeLinkPoint(editor, topic));
+        CHECK(clicked.isEmpty() && linked.size() == 1 && linked.front().front().toString() == r);
+        CHECK(exported(editor) == before);
+        // Placeholders are clickable but have no resize handle; exercise loaded pixels separately.
+        CHECK(QTest::qWaitFor([&] { return images.size() == 1; }, 5000));
+        editor.provideImage(images.front()[0].toString(), images.front()[1].toULongLong(), imagePixels());
+        CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, QStringLiteral("memory:picture")); }, 5000));
+        assertFit(editor);
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier,
+                          view.mapFromScene(nodeImageRect(editor).center()));
+        CHECK(clicked.isEmpty() && editor.selectedNodeId() == r && exported(editor) == before);
+        if (!readOnly) {
+            QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, imageHandlePoint(editor));
+            CHECK(clicked.isEmpty() && exported(editor) == before);
+            QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, linkHandlePoint(editor, topic));
+            CHECK(clicked.isEmpty() && exported(editor) == before);
+            QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, noteHandlePoint(editor, topic));
+            CHECK(clicked.isEmpty() && editor.targets == QStringList{r});
+            CHECK(record(exported(editor), "nodes", r).at("note") == utf8(editor.replacement));
+            CHECK(editor.selectLink(QStringLiteral("l1")));
+            int handles = 0;
+            for (auto *item : view.scene()->items()) {
+                if (item->parentItem() || !item->isVisible() || item->cursor().shape() != Qt::OpenHandCursor) continue;
+                const QPoint point = item->deviceTransform(view.viewportTransform()).map(item->boundingRect().center()).toPoint();
+                CHECK(view.itemAt(point) == item);
+                QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+                ++handles;
+            }
+            CHECK(handles == 2 && clicked.isEmpty());
+        }
+    }
+    enum class Cancel { Escape, FocusView, FocusViewport, Ungrab, Hide, Disable, DisableViewport,
+                        ReadOnly, Replace, New, Presentation, Selection, NoButtons, Modifier,
+                        SecondaryButton, Deactivate, Resize, Wheel, Outside, OtherNode, Fold };
+    for (bool readOnly : {false, true}) for (const QString &id : {r, a})
+        for (auto cancel : {Cancel::Escape, Cancel::FocusView, Cancel::FocusViewport, Cancel::Ungrab,
+                            Cancel::Hide, Cancel::Disable, Cancel::DisableViewport, Cancel::ReadOnly,
+                            Cancel::Replace, Cancel::New, Cancel::Presentation, Cancel::Selection,
+                            Cancel::NoButtons, Cancel::Modifier, Cancel::SecondaryButton, Cancel::Deactivate,
+                            Cancel::Resize, Cancel::Wheel, Cancel::Outside, Cancel::OtherNode, Cancel::Fold}) {
+            RawLabelEditor editor;
+            prepare(editor, readOnly);
+            auto &view = graphics(editor);
+            const QString topic = id == r ? root : alpha;
+            QPoint point = labelPoint(editor, topic);
+            QSignalSpy clicked(&editor, &Editor::nodeClicked);
+            QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+            CHECK(clicked.isEmpty() && editor.selectedNodeId() == id);
+            switch (cancel) {
+            case Cancel::Escape: QTest::keyClick(view.viewport(), Qt::Key_Escape); break;
+            case Cancel::FocusView:
+            case Cancel::FocusViewport: {
+                QFocusEvent event(QEvent::FocusOut, Qt::OtherFocusReason);
+                QCoreApplication::sendEvent(cancel == Cancel::FocusView ? &view : view.viewport(), &event);
+                break;
+            }
+            case Cancel::Ungrab: {
+                QEvent event(QEvent::UngrabMouse);
+                QCoreApplication::sendEvent(view.viewport(), &event);
+                break;
+            }
+            case Cancel::Hide: editor.hide(); showEditor(editor); break;
+            case Cancel::Disable: editor.setEnabled(false); editor.setEnabled(true); break;
+            case Cancel::DisableViewport: view.viewport()->setEnabled(false); view.viewport()->setEnabled(true); break;
+            case Cancel::ReadOnly: editor.setReadOnly(!readOnly); editor.setReadOnly(readOnly); break;
+            case Cancel::Replace:
+                CHECK(editor.loadJson(bytes));
+                CHECK(editor.selectNode(id)); // Same IDs and selection must not revive the old gesture.
+                point = labelPoint(editor, topic);
+                break;
+            case Cancel::New:
+                CHECK(editor.newDocument(topic));
+                point = labelPoint(editor, topic);
+                break;
+            case Cancel::Presentation:
+                CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Left));
+                point = labelPoint(editor, topic);
+                break;
+            case Cancel::Selection: CHECK(editor.selectNode(b)); CHECK(editor.selectNode(id)); break;
+            case Cancel::NoButtons: movePointer(view, point, Qt::NoButton); break;
+            case Cancel::Modifier: QTest::keyClick(view.viewport(), Qt::Key_Control); break;
+            case Cancel::SecondaryButton:
+                QTest::mousePress(view.viewport(), Qt::RightButton, Qt::NoModifier, point);
+                QTest::mouseRelease(view.viewport(), Qt::RightButton, Qt::NoModifier, point);
+                break;
+            case Cancel::Deactivate: {
+                QEvent event(QEvent::WindowDeactivate);
+                QCoreApplication::sendEvent(&view, &event);
+                break;
+            }
+            case Cancel::Resize: editor.resize(editor.width() + 20, editor.height() + 20); pump(); break;
+            case Cancel::Wheel: wheel(view, point, 120, Qt::ControlModifier); break;
+            case Cancel::Outside: point = QPoint(-10, -10); break;
+            case Cancel::OtherNode: point = labelPoint(editor, beta); break;
+            case Cancel::Fold: CHECK(editor.setExpanded(r, false)); CHECK(editor.setExpanded(r, true)); break;
+            }
+            const Json retained = exported(editor);
+            release(editor, point);
+            CHECK(clicked.isEmpty() && exported(editor) == retained);
+        }
+    for (bool replace : {false, true}) {
+        RawLabelEditor editor;
+        prepare(editor);
+        CHECK(editor.selectNode(a));
+        shortcut(editor, Qt::Key_F2);
+        topicInput(editor).setPlainText(QStringLiteral("ALPHA"));
+        const QPoint point = labelPoint(editor, beta);
+        bool committed = false;
+        QObject::connect(&editor, &Editor::documentChanged, &editor, [&] {
+            if (committed) return;
+            committed = true;
+            if (replace) { CHECK(editor.loadJson(bytes)); CHECK(editor.selectNode(b)); }
+        });
+        QSignalSpy clicked(&editor, &Editor::nodeClicked);
+        QTest::mousePress(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        CHECK(committed && clicked.isEmpty());
+        release(editor, labelPoint(editor, beta));
+        CHECK(clicked.size() == (replace ? 0 : 1));
+        if (!replace) CHECK(clicked.front().front().toString() == b);
+    }
+    for (bool readOnly : {false, true}) for (const QString &id : {r, a}) for (bool destroy : {false, true}) {
+        QPointer<Editor> editor = new RawLabelEditor;
+        prepare(*editor, readOnly);
+        const QString topic = id == r ? root : alpha;
+        const QPoint point = labelPoint(*editor, topic);
+        int delivered = 0;
+        QObject::connect(editor.data(), &Editor::nodeClicked, qApp, [&](const QString &clickedId) {
+            CHECK(clickedId == id && editor->selectedNodeId() == id);
+            ++delivered;
+            if (destroy) delete editor.data();
+            else { CHECK(editor->loadJson(bytes)); CHECK(editor->selectNode(id)); }
+            CHECK(clickedId == id); // The signal argument outlives both the scene and editor.
+        });
+        QTest::mousePress(graphics(*editor).viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        CHECK(delivered == 0);
+        QTest::mouseRelease(graphics(*editor).viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        CHECK(delivered == 1 && bool(editor) != destroy);
+        pump();
+        if (editor) {
+            release(*editor, labelPoint(*editor, topic));
+            CHECK(delivered == 1); // A replaced document receives no leftover release.
+            clickLabel(*editor, topic);
+            CHECK(delivered == 2);
+            delete editor.data();
+        }
+    }
+    for (bool collapseGroup : {false, true}) for (int reaction = 0; reaction < 4; ++reaction) {
+        QPointer<Editor> editor = new RawLabelEditor;
+        prepare(*editor);
+        if (collapseGroup) group(*editor);
+        const QString id = collapseGroup ? b : a, topic = collapseGroup ? beta : alpha;
+        const QPoint point = labelPoint(*editor, topic);
+        int delivered = 0;
+        bool interrupted = false;
+        QObject::connect(editor.data(), &Editor::nodeClicked, qApp, [&](const QString &) { ++delivered; });
+        QObject::connect(editor.data(), &Editor::selectionChanged, qApp, [&](const QString &, const QString &) {
+            if (interrupted) return;
+            interrupted = true;
+            if (reaction == 0) delete editor.data();
+            else if (reaction == 1) { CHECK(editor->loadJson(bytes)); CHECK(editor->selectNode(id)); }
+            else if (reaction == 2) { editor->hide(); showEditor(*editor); }
+            else { editor->setEnabled(false); editor->setEnabled(true); }
+        });
+        QTest::mousePress(graphics(*editor).viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        CHECK(interrupted && delivered == 0);
+        if (editor) {
+            release(*editor, labelPoint(*editor, topic));
+            CHECK(delivered == 0);
+            clickLabel(*editor, topic);
+            CHECK(delivered == 1);
+            delete editor.data();
+        }
+    }
+}
+
 static void clipboard_case() {
     const QString format = QStringLiteral("application/x-m3-nodes+json");
     struct RestoreClipboard {
@@ -15430,6 +15755,7 @@ int main(int argc, char **argv) {
         else if (name == "find") find_case();
         else if (name == "multi_selection") multi_selection_case();
         else if (name == "node_drag") node_drag_case();
+        else if (name == "node_click") node_click_case();
         else if (name == "properties") properties_case();
         else if (name == "formatting_toolbar") formatting_toolbar_case();
         else if (name == "branch_color") { branch_color_case(); auto_branch_color_case(); }

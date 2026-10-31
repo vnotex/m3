@@ -83,6 +83,13 @@ roles; Qt stylesheet `palette(...)` values do not use per-widget palette overrid
 
 With canvas focus, `Ctrl+H/J/K/L` act like Left/Down/Up/Right: select the parent, next sibling, previous sibling, or first child. Arrow keys remain available. Navigation follows the logical tree in every layout, does not enter collapsed branches, and works in read-only maps. Text editing keeps its own key handling. Hosts can replace or clear the corresponding `EditorConfig::Shortcuts` lists.
 
+`MindMapEditor::nodeClicked(nodeId)` reports a completed unmodified primary click on a node
+body or topic, on release, including an already-selected node and plain selection of one node
+from a group. It works in read-only maps. Programmatic/keyboard selection, modified clicks,
+folding, dragging, decorations and other controls do not emit it. A hidden/disabled/replaced
+or interrupted gesture is cancelled. The synchronous GUI-thread receiver may replace the
+document or destroy the editor; navigation/file policy remains the host's responsibility.
+
 Right-click empty canvas and choose **Add Orphan Node** to start an independent tree. Add children normally, or use **Detach Subtree** on an attached node to make its whole branch independent. Drag an orphan root onto a node, or use **Move**, to reattach it. All trees support folding, properties, cross-links, undo/redo and save/reopen. Layout arranges the trees independently in a vertical stack; **Focus Main Node** still targets the main tree. Only that main root is protected from moving or deletion.
 
 Automatic section numbering is enabled by default. Main and orphan roots remain unnumbered;

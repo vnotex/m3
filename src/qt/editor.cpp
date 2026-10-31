@@ -1865,6 +1865,7 @@ public:
         QObject::connect(QApplication::clipboard(), &QClipboard::dataChanged, editor, [this] { updateActions(); });
         QObject::connect(view, &MindMapView::nodePicked, controller, &MindMapController::selectNode);
         QObject::connect(view, &MindMapView::nodeSelectionToggled, controller, &MindMapController::toggleNodeSelection);
+        QObject::connect(view, &MindMapView::nodeClicked, editor, &MindMapEditor::nodeClicked);
         QObject::connect(view, &MindMapView::noteEditRequested, editor, [this](const QString &id) {
             if (canFormat() && controller->selectedNodeId() == id) host->onEditNote(id);
         });

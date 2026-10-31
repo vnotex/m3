@@ -1131,7 +1131,7 @@ bool MindMapView::finishTopicEdit(bool commit, bool restoreFocus, bool keepEditi
 }
 void MindMapView::setReadOnly(bool value) {
     if (readOnly == value) return;
-    ++noteEditGeneration;
+    ++gestureGeneration;
     readOnly = value;
     setAcceptDrops(!value);
     clearLinkEndpointHandles();
@@ -1140,6 +1140,7 @@ void MindMapView::setReadOnly(bool value) {
     clearImageResize();
     clearNodeLinkPress();
     clearNoteEditPress();
+    clearNodeClickPress();
     clearNodeDrag();
     const QPointer<MindMapView> guard(this);
     if (value) finishTopicEdit(false, true);
@@ -1162,6 +1163,7 @@ void MindMapView::updateTopicEditorGeometry() {
 }
 bool MindMapView::event(QEvent *event) {
     if (event->type() == QEvent::Leave || event->type() == QEvent::Hide) pointerPosition.reset();
+    handleNodeClickEvent(event);
     if (handleLinkReconnectEvent(event) || handleLinkCreationEvent(event) || handleImageResizeEvent(event) ||
         handleNodeLinkEvent(event) || handleNoteEditEvent(event) || handleNodeDragEvent(event)) return true;
     return QGraphicsView::event(event);
@@ -1180,6 +1182,7 @@ bool MindMapView::viewportEvent(QEvent *event) {
         break;
     default: break;
     }
+    handleNodeClickEvent(event);
     if (handleLinkReconnectEvent(event) || handleLinkCreationEvent(event) || handleImageResizeEvent(event) ||
         handleNodeLinkEvent(event) || handleNoteEditEvent(event) || handleNodeDragEvent(event)) return true;
     return QGraphicsView::viewportEvent(event);
@@ -1466,6 +1469,58 @@ bool MindMapView::handleNoteEditEvent(QEvent *event) {
     }
     return false;
 }
+void MindMapView::clearNodeClickPress() {
+    pressedNodeId.clear();
+}
+void MindMapView::handleNodeClickEvent(QEvent *event) {
+    switch (event->type()) {
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonDblClick:
+    case QEvent::KeyPress:
+    case QEvent::ContextMenu:
+    case QEvent::FocusOut:
+    case QEvent::Hide:
+    case QEvent::UngrabMouse:
+    case QEvent::WindowDeactivate:
+    case QEvent::Resize:
+    case QEvent::Wheel:
+        ++gestureGeneration;
+        clearNodeClickPress();
+        break;
+    case QEvent::EnabledChange:
+        if (!isEnabled() || !viewport()->isEnabled()) {
+            ++gestureGeneration;
+            clearNodeClickPress();
+        }
+        break;
+    case QEvent::ActivationChange:
+        if (!isActiveWindow()) {
+            ++gestureGeneration;
+            clearNodeClickPress();
+        }
+        break;
+    default: break;
+    }
+}
+void MindMapView::beginNodeClickPress(const QString &id, QMouseEvent *event, quint64 generation) {
+    if (id.isEmpty() || generation != gestureGeneration || !isEnabled() || !isVisible() ||
+        !viewport()->isEnabled() || !viewport()->isVisible() ||
+        event->button() != Qt::LeftButton || event->buttons() != Qt::LeftButton ||
+        event->modifiers() != Qt::NoModifier || selectedNodes.size() != 1 || !selectedNodes.contains(id)) return;
+    pressedNodeId = id;
+    nodePressPosition = event->pos();
+}
+QString MindMapView::takeNodeClick(QMouseEvent *event) {
+    QString id;
+    if (!pressedNodeId.isEmpty() && isEnabled() && isVisible() &&
+        viewport()->isEnabled() && viewport()->isVisible() && !nodeDragging &&
+        event->button() == Qt::LeftButton && event->buttons() == Qt::NoButton &&
+        event->modifiers() == Qt::NoModifier && selectedNodes.size() == 1 && selectedNodes.contains(pressedNodeId) &&
+        (event->pos() - nodePressPosition).manhattanLength() < QApplication::startDragDistance() &&
+        nodeBodyAt(event->pos()) == pressedNodeId) id.swap(pressedNodeId);
+    clearNodeClickPress();
+    return id;
+}
 bool MindMapView::handleNodeDragEvent(QEvent *event) {
     if (draggedNodeId.isEmpty()) return false;
     switch (event->type()) {
@@ -1658,7 +1713,7 @@ void MindMapView::install(Presentation presentation, bool resetCamera) {
     for (const auto &edge : presentation.treeEdges) parents.insert(edge.target, edge.source);
     const QPointF rootCenter = presentation.nodes.front().rectangle.center();
     auto replacement = buildScene(std::move(presentation), font(), palette());
-    if (resetCamera) ++noteEditGeneration;
+    if (resetCamera) ++gestureGeneration;
     selectedNodes.clear();
     suppressNodeDoubleClick = false;
     suppressReconnectMenu = false;
@@ -1671,6 +1726,7 @@ void MindMapView::install(Presentation presentation, bool resetCamera) {
     clearImageResize();
     clearNodeLinkPress();
     clearNoteEditPress();
+    clearNodeClickPress();
     QGraphicsTextItem *replacementLabel = topicEditor ? findTopicLabel(replacement.get(), editedId, editedKind) : nullptr;
     const QPointF center = sceneCenter(*this, viewport()->size());
     if (topicEditor && (!finishingTopicEdit || resetCamera)) {
@@ -1740,7 +1796,7 @@ void MindMapView::renderMap(Presentation presentation, QPainter &painter, const 
     detached->render(&painter, fitted, bounds, Qt::IgnoreAspectRatio);
 }
 void MindMapView::showError(const QString &message) {
-    ++noteEditGeneration;
+    ++gestureGeneration;
     selectedNodes.clear();
     suppressNodeDoubleClick = false;
     suppressReconnectMenu = false;
@@ -1752,6 +1808,7 @@ void MindMapView::showError(const QString &message) {
     clearImageResize();
     clearNodeLinkPress();
     clearNoteEditPress();
+    clearNodeClickPress();
     QPointer<MindMapView> guard(this);
     finishTopicEdit(false);
     if (!guard) return;
@@ -1787,6 +1844,7 @@ void MindMapView::setSelection(const QStringList &nodes, const QString &link) {
     if (selectedNode != draggedNodeId || !selectedLink.isEmpty()) clearNodeDrag();
     if (selectedNode != pressedLinkNodeId || !selectedLink.isEmpty()) clearNodeLinkPress();
     if (selectedNode != pressedNoteNodeId || !selectedLink.isEmpty()) clearNoteEditPress();
+    if (selectedNode != pressedNodeId || !selectedLink.isEmpty()) clearNodeClickPress();
     if (topicEditor && !finishingTopicEdit && (editedKind == TopicKind::Node ? selectedNode != editedId || !selectedLink.isEmpty()
                                                     : selectedLink != editedId || !selectedNode.isEmpty())) {
         QPointer<MindMapView> guard(this);
@@ -2083,6 +2141,19 @@ void MindMapView::updatePanCursor(const QPoint &position) {
     else if (!targetAt(position)) viewport()->setCursor(Qt::OpenHandCursor);
     else viewport()->unsetCursor();
 }
+QString MindMapView::nodeBodyAt(const QPoint &position) const {
+    if (!viewport()->rect().contains(position)) return {};
+    const auto *hit = itemAt(position);
+    const auto *node = dynamic_cast<const NodeItem *>(hit);
+    if (!node && hit) node = dynamic_cast<const NodeItem *>(hit->parentItem());
+    if (!node || !node->isVisible() || !node->isEnabled()) return {};
+    const QPointF local = node->mapFromScene(mapToScene(position));
+    if (node->hasChildren && node->affordance().contains(local)) return {};
+    if (hit == node->label || (hit == node &&
+        std::none_of(node->tagRectangles.begin(), node->tagRectangles.end(),
+            [&](const QRectF &rectangle) { return rectangle.contains(local); }))) return node->id;
+    return {};
+}
 bool MindMapView::pick(QMouseEvent *event, bool activate) {
     if (activate && selectedNodes.size() > 1) return false;
     enum class Target { Empty, Node, Link, Expansion };
@@ -2096,12 +2167,7 @@ bool MindMapView::pick(QMouseEvent *event, bool activate) {
             expanded = !node->expanded;
             const QPointF position = node->mapFromScene(mapToScene(event->pos()));
             const bool toggle = node->hasChildren && node->affordance().contains(position);
-            if (activate && !toggle) {
-                const auto *hit = itemAt(event->pos());
-                topicHit = hit == node->label || (hit == node &&
-                    std::none_of(node->tagRectangles.begin(), node->tagRectangles.end(),
-                        [&](const QRectF &rectangle) { return rectangle.contains(position); }));
-            }
+            if (!toggle) topicHit = nodeBodyAt(event->pos()) == id;
             target = toggle && !activate ? Target::Expansion : Target::Node;
         } else if (auto *link = dynamic_cast<LinkItem *>(item)) {
             id = link->id;
@@ -2110,6 +2176,7 @@ bool MindMapView::pick(QMouseEvent *event, bool activate) {
     }
     // No scene pointers or old-coordinate hit tests survive the synchronous rename.
     QPointer<MindMapView> guard(this);
+    const quint64 generation = gestureGeneration;
     if (!finishTopicEdit(true) || !guard) return false;
     setFocus(Qt::MouseFocusReason);
     if (!guard) return target == Target::Empty;
@@ -2122,6 +2189,7 @@ bool MindMapView::pick(QMouseEvent *event, bool activate) {
             draggedNodeId = id;
             dragPressPosition = event->pos();
         }
+        if (!activate && topicHit) beginNodeClickPress(id, event, generation);
         if (activate && topicHit && selectedNodes.size() <= 1) emit editRequested();
         break;
     case Target::Link:
@@ -2152,6 +2220,8 @@ void MindMapView::mousePressEvent(QMouseEvent *event) {
         if (auto *node = dynamic_cast<NodeItem *>(targetAt(event->pos()))) id = node->id;
         if (!id.isEmpty()) {
             if (toggle) suppressNodeDoubleClick = true;
+            const QString bodyId = nodeBodyAt(event->pos());
+            const quint64 generation = gestureGeneration;
             const bool preserveGroup = event->button() == Qt::RightButton && selectedNodes.contains(id);
             clearLinkReconnect();
             clearLinkCreation();
@@ -2169,6 +2239,7 @@ void MindMapView::mousePressEvent(QMouseEvent *event) {
             // This press only changes selection, including hits on nested mutation affordances.
             if (toggle) emit nodeSelectionToggled(id);
             else if (!preserveGroup) emit nodePicked(id);
+            if (guard && !toggle && !preserveGroup) beginNodeClickPress(bodyId, event, generation);
             return;
         }
     }
@@ -2317,10 +2388,10 @@ void MindMapView::mousePressEvent(QMouseEvent *event) {
             const QPoint position = event->pos();
             event->accept();
             const QPointer<MindMapView> guard(this);
-            const quint64 generation = noteEditGeneration;
-            if (!finishTopicEdit(true) || !guard || generation != noteEditGeneration) return;
+            const quint64 generation = gestureGeneration;
+            if (!finishTopicEdit(true) || !guard || generation != gestureGeneration) return;
             setFocus(Qt::MouseFocusReason);
-            if (!guard || generation != noteEditGeneration) return;
+            if (!guard || generation != gestureGeneration) return;
             // The commit may replace every item; only the captured identity survives it.
             if (isEnabled() && !readOnly && selectedNodes.size() == 1 && selectedNodes.contains(id) &&
                 noteEditHandle && noteEditHandle->isVisible()) {
@@ -2387,6 +2458,10 @@ void MindMapView::mousePressEvent(QMouseEvent *event) {
     updatePanCursor(event->pos());
 }
 void MindMapView::mouseMoveEvent(QMouseEvent *event) {
+    if (!pressedNodeId.isEmpty() && (event->buttons() != Qt::LeftButton ||
+        event->modifiers() != Qt::NoModifier || !viewport()->rect().contains(event->pos()) ||
+        (event->pos() - nodePressPosition).manhattanLength() >= QApplication::startDragDistance()))
+        clearNodeClickPress();
     if (!reconnectedLinkId.isEmpty()) {
         if (!event->buttons().testFlag(Qt::LeftButton)) clearLinkReconnect();
         else updateLinkReconnect(event->pos());
@@ -2455,6 +2530,7 @@ void MindMapView::mouseMoveEvent(QMouseEvent *event) {
     updatePanCursor(event->pos());
 }
 void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
+    const QString clickedNode = takeNodeClick(event);
     if (!reconnectedLinkId.isEmpty()) {
         event->accept();
         if (event->button() != Qt::LeftButton) {
@@ -2550,6 +2626,15 @@ void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
         (dynamic_cast<NodeLinkItem *>(itemAt(event->pos())) || dynamic_cast<NoteEditHandle *>(itemAt(event->pos())))) {
         event->accept();
         updatePanCursor(event->pos());
+        return;
+    }
+    if (!clickedNode.isEmpty()) {
+        // A writable non-root press owns a pending drag even without any movement.
+        clearNodeDrag();
+        event->accept();
+        updatePanCursor(event->pos());
+        // All gesture state is clear; receivers may replace or destroy this editor.
+        emit nodeClicked(clickedNode);
         return;
     }
     if (panning != Qt::NoButton && event->button() == panning) {
