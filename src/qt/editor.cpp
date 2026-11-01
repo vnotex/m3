@@ -548,7 +548,7 @@ public:
             fields->addRow(caption, input);
             return input;
         };
-        tags = line("nodeTags", tr("&Tags"), tr("Tags"));
+        tags = line("nodeTags", tr("&Tags") + QLatin1Char(' '), tr("Tags"));
         icons = new EmojiLineEdit(body);
         line("nodeIcons", tr("&Icons"), tr("Icons"), icons);
         url = line("nodeUrl", tr("&URL"), tr("URL"));
