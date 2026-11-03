@@ -672,6 +672,7 @@ Presentation MindMapController::prepare(const QByteArray &json,
         node.id = string(record.at("id"));
         node.topic = string(record.at("topic"));
         node.hyperlink = string(record.at("hyperLink"));
+        node.hasNote = !record.at("note").get_ref<const std::string &>().empty();
         node.image = nodeImage(record.at("image"));
         if (useImageCache && node.image && !node.image->url.isEmpty()) {
             const auto resource = imageResources.constFind(resolveResourceUrl(node.image->url));

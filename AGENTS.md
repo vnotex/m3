@@ -225,6 +225,14 @@ keeps the same input. Inline topic editing is unchanged.
 The Topic heading uses the same bold weight as Appearance and the other section headings;
 font size and text color remain inherited from the host.
 
+The canvas Edit Note indicator appears inside every node with a nonempty note, immediately
+left of its hyperlink indicator (or at the right of the content when no URL is set). Whitespace
+counts as nonempty. It stays visible without selection and in read-only mode; plain clicks
+select and edit the captured node only when writable. The `editNote` action / N shortcut and
+properties Note field remain available for adding an empty node's first note. Reserve separate
+measured lanes for note and URL indicators so neither overlaps text, tags or images. Detached
+HTML/painter exports retain that geometry but omit the editing indicator.
+
 The editor destroys a surviving externally parented panel before its model/view. Hosts may
 destroy the panel first; the accessor then returns null rather than creating a replacement.
 Never create a second properties widget or share the panel between editors. VNote defaults

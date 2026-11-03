@@ -106,11 +106,10 @@ private:
     void fit(ZoomMode mode);
     QPointF panPosition;
     QHash<QString, QString> nodeParents;
-    // Scene-owned top-level controls share the endpoint-handle layer, above every node.
-    // Their non-owning node pointer is current-scene-only and cleared with both handles.
+    // The scene-owned link handle sits above every node, with the endpoint handles.
+    // Its non-owning node pointer is current-scene-only and cleared with the handle.
     QGraphicsItem *nodeControlNode = nullptr;
     QGraphicsItem *linkCreationHandle = nullptr;
-    QGraphicsItem *noteEditHandle = nullptr;
     QGraphicsItem *linkEndpointHandles[2] = {};
     QString reconnectedLinkId, originalEndpointId;
     QPoint reconnectPressPosition;
