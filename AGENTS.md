@@ -231,12 +231,15 @@ counts as nonempty. It stays visible without selection and in read-only mode; pl
 select and edit the captured node only when writable. The `editNote` action / N shortcut and
 properties Note field remain available for adding an empty node's first note. Reserve separate
 measured lanes for note and URL indicators so neither overlaps text, tags or images. Detached
-HTML/painter exports retain that geometry but omit the editing indicator. Like the URL icon,
-the note glyph is blue and borderless, with a translucent rounded highlight only on hover.
+HTML/painter exports retain that geometry but omit the editing indicator. The note glyph uses
+the theme's normal text color, without a border or resting background; only a translucent
+rounded highlight appears on hover. The URL glyph keeps its separate blue styling.
 
 Node context menus order the field editors as Add Tags, Add Icons, Add URL, Add Image,
 Add Note. T / `editTags` and O / `editIcons` open the same standalone tag input and emoji
-picker as those menu entries, without revealing or requiring the properties panel. N /
+picker as those menu entries, without revealing or requiring the properties panel. Shortcut
+popups anchor just below the selected node in viewport coordinates, respecting zoom and pan;
+context-menu popups keep the clicked position. Screen fitting may adjust either anchor. N /
 `editNote` and Add Note share `onEditNote`; URL and image entries share the host's
 `onAddUrl` / `onAddImage` hooks (also used by VNote's insertion shortcuts). All field routes
 capture one writable node and reject stale selection/document bindings. Context menus must

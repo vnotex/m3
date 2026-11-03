@@ -148,22 +148,19 @@ public:
         p->setPen(QPen(colors.color(hovered ? QPalette::HighlightedText : QPalette::ButtonText), 1));
         p->setBrush(colors.color(hovered ? QPalette::Highlight : QPalette::Base));
         p->drawEllipse(boundingRect().adjusted(0.5, 0.5, -0.5, -0.5));
-        // Lucide: https://lucide.dev/icons/external-link; notice: third_party/lucide/LICENSE.
+        // Lucide: https://lucide.dev/icons/waypoints; notice: third_party/lucide/LICENSE.
         static const QPainterPath glyph = [] {
             QPainterPath path;
-            path.moveTo(15, 3);
-            path.lineTo(21, 3);
-            path.lineTo(21, 9);
-            path.moveTo(10, 14);
-            path.lineTo(21, 3);
-            path.moveTo(18, 13);
-            path.lineTo(18, 19);
-            path.arcTo(QRectF(14, 17, 4, 4), 0, -90);
-            path.lineTo(5, 21);
-            path.arcTo(QRectF(3, 17, 4, 4), 270, -90);
-            path.lineTo(3, 8);
-            path.arcTo(QRectF(3, 6, 4, 4), 180, -90);
-            path.lineTo(11, 6);
+            path.moveTo(10.586, 5.414);
+            path.lineTo(5.414, 10.586);
+            path.moveTo(18.586, 13.414);
+            path.lineTo(13.414, 18.586);
+            path.moveTo(6, 12);
+            path.lineTo(18, 12);
+            path.addEllipse(QPointF(12, 20), 2, 2);
+            path.addEllipse(QPointF(12, 4), 2, 2);
+            path.addEllipse(QPointF(20, 12), 2, 2);
+            path.addEllipse(QPointF(4, 12), 2, 2);
             return path;
         }();
         p->save();
@@ -185,7 +182,8 @@ private:
 };
 class NoteEditHandle final : public QGraphicsItem {
 public:
-    explicit NoteEditHandle(QGraphicsItem *parent) : QGraphicsItem(parent) {
+    NoteEditHandle(const QColor &foreground, QGraphicsItem *parent)
+        : QGraphicsItem(parent), foreground(foreground) {
         setAcceptedMouseButtons(Qt::NoButton);
         setAcceptHoverEvents(true);
         setCursor(Qt::PointingHandCursor);
@@ -195,7 +193,6 @@ public:
         return QRectF(0, 0, nodeControlSize, nodeControlSize);
     }
     void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
-        static const QColor foreground = QColor::fromRgb(0x3498db);
         if (hovered) {
             QColor fill = foreground;
             fill.setAlpha(28);
@@ -242,6 +239,7 @@ protected:
     void hoverEnterEvent(QGraphicsSceneHoverEvent *) override { hovered = true; update(); }
     void hoverLeaveEvent(QGraphicsSceneHoverEvent *) override { hovered = false; update(); }
 private:
+    QColor foreground;
     bool hovered = false;
 };
 class NodeLinkItem final : public QGraphicsItem {
@@ -1861,7 +1859,7 @@ void MindMapView::setSelection(const QStringList &nodes, const QString &link) {
         if (auto *n = dynamic_cast<NodeItem *>(item)) {
             // Only the live scene gets editing controls; detached exports keep shared geometry.
             if (n->hasNote && !n->noteItem) {
-                n->noteItem = new NoteEditHandle(n);
+                n->noteItem = new NoteEditHandle(palette().color(QPalette::Text), n);
                 n->noteItem->setPos(n->rect.right() - 12 - nodeControlSize -
                     (n->hyperlink.isEmpty() ? 0 : nodeControlSize + nodeControlGap),
                     n->rect.center().y() - nodeControlSize / 2);
@@ -1893,6 +1891,11 @@ void MindMapView::setSelection(const QStringList &nodes, const QString &link) {
             scene()->addItem(linkEndpointHandles[i]);
         }
     }
+}
+std::optional<QPoint> MindMapView::nodePopupPosition(const QString &id) const {
+    const auto *node = static_cast<NodeItem *>(nodeControlOwner(linkCreationHandle));
+    if (!node || node->id != id || !node->isVisible()) return {};
+    return viewport()->mapToGlobal(mapFromScene(node->mapToScene(node->rect.bottomLeft())) + QPoint(0, 4));
 }
 void MindMapView::ensureNodeVisible(const QString &id, const QRect &occlusion) {
     if (id.isEmpty() || !isVisible()) return;

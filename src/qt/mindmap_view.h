@@ -37,6 +37,7 @@ public:
     void renderMap(Presentation presentation, QPainter &painter, const QRectF &target) const;
     void showError(const QString &message);
     void setSelection(const QStringList &nodes, const QString &link);
+    std::optional<QPoint> nodePopupPosition(const QString &id) const;
     void ensureNodeVisible(const QString &id, const QRect &occlusion = {});
     void ensureLinkVisible(const QString &id);
     void centerNode(const QString &id);

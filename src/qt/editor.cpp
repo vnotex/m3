@@ -1034,8 +1034,10 @@ public:
         switch (field) {
         case NodeField::Tags:
         case NodeField::Icons: {
+            if (!position) position = view->nodePopupPosition(binding.node);
+            if (!position) return;
             auto *menu = field == NodeField::Tags ? tagsPopup.menu : iconsPopup.menu;
-            menu->popup(position ? *position : view->viewport()->mapToGlobal(view->viewport()->rect().center()));
+            menu->popup(*position);
             return;
         }
         case NodeField::Url: host->onAddUrl(binding.node); return;

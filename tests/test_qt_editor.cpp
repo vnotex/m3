@@ -12372,6 +12372,56 @@ static void node_shortcuts_case() {
         CHECK(exported(editor) == expected);
         topicKey(editor, Qt::Key_Escape);
     }
+    for (qreal scale : {qreal(0.5), qreal(1), qreal(1.5)}) for (bool icons : {false, true}) {
+        RawLabelEditor editor;
+        CHECK(editor.loadJson(QByteArray(R"({"schemaVersion":1,"rootId":"r","nodes":[
+            {"id":"r","topic":"Root","children":["a","b"]},
+            {"id":"a","topic":"Alpha"},{"id":"b","topic":"Beta"}]})")));
+        const QRect screen = editor.screen()->availableGeometry();
+        editor.move(screen.topLeft() + QPoint(10, 10));
+        showEditor(editor, QSize(qMin(700, screen.width() - 20), qMin(550, screen.height() - 20)));
+        editor.resetZoom(); editor.zoom(scale);
+        auto &view = graphics(editor);
+        auto *menu = editor.findChild<QMenu *>(icons ? QStringLiteral("iconsPopupMenu") : QStringLiteral("tagsPopupMenu"));
+        auto *input = editor.findChild<QLineEdit *>(icons ? QStringLiteral("toolbarNodeIcons") : QStringLiteral("popupNodeTags"));
+        CHECK(menu && input);
+        for (const auto &entry : {std::make_pair(QStringLiteral("a"), QStringLiteral("Alpha")),
+                                  std::make_pair(QStringLiteral("b"), QStringLiteral("Beta"))}) {
+            CHECK(editor.selectNode(entry.first));
+            view.setSceneRect(view.sceneRect().adjusted(-2000, -2000, 2000, 2000));
+            auto *node = ownerItem(textItem(editor, entry.second));
+            const QRectF body = node->mapRectToScene(node->shape().boundingRect());
+            view.centerOn(body.center() + QPointF((view.viewport()->width() / 2.0 - 120) / scale,
+                                                  (view.viewport()->height() / 2.0 - 60) / scale));
+            pump();
+            const QPoint scroll(view.horizontalScrollBar()->value(), view.verticalScrollBar()->value());
+            const QTransform transform = view.transform();
+            const QPoint anchor = view.viewport()->mapToGlobal(view.mapFromScene(body.bottomLeft())) + QPoint(0, 4);
+            const auto placed = [&](const QPoint &expected) {
+                CHECK(QTest::qWaitFor([&] { return menu->isVisible() && input->hasFocus(); }));
+                // Screen fitting is allowed only when the desired popup cannot fit there.
+                if (screen.contains(QRect(expected, menu->size()).adjusted(-4, -4, 4, 4))) {
+                    CHECK(std::abs(menu->frameGeometry().left() - expected.x()) <= 8);
+                    CHECK(std::abs(menu->frameGeometry().top() - expected.y()) <= 8);
+                } else CHECK(screen.contains(menu->frameGeometry()));
+                CHECK(view.transform() == transform);
+                CHECK(QPoint(view.horizontalScrollBar()->value(), view.verticalScrollBar()->value()) == scroll);
+            };
+            shortcut(editor, icons ? Qt::Key_O : Qt::Key_T);
+            placed(anchor);
+            menu->hide();
+            // The general labelPoint helper pans with ensureVisible; keep this camera fixed.
+            const QPoint click = view.mapFromScene(textItem(editor, entry.second)->sceneBoundingRect().center());
+            CHECK(view.viewport()->rect().contains(click));
+            const QPoint contextAnchor = view.mapToGlobal(click);
+            CHECK(contextMenu(editor, click, [&](QMenu &context) {
+                auto &action = textAction(context, {icons ? QStringLiteral("Add Icons") : QStringLiteral("Add Tags")});
+                QTest::mouseClick(&context, Qt::LeftButton, Qt::NoModifier, context.actionGeometry(&action).center());
+            }));
+            placed(contextAnchor);
+            menu->hide();
+        }
+    }
     for (bool icons : {false, true}) for (int panelMode = 0; panelMode < 3; ++panelMode) {
         RawLabelConfig config;
         config.separateNodePropertiesPanel = panelMode != 0;
