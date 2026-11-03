@@ -185,8 +185,7 @@ private:
 };
 class NoteEditHandle final : public QGraphicsItem {
 public:
-    NoteEditHandle(const QPalette &palette, QGraphicsItem *parent)
-        : QGraphicsItem(parent), colors(palette) {
+    explicit NoteEditHandle(QGraphicsItem *parent) : QGraphicsItem(parent) {
         setAcceptedMouseButtons(Qt::NoButton);
         setAcceptHoverEvents(true);
         setCursor(Qt::PointingHandCursor);
@@ -196,9 +195,14 @@ public:
         return QRectF(0, 0, nodeControlSize, nodeControlSize);
     }
     void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override {
-        p->setPen(QPen(colors.color(hovered ? QPalette::HighlightedText : QPalette::ButtonText), 1));
-        p->setBrush(colors.color(hovered ? QPalette::Highlight : QPalette::Base));
-        p->drawEllipse(boundingRect().adjusted(0.5, 0.5, -0.5, -0.5));
+        static const QColor foreground = QColor::fromRgb(0x3498db);
+        if (hovered) {
+            QColor fill = foreground;
+            fill.setAlpha(28);
+            p->setPen(Qt::NoPen);
+            p->setBrush(fill);
+            p->drawRoundedRect(boundingRect(), 3, 3);
+        }
         // Lucide: https://lucide.dev/icons/scroll-text; notice: third_party/lucide/LICENSE.
         static const QPainterPath glyph = [] {
             QPainterPath path;
@@ -227,12 +231,10 @@ public:
             return path;
         }();
         p->save();
-        p->translate(2, 2);
-        p->scale((nodeControlSize - 4) / 24, (nodeControlSize - 4) / 24);
+        p->scale(nodeControlSize / 24, nodeControlSize / 24);
         p->setRenderHint(QPainter::Antialiasing);
         p->setBrush(Qt::NoBrush);
-        p->setPen(QPen(colors.color(hovered ? QPalette::HighlightedText : QPalette::ButtonText),
-                       2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p->setPen(QPen(foreground, 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p->drawPath(glyph);
         p->restore();
     }
@@ -240,7 +242,6 @@ protected:
     void hoverEnterEvent(QGraphicsSceneHoverEvent *) override { hovered = true; update(); }
     void hoverLeaveEvent(QGraphicsSceneHoverEvent *) override { hovered = false; update(); }
 private:
-    QPalette colors;
     bool hovered = false;
 };
 class NodeLinkItem final : public QGraphicsItem {
@@ -1860,7 +1861,7 @@ void MindMapView::setSelection(const QStringList &nodes, const QString &link) {
         if (auto *n = dynamic_cast<NodeItem *>(item)) {
             // Only the live scene gets editing controls; detached exports keep shared geometry.
             if (n->hasNote && !n->noteItem) {
-                n->noteItem = new NoteEditHandle(palette(), n);
+                n->noteItem = new NoteEditHandle(n);
                 n->noteItem->setPos(n->rect.right() - 12 - nodeControlSize -
                     (n->hyperlink.isEmpty() ? 0 : nodeControlSize + nodeControlGap),
                     n->rect.center().y() - nodeControlSize / 2);

@@ -547,6 +547,10 @@
         <translation>アイコンを追加</translation>
     </message>
     <message>
+        <source>Add Note</source>
+        <translation>ノートを追加</translation>
+    </message>
+    <message>
         <source>Add Tags</source>
         <translation>タグを追加</translation>
     </message>

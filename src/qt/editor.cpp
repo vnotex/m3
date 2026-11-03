@@ -706,7 +706,7 @@ public:
         for (auto *input : {tags, static_cast<QLineEdit *>(icons), url, imageUrl}) input->setReadOnly(value);
         if (note) note->setReadOnly(value);
     }
-    enum class Action { ToggleBold, ToggleItalic, ResetStyle, TextColor, FillColor, Tags, Icons, Note, ToggleProperties };
+    enum class Action { ToggleBold, ToggleItalic, ResetStyle, TextColor, FillColor, Note, ToggleProperties };
     void activate(Action action) {
         if (!editor || !controller || !editor->isEnabled() ||
             (action == Action::ToggleProperties ? separated : controller->isReadOnly())) return;
@@ -728,8 +728,6 @@ public:
             return;
         case Action::TextColor: target = textColor; break;
         case Action::FillColor: target = fillColor; break;
-        case Action::Tags: target = tags; break;
-        case Action::Icons: target = icons; break;
         case Action::Note: ensureNoteEditor(); target = note; break;
         }
         if (!separated) {
@@ -1028,6 +1026,22 @@ public:
     bool validBinding(const FormattingBinding &binding) const {
         return binding.epoch == formattingEpoch && !binding.node.isEmpty() &&
             binding.node == controller->selectedNodeId() && canFormat();
+    }
+    enum class NodeField { Tags, Icons, Url, Image, Note };
+    void editNodeField(NodeField field, const FormattingBinding &binding,
+                       std::optional<QPoint> position = {}) {
+        if (!validBinding(binding)) return;
+        switch (field) {
+        case NodeField::Tags:
+        case NodeField::Icons: {
+            auto *menu = field == NodeField::Tags ? tagsPopup.menu : iconsPopup.menu;
+            menu->popup(position ? *position : view->viewport()->mapToGlobal(view->viewport()->rect().center()));
+            return;
+        }
+        case NodeField::Url: host->onAddUrl(binding.node); return;
+        case NodeField::Image: host->onAddImage(binding.node); return;
+        case NodeField::Note: host->onEditNote(binding.node); return;
+        }
     }
     void invalidateFormatting() {
         ++formattingEpoch;
@@ -1335,6 +1349,8 @@ public:
             }
             const bool boundTarget = result == boldAction || result == italicAction ||
                 result->objectName() == QStringLiteral("resetStyle") ||
+                result->objectName() == QStringLiteral("editTags") ||
+                result->objectName() == QStringLiteral("editIcons") ||
                 result->objectName() == QStringLiteral("editNote") ||
                 result->objectName() == QStringLiteral("paste");
             const FormattingBinding binding = formattingBinding();
@@ -1401,6 +1417,8 @@ public:
         for (auto *action : nodeNavigation) action->setEnabled(node);
         for (auto *action : nodeEditingActions) {
             const bool panelAvailable = properties || action->objectName() == QStringLiteral("editTopic") ||
+                action->objectName() == QStringLiteral("editTags") ||
+                action->objectName() == QStringLiteral("editIcons") ||
                 action->objectName() == QStringLiteral("editNote");
             action->setEnabled(node && panelAvailable && (writable || action == toggleProperties) &&
                 (action != toggleProperties || !config.separateNodePropertiesPanel));
@@ -1656,12 +1674,9 @@ public:
             action("resetStyle", tr("Reset style"), config.shortcuts.resetStyle, [this] { if (properties) properties->activate(NodePropertiesPanel::Action::ResetStyle); }),
             action("textColor", tr("Text color"), config.shortcuts.textColor, [this] { if (properties) properties->activate(NodePropertiesPanel::Action::TextColor); }),
             action("fillColor", tr("Fill color"), config.shortcuts.fillColor, [this] { if (properties) properties->activate(NodePropertiesPanel::Action::FillColor); }),
-            action("editTags", tr("Edit tags"), config.shortcuts.editTags, [this] { if (properties) properties->activate(NodePropertiesPanel::Action::Tags); }),
-            action("editIcons", tr("Edit icons"), config.shortcuts.editIcons, [this] { if (properties) properties->activate(NodePropertiesPanel::Action::Icons); }),
-            action("editNote", tr("Edit Note"), config.shortcuts.editNote, [this] {
-                const QString id = controller->selectedNodeId();
-                if (canFormat()) host->onEditNote(id);
-            }),
+            action("editTags", tr("Edit tags"), config.shortcuts.editTags, [this] { editNodeField(NodeField::Tags, formattingBinding()); }),
+            action("editIcons", tr("Edit icons"), config.shortcuts.editIcons, [this] { editNodeField(NodeField::Icons, formattingBinding()); }),
+            action("editNote", tr("Edit Note"), config.shortcuts.editNote, [this] { editNodeField(NodeField::Note, formattingBinding()); }),
             toggleProperties = action("toggleProperties", tr("Toggle properties panel"),
                 config.separateNodePropertiesPanel ? QList<QKeySequence>{} : config.shortcuts.toggleProperties,
                 [this] { if (properties) properties->activate(NodePropertiesPanel::Action::ToggleProperties); }),
@@ -1731,112 +1746,112 @@ public:
             const QString nodeId = controller->selectedNodeId();
             const bool hasNode = nodeId.isEmpty() == false;
             const QString linkId = controller->selectedLinkId();
-            QMenu menu(host);
-            QAction *addIcons = nullptr, *addTags = nullptr;
             const FormattingBinding binding = formattingBinding();
             const QPoint globalPoint = view->mapToGlobal(point);
-            if (controller->selectedNodeIds().size() > 1) {
-                menu.addAction(deleteSelection);
-            } else if (hasNode) {
-                const auto node = controller->nodeProperties(nodeId);
-                if (!guard || node.id.isEmpty()) return;
-                menu.addActions({addChild, addSibling, addSiblingBefore});
-                menu.addAction(tr("Duplicate"), host, [this, binding] {
-                    if (validBinding(binding)) controller->duplicateNode(binding.node);
-                })->setEnabled(canFormat());
-                menu.addSeparator();
-                menu.addActions({copySelection, pasteSelection});
-                menu.addSeparator();
-                menu.addAction(editSelection);
-                menu.addAction(tr("Add URL"), host, [this, nodeId] {
-                    if (!controller->isReadOnly()) host->onAddUrl(nodeId);
-                })->setEnabled(!controller->isReadOnly());
-                menu.addAction(tr("Add Image"), host, [this, nodeId] {
-                    if (!controller->isReadOnly()) host->onAddImage(nodeId);
-                })->setEnabled(!controller->isReadOnly());
-                addIcons = menu.addAction(tr("Add Icons"));
-                addIcons->setEnabled(canFormat());
-                addTags = menu.addAction(tr("Add Tags"));
-                addTags->setEnabled(canFormat());
-                auto *branchMenu = menu.addMenu(tr("Branch Color"));
-                branchMenu->setEnabled(!controller->isReadOnly());
-                auto *branchGroup = new QActionGroup(branchMenu);
-                branchGroup->setExclusive(true);
-                auto addBranchColor = [&](const QString &label, const QColor &color, const QJsonValue &value) {
-                    auto *action = branchMenu->addAction(label);
-                    action->setCheckable(true);
-                    branchGroup->addAction(action);
-                    action->setChecked(color == node.style.branchColor);
-                    if (color.isValid()) {
-                        QPixmap swatch(16, 16);
-                        swatch.fill(color);
-                        QPainter painter(&swatch);
-                        painter.setPen(branchMenu->palette().color(QPalette::Mid));
-                        painter.drawRect(0, 0, 15, 15);
-                        painter.end();
-                        action->setIcon(QIcon(swatch));
+            std::optional<NodeField> field;
+            {
+                QMenu menu(host);
+                if (controller->selectedNodeIds().size() > 1) {
+                    menu.addAction(deleteSelection);
+                } else if (hasNode) {
+                    const auto node = controller->nodeProperties(nodeId);
+                    if (!guard || node.id.isEmpty()) return;
+                    menu.addActions({addChild, addSibling, addSiblingBefore});
+                    menu.addAction(tr("Duplicate"), host, [this, binding] {
+                        if (validBinding(binding)) controller->duplicateNode(binding.node);
+                    })->setEnabled(canFormat());
+                    menu.addSeparator();
+                    menu.addActions({copySelection, pasteSelection});
+                    menu.addSeparator();
+                    menu.addAction(editSelection);
+                    const auto addField = [&](const QString &label, NodeField target) {
+                        auto *action = menu.addAction(label);
+                        action->setEnabled(canFormat());
+                        QObject::connect(action, &QAction::triggered, &menu, [&field, target] { field = target; });
+                    };
+                    addField(tr("Add Tags"), NodeField::Tags);
+                    addField(tr("Add Icons"), NodeField::Icons);
+                    addField(tr("Add URL"), NodeField::Url);
+                    addField(tr("Add Image"), NodeField::Image);
+                    addField(tr("Add Note"), NodeField::Note);
+                    auto *branchMenu = menu.addMenu(tr("Branch Color"));
+                    branchMenu->setEnabled(!controller->isReadOnly());
+                    auto *branchGroup = new QActionGroup(branchMenu);
+                    branchGroup->setExclusive(true);
+                    auto addBranchColor = [&](const QString &label, const QColor &color, const QJsonValue &value) {
+                        auto *action = branchMenu->addAction(label);
+                        action->setCheckable(true);
+                        branchGroup->addAction(action);
+                        action->setChecked(color == node.style.branchColor);
+                        if (color.isValid()) {
+                            QPixmap swatch(16, 16);
+                            swatch.fill(color);
+                            QPainter painter(&swatch);
+                            painter.setPen(branchMenu->palette().color(QPalette::Mid));
+                            painter.drawRect(0, 0, 15, 15);
+                            painter.end();
+                            action->setIcon(QIcon(swatch));
+                        }
+                        QObject::connect(action, &QAction::triggered, host, [this, nodeId, value] {
+                            const QJsonObject patch{{QStringLiteral("style"),
+                                QJsonObject{{QStringLiteral("branchColor"), value}}}};
+                            controller->updateNodeProperties(nodeId, QJsonDocument(patch).toJson(QJsonDocument::Compact));
+                        });
+                    };
+                    addBranchColor(tr("Auto"), QColor(), QJsonValue(QJsonValue::Null));
+                    for (const auto &entry : nodeColors) {
+                        const QString hex = QString::fromLatin1(entry.hex);
+                        addBranchColor(tr("%1 (%2)").arg(QCoreApplication::translate("m3::qt::NodeColors", entry.name), hex), QColor(hex), hex);
                     }
-                    QObject::connect(action, &QAction::triggered, host, [this, nodeId, value] {
-                        const QJsonObject patch{{QStringLiteral("style"),
-                            QJsonObject{{QStringLiteral("branchColor"), value}}}};
-                        controller->updateNodeProperties(nodeId, QJsonDocument(patch).toJson(QJsonDocument::Compact));
-                    });
-                };
-                addBranchColor(tr("Auto"), QColor(), QJsonValue(QJsonValue::Null));
-                for (const auto &entry : nodeColors) {
-                    const QString hex = QString::fromLatin1(entry.hex);
-                    addBranchColor(tr("%1 (%2)").arg(QCoreApplication::translate("m3::qt::NodeColors", entry.name), hex), QColor(hex), hex);
+                    menu.addSeparator();
+                    menu.addAction(tr("Expand All"), host, [this, nodeId] {
+                        controller->setExpanded(nodeId, true, true);
+                    })->setEnabled(toggleExpanded->isEnabled());
+                    menu.addAction(tr("Collapse All"), host, [this, nodeId] {
+                        controller->setExpanded(nodeId, false, true);
+                    })->setEnabled(toggleExpanded->isEnabled());
+                    menu.addSeparator();
+                    menu.addActions({move, detachNode, deleteSelection, up, down});
+                } else if (!linkId.isEmpty()) {
+                    const auto link = controller->linkChoice(linkId);
+                    if (!guard || link.id.isEmpty()) return;
+                    menu.addAction(editSelection);
+                    menu.addSeparator();
+                    auto *group = new QActionGroup(&menu);
+                    group->setExclusive(true);
+                    const struct { const char *text; LinkDirection direction; } choices[] = {
+                        {"---", LinkDirection::None}, {"<---", LinkDirection::Backward},
+                        {"--->", LinkDirection::Forward}, {"<--->", LinkDirection::Both}
+                    };
+                    for (const auto &choice : choices) {
+                        auto *action = menu.addAction(QString::fromLatin1(choice.text));
+                        action->setEnabled(!controller->isReadOnly());
+                        action->setCheckable(true);
+                        group->addAction(action);
+                        action->setChecked(link.direction == choice.direction);
+                        QObject::connect(action, &QAction::triggered, host, [this, linkId, direction = choice.direction] {
+                            controller->setLinkDirection(linkId, direction);
+                        });
+                    }
+                    menu.addSeparator();
+                    menu.addAction(deleteSelection);
+                } else {
+                    menu.addActions({rootSelection, fitWidth, fit, resetZoom, zoomIn, zoomOut});
+                    menu.addSeparator();
+                    menu.addAction(addOrphan);
+                    menu.addSeparator();
+                    menu.addAction(helpAction);
+                    emit host->backgroundContextMenuRequested(&menu);
+                    if (!guard) return;
                 }
-                menu.addSeparator();
-                menu.addAction(tr("Expand All"), host, [this, nodeId] {
-                    controller->setExpanded(nodeId, true, true);
-                })->setEnabled(toggleExpanded->isEnabled());
-                menu.addAction(tr("Collapse All"), host, [this, nodeId] {
-                    controller->setExpanded(nodeId, false, true);
-                })->setEnabled(toggleExpanded->isEnabled());
-                menu.addSeparator();
-                menu.addActions({move, detachNode, deleteSelection, up, down});
-            } else if (!linkId.isEmpty()) {
-                const auto link = controller->linkChoice(linkId);
-                if (!guard || link.id.isEmpty()) return;
-                menu.addAction(editSelection);
-                menu.addSeparator();
-                auto *group = new QActionGroup(&menu);
-                group->setExclusive(true);
-                const struct { const char *text; LinkDirection direction; } choices[] = {
-                    {"---", LinkDirection::None}, {"<---", LinkDirection::Backward},
-                    {"--->", LinkDirection::Forward}, {"<--->", LinkDirection::Both}
-                };
-                for (const auto &choice : choices) {
-                    auto *action = menu.addAction(QString::fromLatin1(choice.text));
-                    action->setEnabled(!controller->isReadOnly());
-                    action->setCheckable(true);
-                    group->addAction(action);
-                    action->setChecked(link.direction == choice.direction);
-                    QObject::connect(action, &QAction::triggered, host, [this, linkId, direction = choice.direction] {
-                        controller->setLinkDirection(linkId, direction);
-                    });
+                if (!linkId.isEmpty() || controller->selectedNodeIds().size() > 1) {
+                    menu.addSeparator();
+                    menu.addAction(copySelection);
                 }
-                menu.addSeparator();
-                menu.addAction(deleteSelection);
-            } else {
-                menu.addActions({rootSelection, fitWidth, fit, resetZoom, zoomIn, zoomOut});
-                menu.addSeparator();
-                menu.addAction(addOrphan);
-                menu.addSeparator();
-                menu.addAction(helpAction);
-                emit host->backgroundContextMenuRequested(&menu);
-                if (!guard) return;
+                menu.exec(globalPoint);
             }
-            if (!linkId.isEmpty() || controller->selectedNodeIds().size() > 1) {
-                menu.addSeparator();
-                menu.addAction(copySelection);
-            }
-            const auto *chosen = menu.exec(globalPoint);
-            if (guard && chosen && validBinding(binding)) {
-                if (chosen == addIcons) iconsPopup.menu->popup(globalPoint);
-                else if (chosen == addTags) tagsPopup.menu->popup(globalPoint);
-            }
+            // Host field editors may destroy this editor; the stack menu must be gone first.
+            if (guard && field) editNodeField(*field, binding, globalPoint);
         });
         QObject::connect(controller, &MindMapController::documentChanged, editor, [this, editor] {
             const QPointer<MindMapEditor> guard(editor);

@@ -547,6 +547,10 @@
         <translation>아이콘 추가</translation>
     </message>
     <message>
+        <source>Add Note</source>
+        <translation>노트 추가</translation>
+    </message>
+    <message>
         <source>Add Tags</source>
         <translation>태그 추가</translation>
     </message>

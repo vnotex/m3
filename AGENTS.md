@@ -231,7 +231,16 @@ counts as nonempty. It stays visible without selection and in read-only mode; pl
 select and edit the captured node only when writable. The `editNote` action / N shortcut and
 properties Note field remain available for adding an empty node's first note. Reserve separate
 measured lanes for note and URL indicators so neither overlaps text, tags or images. Detached
-HTML/painter exports retain that geometry but omit the editing indicator.
+HTML/painter exports retain that geometry but omit the editing indicator. Like the URL icon,
+the note glyph is blue and borderless, with a translucent rounded highlight only on hover.
+
+Node context menus order the field editors as Add Tags, Add Icons, Add URL, Add Image,
+Add Note. T / `editTags` and O / `editIcons` open the same standalone tag input and emoji
+picker as those menu entries, without revealing or requiring the properties panel. N /
+`editNote` and Add Note share `onEditNote`; URL and image entries share the host's
+`onAddUrl` / `onAddImage` hooks (also used by VNote's insertion shortcuts). All field routes
+capture one writable node and reject stale selection/document bindings. Context menus must
+be destroyed before invoking host field hooks, which may synchronously destroy the editor.
 
 The editor destroys a surviving externally parented panel before its model/view. Hosts may
 destroy the panel first; the accessor then returns null rather than creating a replacement.

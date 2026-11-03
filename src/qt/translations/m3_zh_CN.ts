@@ -547,6 +547,10 @@
         <translation>添加图标</translation>
     </message>
     <message>
+        <source>Add Note</source>
+        <translation>添加备注</translation>
+    </message>
+    <message>
         <source>Add Tags</source>
         <translation>添加标签</translation>
     </message>

@@ -6143,10 +6143,6 @@ static void properties_visibility_case() {
     cover(QStringLiteral("Alpha"));
     action([&] { shortcut(editor, Qt::Key_P); }, QStringLiteral("a"), {}, 0, &view);
     revealed(QStringLiteral("Alpha"));
-    collapse();
-    cover(QStringLiteral("Alpha"));
-    action([&] { shortcut(editor, Qt::Key_T); }, QStringLiteral("a"), {}, 0, tags);
-    revealed(QStringLiteral("Alpha"));
 
     view.setFocus(); pump();
     cover(QStringLiteral("Beta"));
@@ -7293,9 +7289,6 @@ static void separated_properties_case() {
         CHECK(view.transform() == zoom && view.mapToScene(view.viewport()->rect().center()) == center);
         retained();
 
-        trigger(*editor, "editTags");
-        CHECK(tags->hasFocus() && panel->isVisible());
-        CHECK(view.transform() == zoom && view.mapToScene(view.viewport()->rect().center()) == center);
         // External controls commit to the same document/history and retain their identity.
         QSignalSpy changed(editor, &Editor::documentChanged);
         std::vector<Json> history{baseline};
@@ -11337,13 +11330,14 @@ static void shortcut_help_case() {
         CHECK(exported(editor) == saved && changed.isEmpty());
         topicKey(editor, Qt::Key_Escape);
         shortcut(editor, Qt::Key_T);
-        auto *tags = editor.findChild<QLineEdit *>(QStringLiteral("nodeTags"));
+        auto *tags = editor.findChild<QLineEdit *>(QStringLiteral("popupNodeTags"));
         CHECK(tags && tags->hasFocus());
         QTest::keyClicks(tags, "?"); pump();
         CHECK(tags->hasFocus() && tags->text() == QStringLiteral("?") && !popup(editor));
         CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at("tags") == Json::array({"?"}));
         CHECK(changed.size() == 1 && selected.isEmpty());
         const Json typed = exported(editor);
+        QTest::keyClick(tags, Qt::Key_Escape); pump();
         open(editor);
         escape(editor);
         CHECK(exported(editor) == typed && changed.size() == 1);
@@ -12074,12 +12068,13 @@ static void node_shortcuts_case() {
         CHECK(toggle->isChecked() && popup->isVisible());
         QTest::keyClick(browser, Qt::Key_Escape); pump();
         shortcut(editor, Qt::Key_T);
-        auto *tags = editor.findChild<QLineEdit *>(QStringLiteral("nodeTags"));
+        auto *tags = editor.findChild<QLineEdit *>(QStringLiteral("popupNodeTags"));
         CHECK(tags && tags->hasFocus());
         QTest::keyClicks(tags, "p"); pump();
         jsonNode(expected, "a")["tags"] = Json::array({"p"});
         CHECK(tags->hasFocus() && toggle->isChecked() && scroll->isVisible());
         CHECK(exported(editor) == expected && changed.size() == 1);
+        QTest::keyClick(tags, Qt::Key_Escape); pump();
         shortcut(editor, Qt::Key_E);
         QTest::keyClicks(&topicInput(editor), "p"); pump();
         CHECK(topicInput(editor).toPlainText() == QStringLiteral("p") && toggle->isChecked());
@@ -12364,64 +12359,76 @@ static void node_shortcuts_case() {
         // Numeric codes are plain text outside color controls, even after a prefix.
         type("2");
         shortcut(editor, Qt::Key_T);
-        auto *tags = editor.findChild<QLineEdit *>(QStringLiteral("nodeTags"));
+        auto *tags = editor.findChild<QLineEdit *>(QStringLiteral("popupNodeTags"));
         CHECK(tags);
         tags->selectAll();
         type("1146");
         jsonNode(expected, "a")["tags"] = Json::array({"1146"});
         CHECK(exported(editor) == expected);
+        QTest::keyClick(tags, Qt::Key_Escape); pump();
         shortcut(editor, Qt::Key_E);
         QTest::keyClicks(&topicInput(editor), "1146");
         CHECK(topicInput(editor).toPlainText() == QStringLiteral("1146"));
         CHECK(exported(editor) == expected);
         topicKey(editor, Qt::Key_Escape);
     }
-    {
-        RawLabelEditor editor;
-        Json input = editorFixture();
-        jsonNode(input, "a")["tags"] = Json::array({"seed"});
-        jsonNode(input, "a")["icons"] = Json::array({"seed"});
-        jsonNode(input, "a")["note"] = "seed";
-        CHECK(editor.loadJson(encoded(input)) && editor.selectNode(QStringLiteral("a")));
-        showEditor(editor, QSize(760, 440));
-        auto *toggle = button(editor, "nodePropertiesToggle");
-        auto *tags = editor.findChild<QLineEdit *>(QStringLiteral("nodeTags"));
-        auto *icons = editor.findChild<QLineEdit *>(QStringLiteral("nodeIcons"));
-        auto *note = editor.findChild<QPlainTextEdit *>(QStringLiteral("nodeNote"));
-        CHECK(tags && icons && note);
-        tags->setCursorPosition(2); icons->setCursorPosition(2);
-        auto cursor = note->textCursor(); cursor.setPosition(2); note->setTextCursor(cursor);
-        Json expected = exported(editor);
-        const auto direction = editor.layoutDirection();
-        const auto zoom = graphics(editor).transform();
-        QSignalSpy changed(&editor, &Editor::documentChanged), selected(&editor, &Editor::selectionChanged);
-        for (const auto &entry : {std::make_pair(Qt::Key_T, "nodeTags"), std::make_pair(Qt::Key_O, "nodeIcons"),
-                                  std::make_pair(Qt::Key_N, "nodeNote")}) {
-            toggle->setChecked(false);
-            shortcut(editor, entry.first);
-            focused(editor, entry.second);
-            CHECK(toggle->isChecked() && exported(editor) == expected && changed.isEmpty());
-            CHECK(selected.isEmpty() && editor.layoutDirection() == direction && graphics(editor).transform() == zoom);
-            if (entry.first == Qt::Key_T) CHECK(tags->cursorPosition() == 2 && !tags->hasSelectedText());
-            if (entry.first == Qt::Key_N) CHECK(note->textCursor().position() == 2 && !note->textCursor().hasSelection());
-            if (entry.first == Qt::Key_O) {
-                CHECK(icons->cursorPosition() == 2 && !icons->hasSelectedText());
-                auto *popup = editor.findChild<QWidget *>(QStringLiteral("emojiPopup"));
-                CHECK(popup && popup->isVisible());
-                QTest::keyClick(icons, Qt::Key_Escape); pump();
-                CHECK(!popup->isVisible() && icons->hasFocus() && toggle->isChecked());
-                QTest::keyClick(icons, Qt::Key_Escape); pump();
-                CHECK(!toggle->isChecked() && graphics(editor).hasFocus());
-            }
+    for (bool icons : {false, true}) for (int panelMode = 0; panelMode < 3; ++panelMode) {
+        RawLabelConfig config;
+        config.separateNodePropertiesPanel = panelMode != 0;
+        RawLabelEditor editor(config);
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        if (panelMode == 2) delete editor.nodePropertiesPanel();
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        showEditor(editor);
+        auto *panel = editor.findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
+        const bool panelVisible = panel && panel->isVisible();
+        const char *inputName = icons ? "toolbarNodeIcons" : "popupNodeTags";
+        auto *menu = editor.findChild<QMenu *>(icons ? QStringLiteral("iconsPopupMenu") : QStringLiteral("tagsPopupMenu"));
+        auto *input = editor.findChild<QLineEdit *>(QString::fromLatin1(inputName));
+        CHECK(menu && input);
+        const Json before = exported(editor);
+        for (bool fromMenu : {false, true}) {
+            if (fromMenu) {
+                CHECK(contextMenu(editor, labelPoint(editor, QStringLiteral("Alpha")), [&](QMenu &context) {
+                    auto &action = textAction(context, {icons ? QStringLiteral("Add Icons") : QStringLiteral("Add Tags")});
+                    QTest::mouseClick(&context, Qt::LeftButton, Qt::NoModifier, context.actionGeometry(&action).center());
+                }));
+            } else shortcut(editor, icons ? Qt::Key_O : Qt::Key_T);
+            CHECK(menu->isVisible() && input->hasFocus());
+            CHECK((panel && panel->isVisible()) == panelVisible);
+            const QString value = icons ? QString::fromUtf8("😀") : QStringLiteral("direct tag");
+            input->setText(value);
+            Json expected = before;
+            jsonNode(expected, "a")[icons ? "icons" : "tags"] = Json::array({utf8(value)});
+            CHECK(exported(editor) == expected);
+            menu->hide();
+            CHECK(editor.undo() && exported(editor) == before && !editor.canUndo());
         }
-        QTest::keyClicks(note, "b"); pump();
-        jsonNode(expected, "a")["note"] = "sebed";
-        CHECK(note->hasFocus() && exported(editor) == expected && changed.size() == 1);
-        shortcut(editor, Qt::Key_T);
-        QTest::keyClicks(tags, "i"); pump();
-        jsonNode(expected, "a")["tags"] = Json::array({"seied"});
-        CHECK(tags->hasFocus() && exported(editor) == expected && changed.size() == 2);
-        CHECK(selected.isEmpty() && editor.layoutDirection() == direction && graphics(editor).transform() == zoom);
+        shortcut(editor, icons ? Qt::Key_O : Qt::Key_T);
+        CHECK(menu->isVisible());
+        CHECK(editor.selectNode(QStringLiteral("b")));
+        input->setText(QStringLiteral("stale popup"));
+        CHECK(!menu->isVisible() && exported(editor) == before);
+    }
+    for (bool icons : {false, true}) for (bool reload : {false, true}) {
+        RawLabelEditor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(QStringLiteral("a")));
+        showEditor(editor);
+        const Json before = exported(editor);
+        shortcut(editor, Qt::Key_E);
+        topicInput(editor).setPlainText(QStringLiteral("Accepted draft"));
+        bool reacted = false;
+        QObject::connect(&editor, &Editor::documentChanged, &editor, [&] {
+            if (reacted) return;
+            reacted = true;
+            if (reload) { CHECK(editor.loadJson(encoded(before))); CHECK(editor.selectNode(QStringLiteral("a"))); }
+            else CHECK(editor.selectNode(QStringLiteral("b")));
+        });
+        trigger(editor, icons ? "editIcons" : "editTags");
+        auto *menu = editor.findChild<QMenu *>(icons ? QStringLiteral("iconsPopupMenu") : QStringLiteral("tagsPopupMenu"));
+        CHECK(reacted && menu && !menu->isVisible());
+        CHECK(record(exported(editor), "nodes", QStringLiteral("a")).at(icons ? "icons" : "tags") ==
+              record(before, "nodes", QStringLiteral("a")).at(icons ? "icons" : "tags"));
     }
     {
         RawLabelConfig config;
@@ -12492,7 +12499,7 @@ static void node_shortcuts_case() {
         Json expected = exported(editor);
         changed.clear();
         QSignalSpy selected(&editor, &Editor::selectionChanged);
-        shortcut(editor, Qt::Key_T);
+        expandProperties(editor);
         auto *scroll = editor.findChild<QScrollArea *>();
         CHECK(scroll != nullptr);
         struct Field { const char *widget; const char *key; };
@@ -12948,7 +12955,7 @@ static void note_controls_case() {
         }
         CHECK(editor.targets == QStringList({root, root, root}));
     }
-    for (qreal zoom : {qreal(0.5), qreal(1), qreal(1.5)}) for (int route = 0; route < 3; ++route) {
+    for (qreal zoom : {qreal(0.5), qreal(1), qreal(1.5)}) for (int route = 0; route < 4; ++route) {
         NoteEditor editor;
         CHECK(editor.loadJson(encoded(notedFixture())));
         CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
@@ -12969,7 +12976,11 @@ static void note_controls_case() {
             QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, point);
             pump();
         } else if (route == 1) trigger(editor, "editNote");
-        else shortcut(editor, Qt::Key_N);
+        else if (route == 2) shortcut(editor, Qt::Key_N);
+        else CHECK(contextMenu(editor, labelPoint(editor, alpha), [](QMenu &menu) {
+            auto &action = textAction(menu, {QStringLiteral("Add Note")});
+            QTest::mouseClick(&menu, Qt::LeftButton, Qt::NoModifier, menu.actionGeometry(&action).center());
+        }));
         CHECK(editor.targets == QStringList({a}) && editor.selectedNodeId() == b);
         CHECK(changed.size() == 1 && !activeTopicInput(editor));
         Json expected = before;
@@ -13158,21 +13169,48 @@ static void note_controls_case() {
         }
         delete editor.data();
     }
-    for (bool buttonRoute : {false, true}) {
+    for (bool programmatic : {false, true}) for (int invalidation = -1; invalidation < 4; ++invalidation) {
+        NoteEditor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(a));
+        showEditor(editor);
+        const Json before = exported(editor);
+        CHECK(contextMenu(editor, labelPoint(editor, alpha), [&](QMenu &menu) {
+            auto &action = textAction(menu, {QStringLiteral("Add Note")});
+            CHECK(action.isEnabled());
+            if (invalidation == 0) CHECK(editor.selectNode(b));
+            else if (invalidation == 1) { CHECK(editor.loadJson(encoded(before))); CHECK(editor.selectNode(a)); }
+            else if (invalidation == 2) editor.setReadOnly(true);
+            else if (invalidation == 3) editor.setEnabled(false);
+            if (programmatic) { menu.hide(); action.trigger(); }
+            else QTest::mouseClick(&menu, Qt::LeftButton, Qt::NoModifier, menu.actionGeometry(&action).center());
+            CHECK(editor.targets.isEmpty()); // Host callbacks wait until the menu is destroyed.
+        }));
+        if (invalidation < 0) {
+            CHECK(editor.targets == QStringList({a}));
+            CHECK(record(exported(editor), "nodes", a).at("note") == utf8(editor.replacement));
+            CHECK(editor.undo() && exported(editor) == before && !editor.canUndo());
+        } else CHECK(editor.targets.isEmpty() && exported(editor) == before);
+    }
+    for (int route = 0; route < 4; ++route) {
         QPointer<NoteEditor> editor = new NoteEditor;
         CHECK(editor->loadJson(encoded(notedFixture())));
         showEditor(*editor);
         CHECK(editor->selectNode(a));
         int opened = 0;
         editor->opening = [&] { ++opened; delete editor.data(); };
-        if (buttonRoute) {
+        if (route == 0) {
             auto *viewport = graphics(*editor).viewport();
             const QPoint point = noteHandlePoint(*editor, alpha);
             QTest::mousePress(viewport, Qt::LeftButton, Qt::NoModifier, point);
             QMouseEvent release(QEvent::MouseButtonRelease, QPointF(point), QPointF(viewport->mapToGlobal(point)),
                                 Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
             QCoreApplication::sendEvent(viewport, &release);
-        } else trigger(*editor, "editNote");
+        } else if (route == 1) trigger(*editor, "editNote");
+        else CHECK(contextMenu(*editor, labelPoint(*editor, alpha), [&](QMenu &menu) {
+            auto &action = textAction(menu, {QStringLiteral("Add Note")});
+            if (route == 3) { menu.hide(); action.trigger(); }
+            else QTest::mouseClick(&menu, Qt::LeftButton, Qt::NoModifier, menu.actionGeometry(&action).center());
+        }));
         CHECK(editor.isNull() && opened == 1);
         pump();
     }
