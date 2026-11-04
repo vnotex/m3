@@ -1938,6 +1938,7 @@ MindMapEditor::MindMapEditor(const EditorConfig &config, QWidget *parent)
     : QWidget(parent) {
     initializeM3Resources();
     d = std::make_unique<Private>(this, config);
+    setFocusProxy(d->view);
 }
 MindMapEditor::~MindMapEditor() {
     d->invalidateFormatting();

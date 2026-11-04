@@ -65,6 +65,10 @@ Use a separate build directory for a different generator/toolchain. `--config`/C
 
 Use the installed public header `<m3/qt/editor.h>` and target `m3::qt_editor`; do not include `src/qt/` internals or try to share a core handle with the widget. Each editor owns its document. The host supplies `QApplication`, the GUI thread, widget ownership, and file/network policy.
 
+The editor's QWidget focus proxy is its canvas. Hosts can call `setFocus()` to restore map
+keyboard commands without changing selection or camera; property inputs still take focus
+when explicitly edited.
+
 ### Build and deploy the host
 Build/install m3 with `M3_BUILD_QT=ON`; the demo is optional (`M3_BUILD_QT_DEMO=OFF` for library-only builds). Add the m3 install prefix and a compatible Qt kit to the host's `CMAKE_PREFIX_PATH` (or set `m3_DIR` and `Qt6_DIR`). A standalone application's `CMakeLists.txt` can be:
 

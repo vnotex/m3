@@ -13268,6 +13268,33 @@ static void note_controls_case() {
 
 static void controls_case() {
     note_controls_case();
+    {
+        RawLabelEditor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(QStringLiteral("a")));
+        showEditor(editor);
+        expandProperties(editor);
+        auto *field = editor.findChild<QLineEdit *>(QStringLiteral("nodeTags"));
+        CHECK(field);
+        field->setFocus(); pump();
+        CHECK(field->hasFocus());
+        const Json before = exported(editor);
+        auto &view = graphics(editor);
+        const QTransform transform = view.transform();
+        const QPointF camera = view.mapToScene(view.viewport()->rect().center());
+        editor.setFocus(Qt::OtherFocusReason); pump();
+        CHECK(view.hasFocus() && editor.selectedNodeId() == QStringLiteral("a"));
+        CHECK(view.transform() == transform && view.mapToScene(view.viewport()->rect().center()) == camera);
+        CHECK(exported(editor) == before);
+        QTest::keyClick(QApplication::focusWidget(), Qt::Key_T); pump();
+        auto *tags = editor.findChild<QLineEdit *>(QStringLiteral("popupNodeTags"));
+        CHECK(tags && tags->hasFocus() && tags->isVisible());
+        tags->setText(QStringLiteral("Focused canvas"));
+        Json expected = before;
+        for (auto &node : expected["nodes"]) if (node["id"] == "a") node["tags"] = {"Focused canvas"};
+        CHECK(exported(editor) == expected);
+        QTest::keyClick(tags, Qt::Key_Escape); pump();
+        CHECK(editor.undo() && exported(editor) == before && !editor.canUndo());
+    }
     for (const bool readOnly : {false, true}) {
         RawLabelConfig config;
         config.separateNodePropertiesPanel = true;
