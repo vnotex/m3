@@ -279,6 +279,29 @@ operation, hosts must use `deleteLater()` to close the editor or panel: Qt still
 control after the signal returns. Direct editor commands continue to support synchronous host
 teardown; do not defer the property commit itself.
 
+### Basic mode
+
+`MindMapEditor::setBasicMode(bool)` changes an editor-local policy, initially `false`;
+`isBasicMode()` queries it. There is no built-in toggle or persisted setting. Full
+`setReadOnly(true)` still takes precedence. Basic mode permits editing existing nodes'
+**topics only**: appearance, tags, icons, hyperlink, image (including resizing) and note
+stay readable but cannot be edited through properties, menus, shortcuts, hooks or
+`updateNode()`. Empty/topic-only patches are accepted; mixed/non-topic patches fail
+atomically. Inline topics are literal, so `#tag` and `##` never modify tags.
+
+Node creation/deletion/moves, native subtree paste/duplicate and cross-link editing remain
+available. Rich inserted/imported nodes retain their metadata; basic mode does not strip
+it. Host MIME paste/drop acquisition is blocked. Copy, folding, navigation, URL/image
+activation, image context menus and exports remain available. Detached properties and
+custom Note inputs obey the same read-only policy as embedded controls.
+
+Real transitions cancel inline node/link drafts without committing, close formatting
+popups and cancel metadata gestures; unchanged values preserve drafts. Committed content,
+selection, camera and folds are unchanged. History is retained: basic undo/redo stops at
+the immediately adjacent command that actually changed non-topic node fields, resuming
+when basic mode is disabled. Topic/structure/link steps above a barrier remain accessible;
+echoed unchanged metadata does not make a topic edit a barrier. Coverage: `m3_qt_basic_mode`.
+
 ### Document lifecycle and host policy
 - **New/Open/Close:** the constructor already creates a selected root. Use `newDocument(topic)` or `loadJson(bytes)` to replace it; failed imports preserve the current document, selection, camera and folds. In a full host, prompt Save/Discard/Cancel before replacing a dirty document or closing. Track the filename separately and update it only on successful load/save. Reuse `DemoWindow::mayReplace`, `openFile`, `saveFile`, and `closeEvent` in `examples/qt_demo_window.cpp` as the reference, not as library internals.
 - **Blank input:** `loadJson()` treats zero bytes or only JSON whitespace (space, tab, CR, LF) as `newDocument()`: a selected `root` / `Central topic`, centered at 100%, with fresh history and no pending draft. Host loads remain allowed in read-only mode. Nonblank input retains the existing import rules (including optional-field trees); invalid input is never replaced with a default map. The Qt-free C JSON parser remains strict about blank input.

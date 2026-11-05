@@ -78,6 +78,10 @@
         <translation>문서가 읽기 전용입니다</translation>
     </message>
     <message>
+        <source>Node properties are read-only in basic mode</source>
+        <translation>기본 모드에서는 노드 속성을 읽기 전용으로만 사용할 수 있습니다</translation>
+    </message>
+    <message>
         <location line="+6"/>
         <source>Text cannot contain NUL characters</source>
         <translation>텍스트에는 NUL 문자를 포함할 수 없습니다</translation>

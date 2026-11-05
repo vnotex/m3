@@ -31,6 +31,7 @@ public:
     bool finishTopicEdit(bool commit, bool restoreFocus = false, bool keepEditing = false);
     bool hasPendingEdit() const { return pendingEdit; }
     void setReadOnly(bool value);
+    void setBasicMode(bool value);
     void prepare(NodePresentation &node) const;
     void install(Presentation presentation, bool resetCamera);
     void renderHtmlMap(Presentation presentation, HtmlMap &map) const;
@@ -95,6 +96,7 @@ private:
     QString resolvedFontFamily;
     void applyStyleFont();
     bool readOnly = false;
+    bool basicMode = false;
     Qt::MouseButton panning = Qt::NoButton;
     QSet<QString> selectedNodes;
     bool suppressNodeDoubleClick = false;

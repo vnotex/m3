@@ -71,7 +71,7 @@ if(M3_BUILD_QT)
     endif()
     set_target_properties(m3_test_qt_editor PROPERTIES
         AUTOMOC ON CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
-    set(_m3_qt_cases html html_edges markdown document tree_edits collapse graph_edits render balanced_clockwise navigation outline_navigation find multi_selection controls configuration shortcuts lifetime inline_edit host_commit read_only history link_interaction node_drag node_click properties formatting_toolbar branch_color clipboard hyperlinks images node_shortcuts shortcut_help orphans)
+    set(_m3_qt_cases html html_edges markdown document tree_edits collapse graph_edits render balanced_clockwise navigation outline_navigation find multi_selection controls configuration shortcuts lifetime inline_edit host_commit read_only basic_mode history link_interaction node_drag node_click properties formatting_toolbar branch_color clipboard hyperlinks images node_shortcuts shortcut_help orphans)
     if(M3_BUILD_QT_DEMO)
         find_package(Qt${QT_DEFAULT_MAJOR_VERSION} ${_m3_qt_min_version} REQUIRED COMPONENTS Network)
         target_link_libraries(m3_test_qt_editor PRIVATE Qt${QT_DEFAULT_MAJOR_VERSION}::Network)
@@ -92,7 +92,7 @@ if(M3_BUILD_QT)
     endforeach()
     # Collapse includes the full hover/rendering matrix and exceeds 30s in Debug.
     set_tests_properties(m3_qt_collapse m3_qt_html_edges m3_qt_images m3_qt_branch_color
-        m3_qt_render m3_qt_properties m3_qt_formatting_toolbar m3_qt_history PROPERTIES TIMEOUT 120)
+        m3_qt_render m3_qt_properties m3_qt_formatting_toolbar m3_qt_history m3_qt_basic_mode PROPERTIES TIMEOUT 120)
     if(M3_BUILD_QT_DEMO)
         set_tests_properties(m3_qt_demo_images PROPERTIES TIMEOUT 120)
     endif()

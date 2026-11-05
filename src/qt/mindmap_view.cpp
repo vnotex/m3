@@ -1003,7 +1003,7 @@ void MindMapView::beginTopicEdit(TopicKind kind, const QString &id, const QList<
     topicLabelVisible = label->isVisible();
     originalTopic = semanticTopic(topicLabel);
     originalTopicDraft = originalTopic;
-    if (kind == TopicKind::Node) originalTopicDraft.replace(QChar('#'), QStringLiteral("##"));
+    if (kind == TopicKind::Node && !basicMode) originalTopicDraft.replace(QChar('#'), QStringLiteral("##"));
     auto *input = new QPlainTextEdit(viewport());
     topicEditor = input;
     input->setObjectName(QStringLiteral("topicEditor"));
@@ -1012,7 +1012,7 @@ void MindMapView::beginTopicEdit(TopicKind kind, const QString &id, const QList<
     input->setPalette(palette());
     input->setPlainText(originalTopicDraft);
     connect(input, &QPlainTextEdit::textChanged, this, &MindMapView::updatePendingEdit);
-    if (kind == TopicKind::Node) input->setPlaceholderText(tr("#tag adds a tag\n## types #"));
+    if (kind == TopicKind::Node && !basicMode) input->setPlaceholderText(tr("#tag adds a tag\n## types #"));
     input->setTabChangesFocus(false);
     input->setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
     input->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -1134,7 +1134,7 @@ void MindMapView::setReadOnly(bool value) {
     if (readOnly == value) return;
     ++gestureGeneration;
     readOnly = value;
-    setAcceptDrops(!value);
+    setAcceptDrops(!value && !basicMode);
     clearLinkEndpointHandles();
     clearLinkCreation();
     clearNodeControls();
@@ -1146,6 +1146,15 @@ void MindMapView::setReadOnly(bool value) {
     const QPointer<MindMapView> guard(this);
     if (value) finishTopicEdit(false, true);
     if (guard) updatePanCursor(viewport()->mapFromGlobal(QCursor::pos()));
+}
+void MindMapView::setBasicMode(bool value) {
+    if (basicMode == value) return;
+    ++gestureGeneration;
+    basicMode = value;
+    setAcceptDrops(!readOnly && !basicMode);
+    clearImageResize();
+    clearNoteEditPress();
+    updatePanCursor(viewport()->mapFromGlobal(QCursor::pos()));
 }
 void MindMapView::updateTopicEditorGeometry() {
     if (!topicEditor || !topicLabel) return;
@@ -1192,7 +1201,7 @@ void MindMapView::setMimeDataPredicate(MimeDataPredicate predicate) {
     mimeDataPredicate = std::move(predicate);
 }
 void MindMapView::dragEnterEvent(QDragEnterEvent *event) {
-    if (!isEnabled() || readOnly || selectedNodes.size() > 1 || !event->possibleActions().testFlag(Qt::CopyAction) ||
+    if (!isEnabled() || readOnly || basicMode || selectedNodes.size() > 1 || !event->possibleActions().testFlag(Qt::CopyAction) ||
         !mimeDataPredicate || !mimeDataPredicate(event->mimeData())) {
         event->ignore();
         return;
@@ -1206,7 +1215,7 @@ void MindMapView::dragMoveEvent(QDragMoveEvent *event) {
 #else
     const QPoint position = event->pos();
 #endif
-    if (!isEnabled() || readOnly || selectedNodes.size() > 1 || !event->possibleActions().testFlag(Qt::CopyAction) ||
+    if (!isEnabled() || readOnly || basicMode || selectedNodes.size() > 1 || !event->possibleActions().testFlag(Qt::CopyAction) ||
         !mimeDataPredicate || !mimeDataPredicate(event->mimeData()) || !viewport()->rect().contains(position) ||
         !dynamic_cast<NodeItem *>(targetAt(position))) {
         event->ignore();
@@ -1225,7 +1234,7 @@ void MindMapView::dropEvent(QDropEvent *event) {
 #else
     const QPoint position = event->pos();
 #endif
-    if (!isEnabled() || readOnly || selectedNodes.size() > 1 || !event->possibleActions().testFlag(Qt::CopyAction) ||
+    if (!isEnabled() || readOnly || basicMode || selectedNodes.size() > 1 || !event->possibleActions().testFlag(Qt::CopyAction) ||
         !mimeDataPredicate || !mimeDataPredicate(event->mimeData()) || !viewport()->rect().contains(position)) {
         event->ignore();
         return;
@@ -1864,13 +1873,13 @@ void MindMapView::setSelection(const QStringList &nodes, const QString &link) {
                     (n->hyperlink.isEmpty() ? 0 : nodeControlSize + nodeControlGap),
                     n->rect.center().y() - nodeControlSize / 2);
             }
-            if (n->noteItem) n->noteItem->setCursor(readOnly ? Qt::ArrowCursor : Qt::PointingHandCursor);
+            if (n->noteItem) n->noteItem->setCursor(readOnly || basicMode ? Qt::ArrowCursor : Qt::PointingHandCursor);
             const bool selected = selectedNodes.contains(n->id);
             n->setSelected(selected);
             n->update();
             // itemChange enables image handles for every selected item; groups cannot resize.
             if (n->imageItem && n->imageItem->handle)
-                n->imageItem->handle->setVisible(!readOnly && selected && selectedNodes.size() == 1);
+                n->imageItem->handle->setVisible(!readOnly && !basicMode && selected && selectedNodes.size() == 1);
             if (!readOnly && selected && selectedNodes.size() == 1) {
                 nodeControlNode = n;
                 const QPointF anchor = n->rect.topRight();
@@ -2142,7 +2151,7 @@ void MindMapView::updatePanCursor(const QPoint &position) {
     else if (!resizedNodeId.isEmpty() || dynamic_cast<ImageResizeHandle *>(itemAt(position))) viewport()->setCursor(Qt::SizeFDiagCursor);
     else if (nodeDragging) viewport()->setCursor(dropTargetId.isEmpty() ? Qt::ForbiddenCursor : Qt::DragMoveCursor);
     else if (selectedNodes.size() <= 1 && (dynamic_cast<NodeLinkItem *>(itemAt(position)) ||
-             (!readOnly && dynamic_cast<NoteEditHandle *>(itemAt(position))))) viewport()->setCursor(Qt::PointingHandCursor);
+             (!readOnly && !basicMode && dynamic_cast<NoteEditHandle *>(itemAt(position))))) viewport()->setCursor(Qt::PointingHandCursor);
     else if (!targetAt(position)) viewport()->setCursor(Qt::OpenHandCursor);
     else viewport()->unsetCursor();
 }
@@ -2385,7 +2394,7 @@ void MindMapView::mousePressEvent(QMouseEvent *event) {
         {
             if (auto *handle = dynamic_cast<NoteEditHandle *>(itemAt(event->pos()))) {
                 event->accept();
-                if (!isEnabled() || readOnly) return;
+                if (!isEnabled() || readOnly || basicMode) return;
                 auto *node = static_cast<NodeItem *>(handle->parentItem());
                 if (node->isVisible()) id = node->id;
             }
@@ -2400,13 +2409,13 @@ void MindMapView::mousePressEvent(QMouseEvent *event) {
             setFocus(Qt::MouseFocusReason);
             if (!guard || generation != gestureGeneration) return;
             // The commit may replace every item; only the captured identity survives it.
-            if (!isEnabled() || readOnly || selectedNodes.size() > 1 ||
+            if (!isEnabled() || readOnly || basicMode || selectedNodes.size() > 1 ||
                 (selectedNodes.isEmpty() ? !selection.isEmpty() : *selectedNodes.cbegin() != selection)) return;
             if (!selectedNodes.contains(id)) {
                 emit nodePicked(id);
                 if (!guard || generation != gestureGeneration) return;
             }
-            if (isEnabled() && !readOnly && selectedNodes.size() == 1 && selectedNodes.contains(id)) {
+            if (isEnabled() && !readOnly && !basicMode && selectedNodes.size() == 1 && selectedNodes.contains(id)) {
                 for (auto *item : scene()->items()) {
                     auto *node = dynamic_cast<NodeItem *>(item);
                     if (!node || node->id != id || !node->isVisible() || !node->noteItem) continue;
@@ -2586,7 +2595,7 @@ void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
         const QString id = resizedNodeId, url = resizedImageUrl;
         const QSizeF original = originalImageSize, size = resizedImageSize;
         bool commit = false;
-        if (validPosition && imageResizeDragging && size != initialImageRectangle.size()) {
+        if (!readOnly && !basicMode && validPosition && imageResizeDragging && size != initialImageRectangle.size()) {
             auto *node = static_cast<NodeItem *>(resizedImageItem->parentItem());
             commit = node->isSelected() && node->id == id && node->image && node->image->url == url &&
                 QSizeF(node->image->width, node->image->height) == original;
@@ -2602,7 +2611,7 @@ void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
         if (event->button() != Qt::LeftButton) return;
         const QString id = pressedNoteNodeId;
         bool activate = false;
-        if (isEnabled() && !readOnly && selectedNodes.size() == 1 && selectedNodes.contains(id) &&
+        if (isEnabled() && !readOnly && !basicMode && selectedNodes.size() == 1 && selectedNodes.contains(id) &&
             viewport()->rect().contains(position) &&
             (position - notePressPosition).manhattanLength() < QApplication::startDragDistance()) {
             if (auto *handle = dynamic_cast<NoteEditHandle *>(itemAt(position));

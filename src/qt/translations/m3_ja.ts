@@ -78,6 +78,10 @@
         <translation>このドキュメントは読み取り専用です</translation>
     </message>
     <message>
+        <source>Node properties are read-only in basic mode</source>
+        <translation>基本モードではノードのプロパティは読み取り専用です</translation>
+    </message>
+    <message>
         <location line="+6"/>
         <source>Text cannot contain NUL characters</source>
         <translation>テキストに NUL 文字を含めることはできません</translation>

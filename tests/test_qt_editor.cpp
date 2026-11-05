@@ -10450,6 +10450,447 @@ static void host_commit_case() {
     }
 }
 
+static void basic_mode_api_case() {
+    const QString root = QStringLiteral("r"), a = QStringLiteral("a"), b = QStringLiteral("b");
+    // Initial action eligibility can inspect a populated clipboard during construction.
+    QApplication::clipboard()->setText(QStringLiteral("https://example.test/clipboard"));
+    RawLabelEditor editor;
+    CHECK(!editor.isBasicMode() && !editor.isReadOnly());
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    showEditor(editor);
+    CHECK(editor.selectNode(root));
+    const Json rich{{"tags", {"retained", "retained"}}, {"icons", {"star", "flag"}},
+        {"hyperLink", "https://example.test/retained"}, {"note", "Retained note\nsecond line"},
+        {"image", {{"url", "memory:retained"}, {"width", 40}, {"height", 20}}},
+        {"style", {{"fontSize", 19}, {"fontWeight", "bold"}, {"custom", {{"keep", {1, true, "opaque"}}}}}}};
+    CHECK(editor.updateNode(root, encoded(rich)));
+    Json expected = exported(editor);
+    QSignalSpy changed(&editor, &Editor::documentChanged), pending(&editor, &Editor::pendingEditChanged);
+    QSignalSpy readOnly(&editor, &Editor::readOnlyChanged);
+    editor.setBasicMode(true);
+    CHECK(editor.isBasicMode() && !editor.isReadOnly() && readOnly.isEmpty());
+    CHECK(exported(editor) == expected && changed.isEmpty());
+    CHECK(editor.updateNode(root, QByteArray("{}")) && changed.isEmpty());
+    CHECK(editor.updateNode(root, encoded(Json{{"topic", "API #literal ##escape"}})));
+    setTopic(expected, "r", QStringLiteral("API #literal ##escape"));
+    CHECK(exported(editor) == expected && changed.size() == 1);
+    CHECK(editor.renameNode(root, QStringLiteral("Renamed #topic")));
+    setTopic(expected, "r", QStringLiteral("Renamed #topic"));
+    CHECK(exported(editor) == expected && changed.size() == 2);
+    for (auto entry = rich.begin(); entry != rich.end(); ++entry) {
+        // Even echoed metadata is forbidden at the basic-mode API boundary.
+        Json patch{{entry.key(), entry.value()}};
+        rejectUnchanged(editor, [&] { return editor.updateNode(root, encoded(patch)); });
+        patch["topic"] = "Must not partially rename";
+        rejectUnchanged(editor, [&] { return editor.updateNode(root, encoded(patch)); });
+        CHECK(exported(editor) == expected && changed.size() == 2);
+    }
+    shortcut(editor, Qt::Key_F2);
+    CHECK(topicInput(editor).toPlainText() == QStringLiteral("Renamed #topic"));
+    const QString literal = QStringLiteral("  Literal #tag ##escaped\nSecond #line  ");
+    topicInput(editor).setPlainText(literal);
+    CHECK(editor.commitActiveEdit(true));
+    CHECK(topicInput(editor).toPlainText() == literal && !editor.hasPendingEdit());
+    setTopic(expected, "r", literal);
+    CHECK(exported(editor) == expected && changed.size() == 3);
+    topicKey(editor, Qt::Key_Return);
+    CHECK(!activeTopicInput(editor) && exported(editor) == expected && changed.size() == 3);
+
+    // Both edges discard node/link drafts; repeated values preserve text, selection and local undo.
+    for (bool link : {false, true}) for (bool basic : {false, true}) {
+        editor.setBasicMode(basic);
+        CHECK(link ? editor.selectLink(QStringLiteral("l1")) : editor.selectNode(root));
+        shortcut(editor, Qt::Key_F2);
+        auto *input = &topicInput(editor);
+        input->selectAll(); input->insertPlainText(QStringLiteral("Discard #draft ##literal"));
+        auto cursor = input->textCursor();
+        cursor.setPosition(2); cursor.setPosition(7, QTextCursor::KeepAnchor); input->setTextCursor(cursor);
+        CHECK(editor.hasPendingEdit() && input->document()->isUndoAvailable());
+        pending.clear(); changed.clear();
+        editor.setBasicMode(basic);
+        CHECK(activeTopicInput(editor) == input && input->hasFocus() && editor.hasPendingEdit());
+        CHECK(input->toPlainText() == QStringLiteral("Discard #draft ##literal"));
+        CHECK(input->textCursor().anchor() == 2 && input->textCursor().position() == 7);
+        CHECK(input->document()->isUndoAvailable() && pending.isEmpty() && changed.isEmpty());
+        editor.setBasicMode(!basic);
+        pump();
+        CHECK(editor.isBasicMode() == !basic && !activeTopicInput(editor) && !editor.hasPendingEdit());
+        CHECK(pending.size() == 1 && !pending.front().front().toBool());
+        CHECK(exported(editor) == expected && changed.isEmpty() && readOnly.isEmpty());
+    }
+    editor.setBasicMode(true);
+    CHECK(editor.selectNode(a));
+    editor.setReadOnly(true);
+    CHECK(editor.isBasicMode() && editor.isReadOnly());
+    rejectUnchanged(editor, [&] { return editor.renameNode(a, QStringLiteral("Forbidden")); });
+    rejectUnchanged(editor, [&] { return editor.updateNode(a, QByteArray("{}")); });
+    rejectUnchanged(editor, [&] { return !editor.addNode(a, QStringLiteral("Forbidden")).isEmpty(); });
+    rejectUnchanged(editor, [&] { return !editor.addLink(a, b, false).isEmpty(); });
+    CHECK(!editAction(editor, "editSelection").isEnabled() && !editAction(editor, "addChild").isEnabled());
+    editor.setBasicMode(false);
+    CHECK(editor.isReadOnly() && !editAction(editor, "editSelection").isEnabled());
+    editor.setBasicMode(true);
+    editor.setReadOnly(false);
+    CHECK(editor.isBasicMode() && editAction(editor, "editSelection").isEnabled());
+    CHECK(!editAction(editor, "editNote").isEnabled());
+    editor.setBasicMode(false);
+    CHECK(editor.updateNode(root, encoded(Json{{"note", "Full mode restored"}})));
+    CHECK(record(exported(editor), "nodes", root).at("note") == "Full mode restored");
+    for (bool basic : {false, true}) {
+        QPointer<RawLabelEditor> closing = new RawLabelEditor;
+        CHECK(closing->loadJson(encoded(editorFixture())));
+        closing->setBasicMode(basic);
+        showEditor(*closing);
+        CHECK(closing->selectNode(a));
+        shortcut(*closing, Qt::Key_F2);
+        topicInput(*closing).setPlainText(QStringLiteral("Discard before host closes"));
+        CHECK(closing->hasPendingEdit());
+        QObject::connect(closing.data(), &Editor::pendingEditChanged, qApp, [&](bool value) {
+            if (!value) delete closing.data();
+        });
+        closing->setBasicMode(!basic);
+        CHECK(closing.isNull());
+    }
+}
+
+static void basic_mode_history_case() {
+    const QString root = QStringLiteral("r"), a = QStringLiteral("a"), b = QStringLiteral("b");
+    RawLabelEditor editor;
+    showEditor(editor);
+    const Json patches[] = {
+        {{"tags", {"changed"}}}, {{"icons", {"changed"}}}, {{"hyperLink", "https://example.test/changed"}},
+        {{"note", "Changed note"}}, {{"image", {{"url", "memory:changed"}, {"width", 20}, {"height", 10}}}},
+        {{"style", {{"fontSize", 24}, {"nested", nullptr}}}}
+    };
+    for (const auto &patch : patches) {
+        editor.setBasicMode(false);
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        const Json original = exported(editor);
+        CHECK(editor.renameNode(a, QStringLiteral("Older topic")));
+        const Json older = exported(editor);
+        CHECK(editor.updateNode(root, encoded(patch)));
+        const Json protectedStep = exported(editor);
+        CHECK(editor.renameNode(a, QStringLiteral("Newer topic")));
+        const Json topic = exported(editor);
+        CHECK(!editor.addNode(a, QStringLiteral("New child")).isEmpty());
+        const Json structure = exported(editor);
+        CHECK(editor.updateLink(QStringLiteral("l1"), a, b, false, QStringLiteral("New link topic")));
+        const Json linked = exported(editor);
+        editor.setBasicMode(true);
+        CHECK(editor.canUndo() && editor.undo() && exported(editor) == structure);
+        CHECK(editor.undo() && exported(editor) == topic);
+        CHECK(editor.undo() && exported(editor) == protectedStep);
+        CHECK(!editor.canUndo() && !editAction(editor, "undo").isEnabled() && editor.canRedo());
+        QSignalSpy changed(&editor, &Editor::documentChanged);
+        CHECK(!editor.undo() && exported(editor) == protectedStep && changed.isEmpty());
+        QSignalSpy undo(&editor, &Editor::undoAvailable);
+        editor.setBasicMode(false);
+        CHECK(editor.canUndo() && editAction(editor, "undo").isEnabled());
+        CHECK(!undo.isEmpty() && undo.back().front().toBool() && changed.isEmpty());
+        CHECK(editor.undo() && exported(editor) == older);
+        editor.setBasicMode(true);
+        CHECK(!editor.canRedo() && !editAction(editor, "redo").isEnabled());
+        changed.clear();
+        CHECK(!editor.redo() && exported(editor) == older && changed.isEmpty());
+        // The immediate barrier must not disable unrelated steps on the other side of the cursor.
+        CHECK(editor.canUndo() && editor.undo() && exported(editor) == original);
+        CHECK(editor.canRedo() && editor.redo() && exported(editor) == older);
+        CHECK(!editor.canRedo());
+        QSignalSpy redo(&editor, &Editor::redoAvailable);
+        editor.setBasicMode(false);
+        CHECK(editor.canRedo() && !redo.isEmpty() && redo.back().front().toBool());
+        CHECK(editor.redo() && exported(editor) == protectedStep);
+        editor.setBasicMode(true);
+        CHECK(editor.redo() && exported(editor) == topic);
+        CHECK(editor.redo() && exported(editor) == structure);
+        CHECK(editor.redo() && exported(editor) == linked && !editor.canRedo());
+    }
+    editor.setBasicMode(false);
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    const Json original = exported(editor);
+    Json echoed = record(original, "nodes", root);
+    echoed.erase("id"); echoed.erase("children");
+    echoed["topic"] = "Only topic changes";
+    // Merge removal of an absent style key also leaves metadata unchanged.
+    echoed["style"]["absent"] = nullptr;
+    CHECK(editor.updateNode(root, encoded(echoed)));
+    const Json topicOnly = exported(editor);
+    editor.setBasicMode(true);
+    CHECK(editor.canUndo() && editor.undo() && exported(editor) == original);
+    CHECK(editor.redo() && exported(editor) == topicOnly);
+
+    editor.setBasicMode(false);
+    CHECK(editor.loadJson(encoded(editorFixture())) && editor.selectNode(root));
+    shortcut(editor, Qt::Key_F2);
+    topicInput(editor).setPlainText(QStringLiteral("Accepted #newtag"));
+    CHECK(editor.commitActiveEdit(true));
+    const Json tagged = exported(editor);
+    CHECK(record(tagged, "nodes", root).at("topic") == "Accepted");
+    CHECK(record(tagged, "nodes", root).at("tags").back() == "newtag");
+    topicInput(editor).moveCursor(QTextCursor::End);
+    topicInput(editor).insertPlainText(QStringLiteral(" continued"));
+    CHECK(editor.commitActiveEdit(true));
+    const Json continued = exported(editor);
+    CHECK(record(continued, "nodes", root).at("tags") == record(tagged, "nodes", root).at("tags"));
+    CHECK(continued != tagged);
+    editor.setBasicMode(true);
+    CHECK(!activeTopicInput(editor) && editor.canUndo());
+    CHECK(editor.undo() && exported(editor) == tagged && !editor.canUndo());
+    CHECK(editor.redo() && exported(editor) == continued);
+}
+
+static void basic_mode_properties_case() {
+    const QString root = QStringLiteral("r");
+    class CustomNoteEditor : public NoteEditor {
+    public:
+        using NoteEditor::NoteEditor;
+        QPlainTextEdit *customNote = nullptr;
+    protected:
+        QPlainTextEdit *createNoteEditor(QWidget *parent) override {
+            customNote = new QPlainTextEdit(parent);
+            return customNote;
+        }
+    };
+    for (bool separate : {false, true}) {
+        RawLabelConfig config;
+        config.separateNodePropertiesPanel = separate;
+        QMainWindow host;
+        auto *editor = new CustomNoteEditor(config, &host);
+        host.setCentralWidget(editor);
+        editor->setBasicMode(true); // Lazy custom controls must inherit the policy on first access.
+        CHECK(editor->loadJson(encoded(editorFixture())) && editor->selectNode(root));
+        QWidget *panel = nullptr;
+        if (separate) {
+            panel = editor->nodePropertiesPanel();
+            auto *dock = new QDockWidget(&host);
+            dock->setMinimumWidth(360); dock->setWidget(panel);
+            host.addDockWidget(Qt::RightDockWidgetArea, dock);
+            panel->show();
+        }
+        host.resize(1400, 900); host.show(); showEditor(*editor);
+        if (!separate) {
+            expandProperties(*editor);
+            panel = editor->findChild<QWidget *>(QStringLiteral("nodePropertiesPanel"));
+        }
+        CHECK(panel && panel->isVisible() && editor->customNote);
+        auto *scroll = panel->findChild<QScrollArea *>();
+        CHECK(scroll);
+        const Json before = exported(*editor);
+        QSignalSpy changed(editor, &Editor::documentChanged);
+        auto locked = [&] {
+            for (const char *name : {"nodeTags", "nodeIcons", "nodeUrl", "nodeImageUrl"}) {
+                auto *input = panel->findChild<QLineEdit *>(QString::fromLatin1(name));
+                CHECK(input && (!input->isEnabled() || input->isReadOnly()));
+                if (input->isEnabled()) {
+                    const QString text = input->text();
+                    scroll->ensureWidgetVisible(input); input->setFocus(); input->selectAll();
+                    QTest::keyClicks(input, "Forbidden property");
+                    CHECK(input->text() == text);
+                }
+            }
+            auto *note = editor->customNote;
+            CHECK(!note->isEnabled() || note->isReadOnly());
+            if (note->isEnabled()) {
+                scroll->ensureWidgetVisible(note); note->setFocus(); note->selectAll();
+                const QString text = note->toPlainText();
+                QTest::keyClicks(note, "Forbidden note");
+                CHECK(note->toPlainText() == text);
+            }
+            for (const char *name : {"nodeBold", "nodeItalic", "nodeTextColor", "nodeFillColor"}) {
+                auto *button = panel->findChild<QAbstractButton *>(QString::fromLatin1(name));
+                CHECK(button && !button->isEnabled()); button->click();
+            }
+            auto *size = panel->findChild<QComboBox *>(QStringLiteral("nodeFontSize"));
+            CHECK(size && !size->isEnabled());
+            CHECK(exported(*editor) == before && changed.isEmpty() && editor->targets.isEmpty());
+        };
+        locked();
+        editor->setBasicMode(false);
+        CHECK(editor->customNote->isEnabled() && !editor->customNote->isReadOnly());
+        auto *tags = panel->findChild<QLineEdit *>(QStringLiteral("nodeTags"));
+        CHECK(tags && tags->isEnabled() && !tags->isReadOnly());
+        editor->setBasicMode(true); locked();
+        editor->setReadOnly(true); editor->setBasicMode(false); locked();
+        editor->setReadOnly(false);
+        editor->customNote->setPlainText(QStringLiteral("Custom note writable again"));
+        CHECK(record(exported(*editor), "nodes", root).at("note") == "Custom note writable again");
+    }
+}
+
+static void basic_mode_surfaces_case() {
+    const QString root = QStringLiteral("r"), a = QStringLiteral("a"), b = QStringLiteral("b");
+    MimeEditor editor;
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    showEditor(editor, QSize(1200, 900));
+    CHECK(editor.selectNode(root));
+    const Json before = exported(editor);
+    editor.setBasicMode(true);
+    dialogs({}, [&] {
+        for (const char *name : {"fontSize", "toggleBold", "toggleItalic", "resetStyle", "textColor", "fillColor",
+                                 "textColorPopup", "fillColorPopup", "iconsPopup", "editTags", "editIcons", "editNote"}) {
+            auto &action = editAction(editor, name);
+            CHECK(!action.isEnabled()); action.trigger();
+        }
+        for (Qt::Key key : {Qt::Key_B, Qt::Key_I, Qt::Key_R, Qt::Key_N}) shortcut(editor, key);
+    });
+    CHECK(exported(editor) == before && !editor.hasPendingEdit());
+    CHECK(contextMenu(editor, labelPoint(editor, qs(record(before, "nodes", root).at("topic"))), [&](QMenu &menu) {
+        for (const auto &label : {"Add Tags", "Add Icons", "Add URL", "Add Image", "Add Note", "Branch Color"})
+            CHECK(!textAction(menu, {QString::fromLatin1(label)}).isEnabled());
+        CHECK(textAction(menu, {QStringLiteral("Duplicate")}).isEnabled());
+    }));
+    // Open formatting popups are canceled, and old widgets cannot apply after unlocking.
+    for (const char *name : {"textColorPopup", "fillColorPopup", "iconsPopup"}) {
+        editor.setBasicMode(false);
+        auto *menu = editAction(editor, name).menu();
+        CHECK(menu);
+        menu->popup(editor.mapToGlobal(QPoint(50, 50))); pump();
+        CHECK(menu->isVisible());
+        editor.setBasicMode(true); pump();
+        CHECK(!menu->isVisible());
+        editor.setBasicMode(false);
+        if (QString::fromLatin1(name) == QStringLiteral("iconsPopup")) {
+            auto *input = menu->findChild<QLineEdit *>(QStringLiteral("toolbarNodeIcons"));
+            CHECK(input); input->setText(QStringLiteral("stale icon"));
+        } else {
+            const QString prefix = QString::fromLatin1(name) == QStringLiteral("textColorPopup")
+                ? QStringLiteral("toolbarText_") : QStringLiteral("toolbarFill_");
+            auto *swatch = menu->findChild<QAbstractButton *>(prefix + QStringLiteral("nodeColor_e74c3c"));
+            CHECK(swatch); swatch->click();
+        }
+        CHECK(exported(editor) == before);
+    }
+    editor.setBasicMode(true);
+    auto *mime = new QMimeData;
+    mime->setUrls({QUrl(QStringLiteral("https://example.test/blocked"))});
+    mime->setImageData(imagePixels());
+    QApplication::clipboard()->setMimeData(mime);
+    pump();
+    CHECK(!editAction(editor, "paste").isEnabled());
+    shortcut(editor, Qt::Key_V, Qt::ControlModifier);
+    const QPoint point = labelPoint(editor, QStringLiteral("Alpha"));
+    QDragEnterEvent enter(point, Qt::CopyAction, mime, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(graphics(editor).viewport(), &enter);
+    QDragMoveEvent move(point, Qt::CopyAction, mime, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(graphics(editor).viewport(), &move);
+    QDropEvent drop(QPointF(point), Qt::CopyAction, mime, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(graphics(editor).viewport(), &drop);
+    CHECK(!enter.isAccepted() && !move.isAccepted() && !drop.isAccepted());
+    CHECK(editor.targets.isEmpty() && exported(editor) == before);
+
+    // Rich creation, native subtree paste and the actual Duplicate menu are structural edits.
+    editor.setAutoRandomBranchColor(false);
+    Json properties = record(before, "nodes", root);
+    properties.erase("id"); properties.erase("children");
+    const QStringList added = editor.addNodes(root, encoded(Json::array({properties})));
+    CHECK(added.size() == 1);
+    auto fields = [](Json node) { node.erase("id"); node.erase("children"); return node; };
+    CHECK(fields(record(exported(editor), "nodes", added.front())) == properties);
+    CHECK(editor.undo() && exported(editor) == before);
+    CHECK(editor.selectNode(root));
+    shortcut(editor, Qt::Key_C, Qt::ControlModifier);
+    CHECK(QApplication::clipboard()->mimeData()->hasFormat(QStringLiteral("application/x-m3-nodes+json")));
+    CHECK(editor.selectNode(b) && editAction(editor, "paste").isEnabled());
+    trigger(editor, "paste");
+    const Json pasted = exported(editor);
+    const QString clone = editor.selectedNodeId();
+    CHECK(!clone.isEmpty() && clone != root);
+    CHECK(fields(record(pasted, "nodes", clone)) == properties);
+    CHECK(pasted.at("nodes").size() == before.at("nodes").size() * 2);
+    CHECK(pasted.at("crossLinks").size() == before.at("crossLinks").size() * 2);
+    CHECK(editor.targets.isEmpty() && editor.undo() && exported(editor) == before);
+    CHECK(editor.redo() && exported(editor) == pasted);
+    CHECK(editor.undo() && editor.selectNode(a));
+    CHECK(contextMenu(editor, labelPoint(editor, QStringLiteral("Alpha")), [](QMenu &menu) {
+        auto &duplicate = textAction(menu, {QStringLiteral("Duplicate")});
+        CHECK(duplicate.isEnabled()); duplicate.trigger();
+    }));
+    CHECK(exported(editor).at("nodes").size() == before.at("nodes").size() + 2);
+    CHECK(editor.commitActiveEdit() && editor.undo() && exported(editor) == before);
+    const QString child = editor.addNode(a, QStringLiteral("Allowed child"));
+    CHECK(!child.isEmpty() && editor.moveNode(child, b));
+    const QString link = editor.addLink(a, child, true, QStringLiteral("Allowed link"));
+    CHECK(!link.isEmpty() && editor.updateLink(link, b, child, false, QStringLiteral("Updated link")));
+    CHECK(editor.removeLink(link) && editor.removeNode(child));
+    CHECK(exported(editor) == before && editor.isBasicMode());
+    CHECK(editor.loadJson(encoded(before)) && editor.isBasicMode() && exported(editor) == before);
+}
+
+static void basic_mode_gestures_case() {
+    const QString root = QStringLiteral("r"), a = QStringLiteral("a"), b = QStringLiteral("b");
+    const QString topic = QStringLiteral("Image root"), url = QStringLiteral("memory:picture");
+    NoteEditor editor;
+    QObject::connect(&editor, &Editor::imageRequested, &editor,
+        [&](const QString &requested, quint64 id) { editor.provideImage(requested, id, imagePixels()); });
+    CHECK(editor.loadJson(encoded(imageDocument())));
+    CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+    showEditor(editor, QSize(1200, 900));
+    CHECK(QTest::qWaitFor([&] { return imageHasColors(editor, topic, url); }, 5000));
+    editor.resetZoom(); CHECK(editor.selectNode(root));
+    const Json before = exported(editor);
+    const QPoint end = startImageResize(editor, QPointF(30, 15));
+    checkImageSize(nodeImageRect(editor), QSizeF(150, 75));
+    editor.setBasicMode(true);
+    releaseImageResize(editor, end);
+    checkImageSize(nodeImageRect(editor), QSizeF(120, 60));
+    CHECK(!imageHandle(editor) && exported(editor) == before);
+    CHECK(editor.selectNode(b));
+    QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, noteHandlePoint(editor, topic));
+    CHECK(editor.targets.isEmpty() && editor.selectedNodeId() == b && exported(editor) == before);
+    QSignalSpy imageActivated(&editor, &Editor::nodeImageActivated), urlActivated(&editor, &Editor::nodeLinkActivated);
+    QTest::mouseDClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier,
+                      graphics(editor).mapFromScene(nodeImageRect(editor).center()));
+    QTest::mouseRelease(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier,
+                        graphics(editor).mapFromScene(nodeImageRect(editor).center()));
+    pump();
+    CHECK(imageActivated.size() == 1 && imageActivated.front().front().toString() == root);
+    QTest::mouseClick(graphics(editor).viewport(), Qt::LeftButton, Qt::NoModifier, nodeLinkPoint(editor, topic));
+    pump();
+    CHECK(urlActivated.size() == 1 && urlActivated.front().front().toString() == root);
+    int imageMenus = 0;
+    QObject::connect(&editor, &Editor::nodeImageContextMenuRequested, &editor, [&](const QString &id, QMenu *menu) {
+        CHECK(id == root); ++imageMenus; menu->addAction(QStringLiteral("Host image viewer"));
+    });
+    CHECK(contextMenu(editor, graphics(editor).mapFromScene(nodeImageRect(editor).center()), [](QMenu &menu) {
+        CHECK(textAction(menu, {QStringLiteral("Host image viewer")}).isEnabled());
+    }));
+    CHECK(imageMenus == 1 && exported(editor) == before);
+
+    editor.activateWindow();
+    graphics(editor).setFocus(Qt::OtherFocusReason);
+    pump();
+    CHECK(editor.selectNode(a));
+    auto &view = graphics(editor);
+    const QPoint target = labelPoint(editor, QStringLiteral("Beta"));
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, linkHandlePoint(editor, QStringLiteral("Alpha")));
+    movePointer(view, target, Qt::LeftButton);
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, target); pump();
+    const QString link = editor.selectedLinkId();
+    CHECK(!link.isEmpty());
+    const Json linked = record(exported(editor), "crossLinks", link);
+    CHECK(linked.at("source") == "a" && linked.at("target") == "b");
+    topicInput(editor).setPlainText(QStringLiteral("Link #literal ##still"));
+    topicKey(editor, Qt::Key_Return);
+    CHECK(record(exported(editor), "crossLinks", link).at("topic") == "Link #literal ##still");
+    CHECK(editor.undo() && editor.undo() && exported(editor) == before);
+    const QPoint from = labelPoint(editor, QStringLiteral("Delta"));
+    const QPoint to = labelPoint(editor, QStringLiteral("Beta"));
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, from);
+    movePointer(view, to, Qt::LeftButton);
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, to); pump();
+    CHECK(record(exported(editor), "nodes", a).at("children").empty());
+    CHECK(record(exported(editor), "nodes", b).at("children") == Json::array({"d"}));
+    CHECK(editor.undo() && exported(editor) == before);
+}
+
+static void basic_mode_case() {
+    basic_mode_api_case();
+    basic_mode_history_case();
+    basic_mode_properties_case();
+    basic_mode_surfaces_case();
+    basic_mode_gestures_case();
+}
+
 static void read_only_case() {
     {
         RawLabelEditor editor;
@@ -16003,6 +16444,7 @@ int main(int argc, char **argv) {
         else if (name == "inline_edit") inline_edit_case();
         else if (name == "host_commit") host_commit_case();
         else if (name == "read_only") read_only_case();
+        else if (name == "basic_mode") basic_mode_case();
         else if (name == "history") history_case();
         else if (name == "link_interaction") link_interaction_case();
         else if (name == "configuration") configuration_case();

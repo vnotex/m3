@@ -78,6 +78,10 @@
         <translation>文档为只读</translation>
     </message>
     <message>
+        <source>Node properties are read-only in basic mode</source>
+        <translation>基本模式下节点属性为只读</translation>
+    </message>
+    <message>
         <location line="+6"/>
         <source>Text cannot contain NUL characters</source>
         <translation>文本不能包含 NUL 字符</translation>

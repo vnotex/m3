@@ -374,6 +374,17 @@ public:
     // Host-controlled newDocument/loadJson are permitted in read-only mode.
     void setReadOnly(bool readOnly);
     bool isReadOnly() const;
+    // Default false. Restricts existing node fields to topic-only editing, including
+    // updateNode(); appearance, tags, icons, URL, image and note remain readable.
+    // Inline topics are literal: # does not create tags. Structure, links, rich node
+    // insertion/import and native subtree paste remain available; host MIME insertion
+    // is blocked. Full read-only policy still takes precedence.
+    // Real transitions cancel inline drafts and metadata gestures without committing;
+    // repeated values do nothing. Committed content, selection, camera and folds stay.
+    // History is retained, but basic undo/redo stops at a non-topic node-field change.
+    // Editor-local policy, never persisted; does not add a user-facing toggle.
+    void setBasicMode(bool basicMode);
+    bool isBasicMode() const;
     bool canUndo() const;
     bool canRedo() const;
     // Accept a changed inline draft first, then traverse one document command.

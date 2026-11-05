@@ -24,14 +24,21 @@ public:
     void setSectionNumbering(bool enabled, const QString &pattern);
     void setReadOnly(bool value);
     bool isReadOnly() const { return readOnly; }
+    void setBasicMode(bool value);
+    bool isBasicMode() const { return basicMode; }
     QString resolveResourceUrl(const QString &value) const;
     void provideImage(const QString &url, quint64 requestId, const QImage &image);
     QImage cachedImage(const QString &url) const;
     void reloadImages();
     bool newDocument(const QString &topic);
     bool loadJson(const QByteArray &json);
-    bool canUndo() const { return !readOnly && historyCursor > 0; }
-    bool canRedo() const { return !readOnly && historyCursor + 1 < history.size(); }
+    bool canUndo() const {
+        return !readOnly && historyCursor > 0 && (!basicMode || !history[historyCursor].changesNodeMetadata);
+    }
+    bool canRedo() const {
+        return !readOnly && historyCursor + 1 < history.size() &&
+            (!basicMode || !history[historyCursor + 1].changesNodeMetadata);
+    }
     bool undo();
     bool redo();
     bool isRestoringHistory() const { return restoringHistory; }
@@ -94,6 +101,8 @@ private:
         QByteArray json;
         QStringList nodes;
         QString link;
+        // Marks the command that produced this snapshot, not its stored metadata.
+        bool changesNodeMetadata = false;
     };
     QByteArray currentSnapshot;
     std::vector<HistoryState> history;
@@ -114,6 +123,7 @@ private:
     bool autoSectionNumbering;
     QString sectionNumberPattern;
     bool readOnly = false;
+    bool basicMode = false;
     struct ImageResource {
         quint64 requestId = 0;
         QImage pixels;
@@ -145,10 +155,12 @@ private:
                          bool useImageCache = true, int initialLevels = 0, HtmlMap *html = nullptr);
     void install(Presentation presentation, bool resetCamera);
     bool replace(Map candidate);
-    bool commitChange(Map candidate, const QString &preferredNode, const QString &preferredLink = {});
+    bool commitChange(Map candidate, const QString &preferredNode, const QString &preferredLink = {},
+                      bool changesNodeMetadata = false);
     template<typename Operation>
     bool transact(Operation &&operation,
-                  const QString &preferredNode = {}, const QString &preferredLink = {});
+                  const QString &preferredNode = {}, const QString &preferredLink = {},
+                  bool changesNodeMetadata = false);
     bool finishChange(std::optional<Presentation> prepared = {}, bool resetCamera = false, bool restoring = false,
                       const QString &preferredNode = {}, const QString &preferredLink = {});
     void selection(QStringList nodes, QString link, bool ensureVisible = true);

@@ -237,6 +237,16 @@ void MindMapController::setReadOnly(bool value) {
     if (guard) view.setSelection(selectedNodes, selectedLink);
     if (guard) notifyHistoryAvailability();
 }
+void MindMapController::setBasicMode(bool value) {
+    if (basicMode == value) return;
+    const QPointer<MindMapController> guard(this);
+    view.finishTopicEdit(false, true);
+    if (!guard) return;
+    basicMode = value;
+    view.setBasicMode(value);
+    if (guard) view.setSelection(selectedNodes, selectedLink);
+    if (guard) notifyHistoryAvailability();
+}
 QString MindMapController::resolveResourceUrl(const QString &value) const {
     if (!resolveRelativeUrls || value.isEmpty()) return value;
     const QString path = QDir::fromNativeSeparators(value);
@@ -866,7 +876,7 @@ void MindMapController::notifyHistoryAvailability() {
     }
     if (!guard) return;
     // Recompute after the first signal: a synchronous host may edit/load/toggle
-    // read-only or destroy the editor instead of merely observing availability.
+    // editing policy or destroy the editor instead of merely observing availability.
     const bool redo = canRedo();
     if (redo != redoWasAvailable) {
         redoWasAvailable = redo;
@@ -892,7 +902,8 @@ void MindMapController::setUndoLimit(int limit) {
 }
 template<typename Operation>
 bool MindMapController::transact(Operation &&operation,
-                                 const QString &preferredNode, const QString &preferredLink) {
+                                 const QString &preferredNode, const QString &preferredLink,
+                                 bool changesNodeMetadata) {
     if (!writable()) return false;
     try {
         M3Mindmap *raw = nullptr;
@@ -900,13 +911,14 @@ bool MindMapController::transact(Operation &&operation,
         Map candidate(raw, m3_mindmap_destroy);
         requireStatus(parsed);
         requireStatus(operation(candidate.get()));
-        return commitChange(std::move(candidate), preferredNode, preferredLink);
+        return commitChange(std::move(candidate), preferredNode, preferredLink, changesNodeMetadata);
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
-bool MindMapController::commitChange(Map candidate, const QString &preferredNode, const QString &preferredLink) {
+bool MindMapController::commitChange(Map candidate, const QString &preferredNode, const QString &preferredLink,
+                                     bool changesNodeMetadata) {
     auto bytes = snapshot(candidate.get());
     if (bytes == currentSnapshot) { success(); return true; }
-    HistoryState next{bytes, selectedNodes, selectedLink};
+    HistoryState next{bytes, selectedNodes, selectedLink, changesNodeMetadata};
     const size_t required = historyCursor + 2;
     if (required > history.capacity())
         history.reserve(std::max(required, history.capacity() * 2));
@@ -1125,6 +1137,7 @@ bool MindMapController::renameNode(const QString &id, const QString &topic) {
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 bool MindMapController::commitTopicEdit(const QString &id, const QString &draft, const QString &previousDraft) {
+    if (basicMode) return renameNode(id, draft);
     if (!writable()) return false;
     if (!strings({id, draft, previousDraft})) return false;
     try {
@@ -1162,7 +1175,11 @@ bool MindMapController::updateNodeProperties(const QString &id, const QByteArray
         Text text(raw, m3_string_free);
         requireStatus(read);
         const auto original = Json::parse(text.get());
+        bool changesNodeMetadata = false;
         if (update.is_object()) {
+            if (basicMode)
+                for (auto member = update.cbegin(); member != update.cend(); ++member)
+                    if (member.key() != "topic") return fail(tr("Node properties are read-only in basic mode"));
             const auto style = update.find("style");
             if (style != update.end() && style->is_object()) {
                 Json merged = original.at("style");
@@ -1172,11 +1189,19 @@ bool MindMapController::updateNodeProperties(const QString &id, const QByteArray
                 }
                 *style = std::move(merged);
             }
+            for (auto member = update.cbegin(); member != update.cend(); ++member) {
+                if (member.key() == "topic") continue;
+                const auto previous = original.find(member.key());
+                if (previous == original.end() || *member != *previous) {
+                    changesNodeMetadata = true;
+                    break;
+                }
+            }
         }
         const auto serialized = update.dump();
         return transact([&](M3Mindmap *candidate) {
             return m3_mindmap_update_node(candidate, id.toUtf8().constData(), serialized.c_str());
-        });
+        }, {}, {}, changesNodeMetadata);
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
 }
 bool MindMapController::removeNode(const QString &id) {

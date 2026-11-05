@@ -709,7 +709,7 @@ public:
     enum class Action { ToggleBold, ToggleItalic, ResetStyle, TextColor, FillColor, Note, ToggleProperties };
     void activate(Action action) {
         if (!editor || !controller || !editor->isEnabled() ||
-            (action == Action::ToggleProperties ? separated : controller->isReadOnly())) return;
+            (action == Action::ToggleProperties ? separated : controller->isReadOnly() || controller->isBasicMode())) return;
         const QPointer<NodePropertiesPanel> guard(this);
         refresh();
         if (!guard || boundId.isEmpty()) return;
@@ -840,7 +840,7 @@ private:
         return fillColor->isChecked() ? QStringLiteral("background") : QStringLiteral("color");
     }
     bool canEdit() const {
-        return editor && controller && editor->isEnabled() && !controller->isReadOnly() &&
+        return editor && controller && editor->isEnabled() && !controller->isReadOnly() && !controller->isBasicMode() &&
             !boundId.isEmpty() && boundId == controller->selectedNodeId();
     }
     void applyStyle(const QJsonObject &style) {
@@ -1016,16 +1016,19 @@ public:
         }
         return std::nullopt;
     }
-    bool canFormat() const {
-        return host->isEnabled() && !controller->isReadOnly() &&
-            controller->selectedNodeIds().size() == 1 && !controller->selectedNodeId().isEmpty();
+    bool canEditNode() const {
+        return host->isEnabled() && !controller->isReadOnly() && !controller->selectedNodeId().isEmpty();
     }
+    bool canFormat() const { return canEditNode() && !controller->isBasicMode(); }
     FormattingBinding formattingBinding() const {
         return {formattingEpoch, controller->selectedNodeId()};
     }
-    bool validBinding(const FormattingBinding &binding) const {
+    bool validNodeBinding(const FormattingBinding &binding) const {
         return binding.epoch == formattingEpoch && !binding.node.isEmpty() &&
-            binding.node == controller->selectedNodeId() && canFormat();
+            binding.node == controller->selectedNodeId() && canEditNode();
+    }
+    bool validBinding(const FormattingBinding &binding) const {
+        return validNodeBinding(binding) && !controller->isBasicMode();
     }
     enum class NodeField { Tags, Icons, Url, Image, Note };
     void editNodeField(NodeField field, const FormattingBinding &binding,
@@ -1358,7 +1361,8 @@ public:
             const FormattingBinding binding = formattingBinding();
             const bool committed = view->finishTopicEdit(true);
             if (!guard) return;
-            if (!committed || !result->isEnabled() || (boundTarget && !validBinding(binding))) {
+            if (!committed || !result->isEnabled() || (boundTarget &&
+                !(result == pasteSelection ? validNodeBinding(binding) : validBinding(binding)))) {
                 syncFormatting();
                 return;
             }
@@ -1410,6 +1414,7 @@ public:
         const auto root = std::find_if(nodes.begin(), nodes.end(), [](const NodeChoice &entry) { return entry.root; });
         const bool deletableNodes = hasNodes && root != nodes.end() && !selectedNodes.contains(root->id);
         const bool writable = host->isEnabled() && !controller->isReadOnly();
+        const bool editableProperties = writable && !controller->isBasicMode();
         const bool movable = writable && node && !node->root;
         undoAction->setEnabled(controller->canUndo());
         redoAction->setEnabled(controller->canRedo());
@@ -1422,17 +1427,19 @@ public:
                 action->objectName() == QStringLiteral("editTags") ||
                 action->objectName() == QStringLiteral("editIcons") ||
                 action->objectName() == QStringLiteral("editNote");
-            action->setEnabled(node && panelAvailable && (writable || action == toggleProperties) &&
+            const bool editable = action->objectName() == QStringLiteral("editTopic") ? writable : editableProperties;
+            action->setEnabled(node && panelAvailable && (editable || action == toggleProperties) &&
                 (action != toggleProperties || !config.separateNodePropertiesPanel));
         }
-        for (auto *action : toolbarFormattingActions) action->setEnabled(writable && node);
-        if (!writable || !node) fontSizeAction->hidePopups();
+        for (auto *action : toolbarFormattingActions) action->setEnabled(editableProperties && node);
+        if (!editableProperties || !node) fontSizeAction->hidePopups();
         if (properties) properties->updateEditability();
         if (!guard) return;
         copySelection->setEnabled(hasNodes || hasLink);
         const auto *mime = QApplication::clipboard()->mimeData();
         pasteSelection->setEnabled(writable && node && mime &&
-            (mime->hasFormat(nodeClipboardMimeType) || host->canInsertFromMimeData(mime, MimeInsertionSource::Clipboard)));
+            (mime->hasFormat(nodeClipboardMimeType) ||
+                (editableProperties && host->canInsertFromMimeData(mime, MimeInsertionSource::Clipboard))));
         rootSelection->setEnabled(!nodes.empty());
         clearSelectionAction->setEnabled(hasNodes || hasLink);
         editSelection->setEnabled(writable && (node || hasLink));
@@ -1657,13 +1664,13 @@ public:
         pasteSelection = action("paste", tr("Paste"), {QKeySequence(QKeySequence::Paste)}, [this] {
             const QString target = controller->selectedNodeId();
             const QMimeData *source = QApplication::clipboard()->mimeData();
-            if (!canFormat() || !source) return;
+            if (!canEditNode() || !source) return;
             if (source->hasFormat(nodeClipboardMimeType)) {
                 const QPointer<MindMapEditor> guard(host);
                 const FormattingBinding binding = formattingBinding();
                 const QByteArray nodes = source->data(nodeClipboardMimeType);
-                if (guard && validBinding(binding)) controller->pasteNodes(target, nodes);
-            } else if (host->canInsertFromMimeData(source, MimeInsertionSource::Clipboard)) {
+                if (guard && validNodeBinding(binding)) controller->pasteNodes(target, nodes);
+            } else if (canFormat() && host->canInsertFromMimeData(source, MimeInsertionSource::Clipboard)) {
                 host->insertFromMimeData(target, source, MimeInsertionSource::Clipboard);
             }
         });
@@ -1760,8 +1767,8 @@ public:
                     if (!guard || node.id.isEmpty()) return;
                     menu.addActions({addChild, addSibling, addSiblingBefore});
                     menu.addAction(tr("Duplicate"), host, [this, binding] {
-                        if (validBinding(binding)) controller->duplicateNode(binding.node);
-                    })->setEnabled(canFormat());
+                        if (validNodeBinding(binding)) controller->duplicateNode(binding.node);
+                    })->setEnabled(canEditNode());
                     menu.addSeparator();
                     menu.addActions({copySelection, pasteSelection});
                     menu.addSeparator();
@@ -1777,7 +1784,7 @@ public:
                     addField(tr("Add Image"), NodeField::Image);
                     addField(tr("Add Note"), NodeField::Note);
                     auto *branchMenu = menu.addMenu(tr("Branch Color"));
-                    branchMenu->setEnabled(!controller->isReadOnly());
+                    branchMenu->setEnabled(canFormat());
                     auto *branchGroup = new QActionGroup(branchMenu);
                     branchGroup->setExclusive(true);
                     auto addBranchColor = [&](const QString &label, const QColor &color, const QJsonValue &value) {
@@ -1894,10 +1901,10 @@ public:
             if (editor->isEnabled()) emit editor->nodeImageActivated(id, image);
         });
         view->setMimeDataPredicate([editor](const QMimeData *source) {
-            return editor->canInsertFromMimeData(source, MimeInsertionSource::Drop);
+            return !editor->isBasicMode() && editor->canInsertFromMimeData(source, MimeInsertionSource::Drop);
         });
         QObject::connect(view, &MindMapView::mimeDataDropped, editor, [this, editor](const QString &nodeId, const QMimeData *source) {
-            if (!editor->isEnabled() || controller->isReadOnly() || nodeId.isEmpty() ||
+            if (!editor->isEnabled() || controller->isReadOnly() || controller->isBasicMode() || nodeId.isEmpty() ||
                 controller->selectedNodeIds().size() > 1 ||
                 !editor->canInsertFromMimeData(source, MimeInsertionSource::Drop)) return;
             // Do not commit an unrelated inline draft: the host owns drop policy.
@@ -2024,7 +2031,7 @@ bool MindMapEditor::canInsertFromMimeData(const QMimeData *source, MimeInsertion
     return origin == MimeInsertionSource::Drop && !droppedLocalFilePath(source).isEmpty();
 }
 void MindMapEditor::insertFromMimeData(const QString &nodeId, const QMimeData *source, MimeInsertionSource origin) {
-    if (origin != MimeInsertionSource::Drop || !isEnabled() || isReadOnly()) return;
+    if (origin != MimeInsertionSource::Drop || !isEnabled() || isReadOnly() || isBasicMode()) return;
     const QString path = droppedLocalFilePath(source);
     if (path.isEmpty()) return;
     const QJsonObject patch{{QStringLiteral("hyperLink"), QUrl::fromLocalFile(path).toString(QUrl::FullyEncoded)}};
@@ -2068,6 +2075,15 @@ void MindMapEditor::setReadOnly(bool value) {
     if (guard && changed && value == d->controller->isReadOnly()) emit readOnlyChanged(value);
 }
 bool MindMapEditor::isReadOnly() const { return d->controller->isReadOnly(); }
+void MindMapEditor::setBasicMode(bool value) {
+    if (value == d->controller->isBasicMode()) return;
+    const QPointer<MindMapEditor> guard(this);
+    d->controller->setBasicMode(value);
+    if (!guard) return;
+    d->invalidateFormatting();
+    if (guard) d->updateActions();
+}
+bool MindMapEditor::isBasicMode() const { return d->controller->isBasicMode(); }
 bool MindMapEditor::canUndo() const { return d->controller->canUndo(); }
 bool MindMapEditor::canRedo() const { return d->controller->canRedo(); }
 bool MindMapEditor::undo() { return d->controller->undo(); }
