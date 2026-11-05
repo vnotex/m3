@@ -1152,6 +1152,8 @@ void MindMapView::setBasicMode(bool value) {
     ++gestureGeneration;
     basicMode = value;
     setAcceptDrops(!readOnly && !basicMode);
+    clearLinkCreation();
+    clearNodeControls();
     clearImageResize();
     clearNoteEditPress();
     updatePanCursor(viewport()->mapFromGlobal(QCursor::pos()));
@@ -1860,7 +1862,7 @@ void MindMapView::setSelection(const QStringList &nodes, const QString &link) {
         finishTopicEdit(false);
         if (!guard) return;
     }
-    if (nodeControlNode && (readOnly || selectedNode.isEmpty() || !selectedLink.isEmpty() ||
+    if (nodeControlNode && (readOnly || basicMode || selectedNode.isEmpty() || !selectedLink.isEmpty() ||
         nodeControlNode->scene() != scene() || static_cast<NodeItem *>(nodeControlNode)->id != selectedNode))
         clearNodeControls();
     LinkItem *selectedLinkItem = nullptr;
@@ -1880,7 +1882,7 @@ void MindMapView::setSelection(const QStringList &nodes, const QString &link) {
             // itemChange enables image handles for every selected item; groups cannot resize.
             if (n->imageItem && n->imageItem->handle)
                 n->imageItem->handle->setVisible(!readOnly && !basicMode && selected && selectedNodes.size() == 1);
-            if (!readOnly && selected && selectedNodes.size() == 1) {
+            if (!readOnly && !basicMode && selected && selectedNodes.size() == 1) {
                 nodeControlNode = n;
                 const QPointF anchor = n->rect.topRight();
                 if (!linkCreationHandle) {
@@ -2310,8 +2312,8 @@ void MindMapView::mousePressEvent(QMouseEvent *event) {
         return;
     }
     suppressLinkContextMenu = false;
-    if (event->button() == Qt::LeftButton && panning == Qt::NoButton && resizedNodeId.isEmpty() &&
-        draggedNodeId.isEmpty() && pressedLinkNodeId.isEmpty() && !noteEditPressActive) {
+    if (!readOnly && !basicMode && event->button() == Qt::LeftButton && panning == Qt::NoButton &&
+        resizedNodeId.isEmpty() && draggedNodeId.isEmpty() && pressedLinkNodeId.isEmpty() && !noteEditPressActive) {
         QString source;
         {
             if (auto *handle = dynamic_cast<LinkCreationHandle *>(itemAt(event->pos()))) {
@@ -2325,7 +2327,7 @@ void MindMapView::mousePressEvent(QMouseEvent *event) {
             QPointer<MindMapView> guard(this);
             if (!finishTopicEdit(true) || !guard) return;
             setFocus(Qt::MouseFocusReason);
-            if (!guard) return;
+            if (!guard || readOnly || basicMode) return;
             // Draft commit may rebuild the scene; reacquire the selected source by ID.
             if (auto *node = static_cast<NodeItem *>(nodeControlOwner(linkCreationHandle));
                 node && node->id == source && node->isSelected() && node->isVisible() && linkCreationHandle->isVisible()) {
@@ -2578,7 +2580,7 @@ void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
         updateLinkCreation(event->pos());
         const QString source = linkSourceId;
         QString target;
-        if (linkCreating) {
+        if (!readOnly && !basicMode && linkCreating) {
             if (auto *node = static_cast<NodeItem *>(nodeControlOwner(linkCreationHandle));
                 node && node->id == source && node->isSelected() && node->isVisible())
                 target = linkTargetAt(event->pos(), linkSourceId);

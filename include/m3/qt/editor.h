@@ -376,10 +376,11 @@ public:
     bool isReadOnly() const;
     // Default false. Restricts existing node fields to topic-only editing, including
     // updateNode(); appearance, tags, icons, URL, image and note remain readable.
-    // Inline topics are literal: # does not create tags. Structure, links, rich node
-    // insertion/import and native subtree paste remain available; host MIME insertion
-    // is blocked. Full read-only policy still takes precedence.
-    // Real transitions cancel inline drafts and metadata gestures without committing;
+    // Inline topics are literal: # does not create tags. Structure, existing link edits,
+    // addLink(), rich node insertion/import and native subtree paste remain available.
+    // Host MIME insertion and dragging to create links are blocked; the creation handle
+    // is hidden. Full read-only policy still takes precedence.
+    // Real transitions cancel inline drafts, link creation and metadata gestures without committing;
     // repeated values do nothing. Committed content, selection, camera and folds stay.
     // History is retained, but basic undo/redo stops at a non-topic node-field change.
     // Editor-local policy, never persisted; does not add a user-facing toggle.

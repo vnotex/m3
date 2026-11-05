@@ -289,14 +289,17 @@ stay readable but cannot be edited through properties, menus, shortcuts, hooks o
 `updateNode()`. Empty/topic-only patches are accepted; mixed/non-topic patches fail
 atomically. Inline topics are literal, so `#tag` and `##` never modify tags.
 
-Node creation/deletion/moves, native subtree paste/duplicate and cross-link editing remain
-available. Rich inserted/imported nodes retain their metadata; basic mode does not strip
-it. Host MIME paste/drop acquisition is blocked. Copy, folding, navigation, URL/image
+Node creation/deletion/moves, native subtree paste/duplicate, existing cross-link editing
+and programmatic `addLink()` remain available. Basic mode hides the **Drag to create a link**
+handle and blocks creation drags, including one already in progress when the mode is enabled.
+Leaving basic mode restores the handle for a writable single-node selection. Rich
+inserted/imported nodes retain their metadata; basic mode does not strip it.
+Host MIME paste/drop acquisition is blocked. Copy, folding, navigation, URL/image
 activation, image context menus and exports remain available. Detached properties and
 custom Note inputs obey the same read-only policy as embedded controls.
 
 Real transitions cancel inline node/link drafts without committing, close formatting
-popups and cancel metadata gestures; unchanged values preserve drafts. Committed content,
+popups and cancel link-creation/metadata gestures; unchanged values preserve drafts. Committed content,
 selection, camera and folds are unchanged. History is retained: basic undo/redo stops at
 the immediately adjacent command that actually changed non-topic node fields, resuming
 when basic mode is disabled. Topic/structure/link steps above a barrier remain accessible;
