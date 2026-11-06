@@ -3,6 +3,7 @@
 #include "m3/qt/editor.h"
 #include "presentation.h"
 #include <QGraphicsView>
+#include <QGraphicsScene>
 #include <QHash>
 #include <QKeySequence>
 #include <QPointer>
@@ -16,6 +17,13 @@ class QPlainTextEdit;
 
 namespace m3::qt {
 struct HtmlMap;
+struct PreparedScene {
+    std::unique_ptr<QGraphicsScene> scene;
+    QHash<QString, QString> parents;
+    QSet<QString> nodes, links;
+    QPointF rootCenter;
+    QString rootId;
+};
 class MindMapView : public QGraphicsView {
     Q_OBJECT
 public:
@@ -32,6 +40,10 @@ public:
     bool hasPendingEdit() const { return pendingEdit; }
     void setReadOnly(bool value);
     void setBasicMode(bool value);
+    void setSourceOutlineMode(bool value);
+    void setSourceEditBusy(bool value) { sourceEditBusy = value; }
+    std::unique_ptr<PreparedScene> prepareScene(Presentation presentation) const;
+    void install(std::unique_ptr<PreparedScene> prepared, bool resetCamera, bool preserveDraft = false);
     void prepare(NodePresentation &node) const;
     void install(Presentation presentation, bool resetCamera);
     void renderHtmlMap(Presentation presentation, HtmlMap &map) const;
@@ -96,7 +108,7 @@ private:
     QString resolvedFontFamily;
     void applyStyleFont();
     bool readOnly = false;
-    bool basicMode = false;
+    bool basicMode = false, sourceOutlineMode = false, sourceEditBusy = false;
     Qt::MouseButton panning = Qt::NoButton;
     QSet<QString> selectedNodes;
     bool suppressNodeDoubleClick = false;

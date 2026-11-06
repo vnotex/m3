@@ -9,6 +9,8 @@
 #include <QVector>
 #include <QWidget>
 #include <memory>
+#include <functional>
+#include <optional>
 
 class QAction;
 class QMenu;
@@ -151,6 +153,23 @@ class QRectF;
 namespace m3::qt {
 struct OutlineEntry { QString id; QString topic; int level = 1; };
 struct FindResult { int totalMatches = 0; int currentMatch = -1; };
+struct SourceEdit {
+    enum class Kind { AddNode, MoveNode, RenameNode };
+    Kind kind;
+    QString nodeId;
+    QString parentId;
+    int index = -1; // Destination child index after removal; -1 appends.
+    QString topic;
+    // Native sibling actions identify their clicked anchor. Empty means child
+    // insertion, including public addNode(); parent/index alone loses this intent.
+    QString siblingId;
+};
+struct SourceEditCommand {
+    std::function<bool()> undo;
+    std::function<bool()> redo;
+};
+using SourceEditHandler = std::function<std::optional<SourceEditCommand>(const SourceEdit &)>;
+using SourceEditApproval = std::function<bool(const SourceEdit &)>;
 // Widget policy, initialized at construction; style and behavior have live setters.
 // No Qt-specific configuration enters the core.
 // Replace a shortcut list to rebind it, or clear it to disable its keyboard binding
@@ -369,6 +388,8 @@ public:
     // Snapshots never commit implicitly.
     bool commitActiveEdit(bool keepEditing = false);
     bool hasPendingEdit() const;
+    // Explicitly abandon only the unapplied draft. False while a source command is busy.
+    bool discardActiveEdit();
     // Cancels drafts/gestures and gates all semantic commands, not the widget.
     // Selection, copying, folding, navigation and camera controls remain available.
     // Host-controlled newDocument/loadJson are permitted in read-only mode.
@@ -386,6 +407,19 @@ public:
     // Editor-local policy, never persisted; does not add a user-facing toggle.
     void setBasicMode(bool basicMode);
     bool isBasicMode() const;
+    // Enables source-outline editing: literal topics, single additions and moves only.
+    // Apply/replay must not pump events or throw after writing the source. Rejection
+    // must leave it untouched. Prepare both callbacks before writing; native history
+    // owns their receipts. Approval is nonmutating and runs before move preparation.
+    // Rebinding resets history, retaining committed content and the active draft.
+    void setSourceEditHandler(SourceEditHandler handler, SourceEditApproval approve = {});
+    bool hasSourceEditHandler() const;
+    // Hosts must veto close/replacement/conversion/locking while true. Nested commands,
+    // history, policy rebinding and draft acceptance are rejected while busy.
+    bool isSourceEditBusy() const;
+    // Exact IDs/order/levels must match. Preserves draft/caret, selection, camera and
+    // folds; updates only topics and the current history snapshot, without a command.
+    bool synchronizeSourceTopics(const QVector<OutlineEntry> &entries);
     bool canUndo() const;
     bool canRedo() const;
     // Accept a changed inline draft first, then traverse one document command.

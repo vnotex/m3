@@ -305,6 +305,59 @@ the immediately adjacent command that actually changed non-topic node fields, re
 when basic mode is disabled. Topic/structure/link steps above a barrier remain accessible;
 echoed unchanged metadata does not make a topic edit a barrier. Coverage: `m3_qt_basic_mode`.
 
+### Source-outline host editing
+
+`setSourceEditHandler(handler, approve)` binds an editor to a host-owned source outline.
+It is independent of basic mode: only literal topic changes, single child/sibling additions
+and moves remain writable. Delete, duplicate, native/host paste, batch insertion, orphan
+creation/detach, all cross-link changes and rich patches are rejected at the API boundary
+and disabled in actions/menus/gesture handles. Full read-only still wins. Copy, folding,
+selection, navigation and camera remain available. A blank add commits an empty source
+section before its inline input opens; Escape retains that section.
+
+`SourceEdit` carries the opaque node ID, destination parent, after-removal child index
+(`-1` appends) and literal topic. Native sibling actions additionally carry `siblingId`, their
+clicked anchor; empty means child insertion, including public `addNode()`. Parent/index alone
+cannot distinguish Before/After at a boundary whose source headings have different absolute
+levels. Hosts validate same-parent/adjacent placement and use the anchor's source level.
+Semantic no-ops invoke neither callback nor history.
+Move approval runs before any candidate/history construction, after accepting an earlier
+draft. The optional approval callback may show the host's confirmation dialog but must
+not mutate source text. It must reject while any preceding source publication is pending.
+Cancellation leaves source and map unchanged. After approval native revision/permissions
+are rechecked; the apply callback must independently revalidate the source revision/writer.
+
+The apply handler is dialog-free. Native candidate validation, serialization, detached
+scene construction and history allocations finish before it runs. It returns an empty
+optional only if source text was not changed; acceptance returns **both** undo/redo
+closures, allocated with the host's receipt before writing source text. These callbacks
+must not pump events, replace projections, or throw after changing source text. Native
+publication uses nonthrowing swaps/moves before semantic notification. Ordinary editors
+retain the existing post-commit drawing-error behavior.
+
+`isSourceEditBusy()` covers approval, application and source history replay. Hosts must
+veto source/preview close, conversion, replacement and locking while it is true. Nested
+semantic commands, New/load, history, source-topic reconciliation and policy rebinding
+are rejected; autosave may serialize already committed JSON, but cannot accept a changed
+draft. Callback lifetime is guarded with QPointer. A source receipt must itself guard
+its document identity and exact undo boundary; native history never synthesizes inverse
+source edits or owns source text. Undo/redo prepares its target map and scene, asks the
+paired source callback to replay one group, then publishes. Rejection retains the native
+history cursor. History trimming, replacement and handler rebinding release receipts;
+rebinding starts a new baseline without replacing the document or draft.
+
+`synchronizeSourceTopics(entries)` accepts authoritative source normalization only when
+all IDs, order and levels exactly match. It changes topics and the current native history
+snapshot without adding a command or invoking the source handler, preserving selection,
+folds, camera and the same inline widget/caret/local undo. Config/style changes retain the
+installed handler. `commitActiveEdit(true)` accepts a draft without ending its input;
+`discardActiveEdit()` explicitly cancels only the unapplied draft. The boolean argument of
+`commitActiveEdit()` remains **keepEditing**, never a discard flag.
+
+Coverage is in the existing `host_commit`, `history`, `basic_mode`, `inline_edit`,
+`node_drag` and `tree_edits` native cases, using real QTextDocument groups and modal
+approval/autosave reentrancy. Application source parsing and persistence belong to the host.
+
 ### Document lifecycle and host policy
 - **New/Open/Close:** the constructor already creates a selected root. Use `newDocument(topic)` or `loadJson(bytes)` to replace it; failed imports preserve the current document, selection, camera and folds. In a full host, prompt Save/Discard/Cancel before replacing a dirty document or closing. Track the filename separately and update it only on successful load/save. Reuse `DemoWindow::mayReplace`, `openFile`, `saveFile`, and `closeEvent` in `examples/qt_demo_window.cpp` as the reference, not as library internals.
 - **Blank input:** `loadJson()` treats zero bytes or only JSON whitespace (space, tab, CR, LF) as `newDocument()`: a selected `root` / `Central topic`, centered at 100%, with fresh history and no pending draft. Host loads remain allowed in read-only mode. Nonblank input retains the existing import rules (including optional-field trees); invalid input is never replaced with a default map. The Qt-free C JSON parser remains strict about blank input.

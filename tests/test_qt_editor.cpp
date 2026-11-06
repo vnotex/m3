@@ -107,6 +107,135 @@ public:
         : Editor(config, parent) {}
 };
 
+// A real QTextDocument host for the native transaction boundary. It models source
+// headings as Markdown blocks; only the changed block interval is edited, in one
+// QTextDocument undo group. No JSON diff, source rollback or independent undo stack.
+class SourceDocumentHost {
+public:
+    using Edit = m3::qt::SourceEdit;
+    struct Receipt {
+        QVector<m3::qt::OutlineEntry> before, after;
+        int beforeSteps = 0, afterSteps = 0, redoSteps = 0;
+    };
+    explicit SourceDocumentHost(Editor &map) : editor(map), entries(map.outline()) {
+        document.setPlainText(text(entries));
+        editor.setSourceEditHandler([this](const Edit &edit) { return apply(edit); },
+            [this](const Edit &edit) {
+                ++approvals;
+                CHECK(editor.isSourceEditBusy());
+                return approval ? approval(edit) : true;
+            });
+    }
+    Editor &editor;
+    QTextDocument document;
+    QVector<m3::qt::OutlineEntry> entries;
+    std::function<bool(const Edit &)> approval;
+    std::function<void()> applying, replaying;
+    bool reject = false, rejectReplay = false;
+    int applies = 0, approvals = 0;
+    std::vector<std::weak_ptr<Receipt>> receipts;
+    static QString text(const QVector<m3::qt::OutlineEntry> &outline) {
+        QStringList lines;
+        for (const auto &entry : outline) lines.append(QString(entry.level, QChar('#')) + QChar(' ') + entry.topic);
+        return lines.join(QChar('\n'));
+    }
+    void check() const { CHECK(document.toPlainText() == text(editor.outline())); }
+private:
+    std::optional<m3::qt::SourceEditCommand> apply(const Edit &edit) {
+        ++applies;
+        CHECK(editor.isSourceEditBusy());
+        if (applying) applying();
+        if (reject) return {};
+        auto next = entries;
+        const auto find = [&](const QString &id) {
+            for (qsizetype i = 0; i < next.size(); ++i) if (next[i].id == id) return i;
+            return qsizetype(-1);
+        };
+        const auto end = [&](qsizetype start) {
+            qsizetype result = start + 1;
+            while (result < next.size() && next[result].level > next[start].level) ++result;
+            return result;
+        };
+        if (edit.kind == Edit::Kind::RenameNode) {
+            const auto index = find(edit.nodeId);
+            CHECK(index >= 0);
+            next[index].topic = edit.topic;
+        } else {
+            QVector<m3::qt::OutlineEntry> moved;
+            if (edit.kind == Edit::Kind::MoveNode) {
+                const auto start = find(edit.nodeId), stop = end(start);
+                moved = next.sliced(start, stop - start);
+                next.remove(start, stop - start);
+            } else moved.append({edit.nodeId, edit.topic, 1});
+            const auto parent = find(edit.parentId);
+            CHECK(parent >= 0);
+            const int delta = next[parent].level + 1 - moved.front().level;
+            for (auto &entry : moved) entry.level += delta;
+            qsizetype position = parent + 1;
+            int child = 0;
+            while (position < next.size() && next[position].level > next[parent].level && child != edit.index) {
+                position = end(position);
+                ++child;
+            }
+            for (qsizetype i = 0; i < moved.size(); ++i) next.insert(position + i, moved[i]);
+        }
+        auto receipt = std::make_shared<Receipt>();
+        receipt->before = entries;
+        receipt->after = next;
+        receipt->beforeSteps = document.availableUndoSteps();
+        const QPointer<QTextDocument> source(&document);
+        m3::qt::SourceEditCommand command{
+            [this, source, receipt] {
+                CHECK(editor.isSourceEditBusy());
+                if (replaying) replaying();
+                if (!source || rejectReplay || !source->isUndoAvailable() ||
+                    source->availableUndoSteps() != receipt->afterSteps) return false;
+                source->undo();
+                receipt->redoSteps = source->availableRedoSteps();
+                entries = receipt->before;
+                return true;
+            },
+            [this, source, receipt] {
+                CHECK(editor.isSourceEditBusy());
+                if (replaying) replaying();
+                if (!source || rejectReplay || !source->isRedoAvailable() ||
+                    source->availableUndoSteps() != receipt->beforeSteps ||
+                    source->availableRedoSteps() != receipt->redoSteps) return false;
+                source->redo();
+                entries = receipt->after;
+                return true;
+            }
+        };
+        const auto beforeLines = text(entries).split(QChar('\n'));
+        const auto afterLines = text(next).split(QChar('\n'));
+        qsizetype first = 0, beforeEnd = beforeLines.size(), afterEnd = afterLines.size();
+        while (first < beforeEnd && first < afterEnd && beforeLines[first] == afterLines[first]) ++first;
+        while (beforeEnd > first && afterEnd > first && beforeLines[beforeEnd - 1] == afterLines[afterEnd - 1]) {
+            --beforeEnd;
+            --afterEnd;
+        }
+        // Include the separator at the preceding block when the interval reaches EOF.
+        int begin = first < beforeLines.size() ? document.findBlockByNumber(int(first)).position() : document.characterCount() - 1;
+        int finish = beforeEnd < beforeLines.size() ? document.findBlockByNumber(int(beforeEnd)).position() : document.characterCount() - 1;
+        QString replacement = QStringList(afterLines.sliced(first, afterEnd - first)).join(QChar('\n'));
+        if (beforeEnd < beforeLines.size()) replacement += QChar('\n');
+        else if (first > 0) {
+            if (first < beforeLines.size()) --begin;
+            replacement.prepend(QChar('\n'));
+        }
+        receipts.push_back(receipt);
+        QTextCursor cursor(&document);
+        cursor.setPosition(begin);
+        cursor.setPosition(finish, QTextCursor::KeepAnchor);
+        cursor.beginEditBlock();
+        cursor.insertText(replacement);
+        cursor.endEditBlock();
+        receipt->afterSteps = document.availableUndoSteps();
+        entries.swap(next);
+        return command;
+    }
+};
+
 static QString qs(const Json &value) {
     const auto &text = value.get_ref<const std::string &>();
     return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
@@ -2364,7 +2493,48 @@ static void document_case() {
     }
 }
 
+static void source_tree_edits_case() {
+    RawLabelEditor editor;
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    showEditor(editor);
+    SourceDocumentHost host(editor);
+    const QString a = QStringLiteral("a"), root = QStringLiteral("r");
+    CHECK(editor.selectNode(a));
+    shortcut(editor, Qt::Key_Return); // Actual sibling-add action, followed by its inline input.
+    const QString gamma = editor.selectedNodeId();
+    CHECK(gamma != a && !gamma.isEmpty() && activeTopicInput(editor));
+    CHECK(record(exported(editor), "nodes", gamma).at("topic") == "");
+    host.check();
+    topicInput(editor).setPlainText(QStringLiteral("Gamma"));
+    topicKey(editor, Qt::Key_Return);
+    host.check();
+    shortcut(editor, Qt::Key_Tab);
+    const QString delta = editor.selectedNodeId();
+    CHECK(delta != gamma && activeTopicInput(editor));
+    topicInput(editor).setPlainText(QStringLiteral("Delta #literal"));
+    topicKey(editor, Qt::Key_Return);
+    CHECK(record(exported(editor), "nodes", gamma).at("children") == Json::array({utf8(delta)}));
+    host.check();
+    CHECK(editor.selectNode(root));
+    shortcut(editor, Qt::Key_Return); // Enter on the main root adds a child.
+    const QString empty = editor.selectedNodeId();
+    CHECK(!empty.isEmpty() && empty != root);
+    const QByteArray added = editor.toJson();
+    const QString sourceAdded = host.document.toPlainText();
+    topicKey(editor, Qt::Key_Escape);
+    CHECK(!activeTopicInput(editor) && editor.toJson() == added && host.document.toPlainText() == sourceAdded);
+    CHECK(record(exported(editor), "nodes", root).at("children").back() == utf8(empty));
+    const int applied = host.applies, approved = host.approvals;
+    CHECK(!editor.moveNode(gamma, delta));
+    CHECK(!editor.moveNode(root, a));
+    CHECK(editor.addNode(QStringLiteral("missing"), QStringLiteral("bad")).isEmpty());
+    CHECK(editor.addNode(root, QStringLiteral("bad"), 999).isEmpty());
+    CHECK(editor.toJson() == added && host.document.toPlainText() == sourceAdded);
+    CHECK(host.applies == applied && host.approvals == approved);
+}
+
 static void tree_edits_case() {
+    source_tree_edits_case();
     Json input = editorFixture();
     for (auto &entry : input.at("nodes")) if (entry.at("id") == "a") {
         entry["note"] = "Do not overwrite";
@@ -4216,7 +4386,38 @@ static void empty_space_panning_case() {
     CHECK(changed.size() == 1);
 }
 
+static void source_node_drag_case() {
+    for (bool accept : {false, true}) {
+        RawLabelEditor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        CHECK(editor.setLayoutDirection(Editor::LayoutDirection::Right));
+        showEditor(editor);
+        assertFit(editor);
+        SourceDocumentHost host(editor);
+        const QByteArray before = editor.toJson();
+        const QString source = host.document.toPlainText();
+        host.approval = [&](const m3::qt::SourceEdit &edit) {
+            CHECK(edit.nodeId == QStringLiteral("a") && edit.parentId == QStringLiteral("b"));
+            CHECK(editor.toJson() == before && host.document.toPlainText() == source);
+            return accept;
+        };
+        auto &view = graphics(editor);
+        const QPoint from = labelPoint(editor, QStringLiteral("Alpha"));
+        const QPoint to = labelPoint(editor, QStringLiteral("Beta"));
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, from);
+        movePointer(view, to, Qt::LeftButton);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, to);
+        pump();
+        CHECK(host.approvals == 1 && host.applies == (accept ? 1 : 0));
+        if (accept) {
+            host.check();
+            CHECK(editor.undo() && editor.toJson() == before && host.document.toPlainText() == source);
+        } else CHECK(editor.toJson() == before && host.document.toPlainText() == source);
+    }
+}
+
 static void node_drag_case() {
+    source_node_drag_case();
     const QString alpha = QStringLiteral("Alpha"), beta = QStringLiteral("Beta"), delta = QStringLiteral("Delta");
     const QString a = QStringLiteral("a"), b = QStringLiteral("b"), d = QStringLiteral("d"), r = QStringLiteral("r");
     auto prepare = [](Editor &editor) {
@@ -9926,7 +10127,147 @@ static void link_interaction_case() {
     }
 }
 
+static void source_host_commit_case() {
+    const QString a = QStringLiteral("a"), b = QStringLiteral("b"), root = QStringLiteral("r");
+    RawLabelEditor editor;
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    showEditor(editor);
+    SourceDocumentHost host(editor);
+    const QByteArray initial = editor.toJson();
+    const QString initialSource = host.document.toPlainText();
+    QSignalSpy changes(&editor, &Editor::documentChanged);
+    host.reject = true;
+    CHECK(!editor.renameNode(a, QStringLiteral("rejected")));
+    CHECK(editor.addNode(a, QStringLiteral("rejected")).isEmpty());
+    CHECK(!editor.moveNode(a, b));
+    CHECK(editor.toJson() == initial && host.document.toPlainText() == initialSource);
+    CHECK(changes.isEmpty() && !editor.canUndo() && !host.document.isUndoAvailable());
+    host.reject = false;
+    host.applying = [] { throw std::runtime_error("Host source unavailable"); };
+    CHECK(!editor.renameNode(a, QStringLiteral("throwing source")));
+    CHECK(!editor.isSourceEditBusy() && editor.toJson() == initial && host.document.toPlainText() == initialSource);
+    host.applying = {};
+    const int applied = host.applies, approved = host.approvals;
+    CHECK(editor.renameNode(a, QStringLiteral("Alpha")));
+    CHECK(editor.updateNode(a, QByteArray("{}")));
+    CHECK(editor.moveNode(a, root, 0));
+    CHECK(host.applies == applied && host.approvals == approved && changes.isEmpty());
+    // The apply callback is dialog-free. Every nested semantic/history/load/policy
+    // operation is rejected, including a host attempting to reconcile too early.
+    host.applying = [&] {
+        CHECK(!editor.renameNode(b, QStringLiteral("nested")));
+        CHECK(!editor.newDocument() && !editor.loadJson(initial));
+        CHECK(!editor.undo() && !editor.redo());
+        CHECK(!editor.synchronizeSourceTopics(editor.outline()));
+        editor.setReadOnly(true);
+        editor.setBasicMode(true);
+        editor.setUndoLimit(1);
+        editor.setSourceEditHandler({});
+        CHECK(editor.hasSourceEditHandler() && !editor.isReadOnly() && !editor.isBasicMode());
+        CHECK(editor.toJson() == initial);
+    };
+    CHECK(editor.renameNode(a, QStringLiteral("Literal # [x] & Ω")));
+    host.applying = {};
+    host.check();
+    CHECK(changes.size() == 1 && editor.canUndo() && !editor.isSourceEditBusy());
+    CHECK(record(exported(editor), "nodes", a).at("tags").empty());
+    const QByteArray renamed = editor.toJson();
+    const QString renamedSource = host.document.toPlainText();
+    bool accepted = false;
+    host.approval = [&](const m3::qt::SourceEdit &edit) {
+        CHECK(edit.kind == m3::qt::SourceEdit::Kind::MoveNode && edit.nodeId == a && edit.parentId == b);
+        CHECK(editor.toJson() == renamed && host.document.toPlainText() == renamedSource);
+        QDialog dialog(&editor);
+        QTimer::singleShot(0, &dialog, [&] {
+            // Autosave can capture committed JSON during modal approval but cannot
+            // create a stale candidate or publish a new topic draft.
+            CHECK(editor.commitActiveEdit(true));
+            CHECK(editor.toJson() == renamed);
+            CHECK(!editor.renameNode(a, QStringLiteral("stale candidate")));
+            CHECK(!editor.loadJson(initial) && !editor.newDocument());
+            CHECK(!editor.undo() && !editor.redo() && !editor.discardActiveEdit());
+            editor.setSourceEditHandler({});
+            editor.setReadOnly(true);
+            CHECK(editor.hasSourceEditHandler() && !editor.isReadOnly());
+            dialog.done(accepted ? QDialog::Accepted : QDialog::Rejected);
+        });
+        return dialog.exec() == QDialog::Accepted;
+    };
+    CHECK(!editor.moveNode(a, b));
+    CHECK(editor.toJson() == renamed && host.document.toPlainText() == renamedSource);
+    accepted = true;
+    CHECK(editor.moveNode(a, b));
+    host.check();
+    CHECK(record(exported(editor), "nodes", b).at("children").back() == "a");
+    CHECK(record(exported(editor), "nodes", a).at("topic") == utf8(QStringLiteral("Literal # [x] & Ω")));
+    const auto added = editor.addNode(b, QStringLiteral("Gamma"));
+    CHECK(!added.isEmpty());
+    host.check();
+    CHECK(editor.updateNode(added, encoded(Json{{"topic", "Delta #literal"}})));
+    host.check();
+    CHECK(host.applies == applied + 4);
+    // Cancellation after a preceding accepted draft cannot apply the move. Failed
+    // host acceptance retains the exact same inline widget, selection and local undo.
+    CHECK(editor.selectNode(added));
+    shortcut(editor, Qt::Key_F2);
+    QPointer<QPlainTextEdit> input = &topicInput(editor);
+    input->selectAll(); input->insertPlainText(QStringLiteral("Unaccepted #topic"));
+    auto caret = input->textCursor(); caret.setPosition(2); caret.setPosition(7, QTextCursor::KeepAnchor); input->setTextCursor(caret);
+    const QByteArray beforeDraft = editor.toJson();
+    host.reject = true;
+    CHECK(!editor.commitActiveEdit(true));
+    CHECK(input && activeTopicInput(editor) == input && editor.hasPendingEdit());
+    CHECK(input->textCursor().anchor() == 2 && input->textCursor().position() == 7);
+    CHECK(editor.toJson() == beforeDraft);
+    host.reject = false;
+    CHECK(editor.commitActiveEdit(true));
+    CHECK(input && activeTopicInput(editor) == input && !editor.hasPendingEdit());
+    CHECK(input->document()->isUndoAvailable());
+    CHECK(input->textCursor().anchor() == 2 && input->textCursor().position() == 7);
+    editor.setStyle(RawLabelConfig{}.style);
+    editor.setSectionNumbering(true, QStringLiteral("1.1."));
+    editor.setBasicMode(true);
+    editor.setBasicMode(false);
+    CHECK(input && activeTopicInput(editor) == input && editor.hasSourceEditHandler());
+    input->insertPlainText(QStringLiteral("unapplied"));
+    const auto saved = editor.toJson();
+    CHECK(editor.discardActiveEdit() && !editor.hasPendingEdit() && editor.toJson() == saved);
+    host.check();
+    // The modal boundary owns its IDs, rather than borrowing caller QStrings.
+    {
+        RawLabelEditor captured;
+        CHECK(captured.loadJson(initial));
+        SourceDocumentHost capturedHost(captured);
+        QString requestedNode = a, requestedParent = b;
+        capturedHost.approval = [&](const m3::qt::SourceEdit &edit) {
+            CHECK(edit.nodeId == a && edit.parentId == b);
+            requestedNode = QStringLiteral("c");
+            requestedParent = root;
+            return true;
+        };
+        CHECK(captured.moveNode(requestedNode, requestedParent));
+        capturedHost.check();
+        CHECK(record(exported(captured), "nodes", b).at("children").back() == "a");
+    }
+    // Callback teardown never dereferences a retired controller/view.
+    for (bool approval : {false, true}) {
+        QPointer<Editor> closing = new RawLabelEditor;
+        CHECK(closing->loadJson(initial));
+        closing->setSourceEditHandler([&](const m3::qt::SourceEdit &) -> std::optional<m3::qt::SourceEditCommand> {
+            delete closing.data();
+            return {};
+        }, [&](const m3::qt::SourceEdit &) {
+            if (approval) delete closing.data();
+            return false;
+        });
+        if (approval) CHECK(!closing->moveNode(a, b));
+        else CHECK(!closing->renameNode(a, QStringLiteral("closed")));
+        CHECK(!closing);
+    }
+}
+
 static void host_commit_case() {
+    source_host_commit_case();
     const QString a = QStringLiteral("a"), b = QStringLiteral("b"), root = QStringLiteral("r");
     for (int reaction = 0; reaction < 10; ++reaction) {
         QPointer<MimeEditor> editor = new MimeEditor;
@@ -10902,7 +11243,60 @@ static void basic_mode_gestures_case() {
     CHECK(editor.undo() && exported(editor) == before);
 }
 
+static void source_outline_policy_case() {
+    MimeEditor editor;
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    showEditor(editor);
+    SourceDocumentHost host(editor);
+    const QString a = QStringLiteral("a"), b = QStringLiteral("b"), link = QStringLiteral("l1");
+    CHECK(editor.selectNode(a));
+    const QByteArray before = editor.toJson();
+    const QString source = host.document.toPlainText();
+    CHECK(!editor.isBasicMode() && editor.hasSourceEditHandler());
+    CHECK(!editor.removeNode(a));
+    CHECK(editor.addNode({}, QStringLiteral("orphan")).isEmpty());
+    CHECK(editor.addNodes(a, QByteArray("[{\"topic\":\"batch\"}]")).isEmpty());
+    CHECK(!editor.moveNode(a, {}));
+    CHECK(editor.addLink(a, b, false).isEmpty());
+    CHECK(!editor.updateLink(link, a, b, false, QStringLiteral("blocked")));
+    CHECK(!editor.removeLink(link));
+    for (const char *patch : {"{\"note\":\"blocked\"}", "{\"topic\":\"mixed\",\"tags\":[]}", "{\"style\":{}}"})
+        CHECK(!editor.updateNode(a, QByteArray(patch)));
+    for (const char *name : {"deleteSelection", "addOrphan", "detachNode", "paste", "toggleBold", "toggleItalic",
+                            "editTags", "editIcons", "editNote", "textColorPopup", "fillColorPopup", "fontSize"}) {
+        CHECK(!editAction(editor, name).isEnabled());
+        editAction(editor, name).trigger();
+    }
+    CHECK(!nodeControl(editor, QStringLiteral("Alpha"), false));
+    CHECK(contextMenu(editor, labelPoint(editor, QStringLiteral("Alpha")), [&](QMenu &menu) {
+        CHECK(!textAction(menu, {QStringLiteral("Duplicate")}).isEnabled());
+        CHECK(!textAction(menu, {QStringLiteral("Add Tags")}).isEnabled());
+    }));
+    shortcut(editor, Qt::Key_C, Qt::ControlModifier);
+    CHECK(QApplication::clipboard()->mimeData()->hasFormat(QStringLiteral("application/x-m3-nodes+json")));
+    CHECK(!editAction(editor, "paste").isEnabled());
+    shortcut(editor, Qt::Key_V, Qt::ControlModifier);
+    shortcut(editor, Qt::Key_Delete);
+    CHECK(editor.selectLink(link));
+    CHECK(!editAction(editor, "editLink").isEnabled() && !editAction(editor, "editSelection").isEnabled());
+    shortcut(editor, Qt::Key_F2);
+    CHECK(!activeTopicInput(editor));
+    CHECK(editor.toJson() == before && host.document.toPlainText() == source && host.applies == 0);
+    CHECK(editor.selectNode(a) && editor.setExpanded(a, false));
+    CHECK(editor.setExpanded(a, true));
+    editor.setReadOnly(true);
+    CHECK(!editor.renameNode(a, QStringLiteral("locked")));
+    CHECK(editor.addNode(a, QStringLiteral("locked")).isEmpty());
+    CHECK(!editAction(editor, "addChild").isEnabled());
+    editor.setReadOnly(false);
+    CHECK(editAction(editor, "addChild").isEnabled());
+    editor.setSourceEditHandler({});
+    CHECK(!editor.hasSourceEditHandler() && editAction(editor, "deleteSelection").isEnabled());
+    CHECK(!editor.addLink(a, b, false).isEmpty());
+}
+
 static void basic_mode_case() {
+    source_outline_policy_case();
     basic_mode_api_case();
     basic_mode_history_case();
     basic_mode_properties_case();
@@ -11273,7 +11667,42 @@ static void inline_label_hit_case() {
     }
 }
 
+static void source_inline_edit_case() {
+    RawLabelEditor editor;
+    CHECK(editor.newDocument(QStringLiteral("Title #literal")));
+    showEditor(editor);
+    SourceDocumentHost host(editor);
+    const QString root = QStringLiteral("root");
+    shortcut(editor, Qt::Key_F2);
+    QPointer<QPlainTextEdit> input = &topicInput(editor);
+    CHECK(input->toPlainText() == QStringLiteral("Title #literal"));
+    input->selectAll(); input->insertPlainText(QStringLiteral("Captured ## [title] Ω"));
+    auto caret = input->textCursor(); caret.setPosition(3); caret.setPosition(8, QTextCursor::KeepAnchor); input->setTextCursor(caret);
+    host.applying = [&] {
+        CHECK(!editor.commitActiveEdit(true));
+        CHECK(!editor.discardActiveEdit());
+        CHECK(!editor.renameNode(root, QStringLiteral("Nested draft")));
+        CHECK(input && input->textCursor().anchor() == 3 && input->textCursor().position() == 8);
+    };
+    CHECK(editor.commitActiveEdit(true));
+    host.applying = {};
+    host.check();
+    CHECK(!editor.hasPendingEdit() && input && activeTopicInput(editor) == input);
+    CHECK(input->textCursor().anchor() == 3 && input->textCursor().position() == 8);
+    CHECK(record(exported(editor), "nodes", root).at("tags").empty());
+    const int applied = host.applies;
+    CHECK(editor.commitActiveEdit(true) && host.applies == applied);
+    topicKey(editor, Qt::Key_Z, Qt::ControlModifier);
+    CHECK(input && input->toPlainText() == QStringLiteral("Title #literal") && editor.hasPendingEdit());
+    topicKey(editor, Qt::Key_Escape);
+    CHECK(!editor.hasPendingEdit() && !activeTopicInput(editor));
+    CHECK(record(exported(editor), "nodes", root).at("topic") == utf8(QStringLiteral("Captured ## [title] Ω")));
+    CHECK(editor.undo()); host.check();
+    CHECK(record(exported(editor), "nodes", root).at("topic") == "Title #literal");
+}
+
 static void inline_edit_case() {
+    source_inline_edit_case();
     inline_label_hit_case();
     inline_tags_case();
     {
@@ -16416,7 +16845,120 @@ static void orphans_case() {
     }
 }
 
+static void source_history_case() {
+    const QString a = QStringLiteral("a"), b = QStringLiteral("b");
+    RawLabelEditor editor;
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    SourceDocumentHost host(editor);
+    std::vector<QByteArray> maps{editor.toJson()};
+    QStringList sources{host.document.toPlainText()};
+    const auto capture = [&] { host.check(); maps.push_back(editor.toJson()); sources.append(host.document.toPlainText()); };
+    CHECK(editor.moveNode(a, b)); capture();
+    CHECK(editor.renameNode(a, QStringLiteral("Renamed"))); capture();
+    const auto added = editor.addNode(b, QString()); CHECK(!added.isEmpty()); capture();
+    CHECK(editor.renameNode(added, QStringLiteral("New title"))); capture();
+    host.replaying = [&] {
+        CHECK(!editor.renameNode(a, QStringLiteral("Nested history")));
+        CHECK(!editor.undo() && !editor.redo() && !editor.newDocument());
+        editor.setUndoLimit(1);
+        editor.setSourceEditHandler({});
+        CHECK(editor.hasSourceEditHandler());
+    };
+    host.rejectReplay = true;
+    CHECK(!editor.undo() && editor.toJson() == maps.back() && host.document.toPlainText() == sources.back());
+    CHECK(editor.canUndo() && !editor.canRedo());
+    host.rejectReplay = false;
+    for (int i = int(maps.size()) - 2; i >= 0; --i) {
+        CHECK(editor.undo());
+        CHECK(editor.toJson() == maps[size_t(i)] && host.document.toPlainText() == sources[i]);
+        host.check();
+    }
+    CHECK(!editor.canUndo() && !host.document.isUndoAvailable());
+    host.rejectReplay = true;
+    CHECK(!editor.redo() && editor.toJson() == maps.front() && host.document.toPlainText() == sources.front());
+    host.rejectReplay = false;
+    for (size_t i = 1; i < maps.size(); ++i) {
+        CHECK(editor.redo());
+        CHECK(editor.toJson() == maps[i] && host.document.toPlainText() == sources[qsizetype(i)]);
+        host.check();
+    }
+    CHECK(!editor.canRedo());
+    // An independent source group is never consumed by preview undo.
+    QTextCursor independent(&host.document);
+    independent.movePosition(QTextCursor::End);
+    independent.beginEditBlock(); independent.insertText(QStringLiteral(" independent body")); independent.endEditBlock();
+    const auto unrelated = host.document.toPlainText();
+    CHECK(!editor.undo());
+    CHECK(editor.toJson() == maps.back() && host.document.toPlainText() == unrelated);
+    host.document.undo();
+    CHECK(host.document.toPlainText() == sources.back());
+    CHECK(editor.undo() && editor.toJson() == maps[maps.size() - 2]);
+    // History truncation drops host receipts, including the newly unundoable baseline.
+    host.replaying = {};
+    editor.setUndoLimit(1);
+    CHECK(host.receipts[0].expired() && host.receipts[1].expired() && host.receipts[2].expired());
+    CHECK(!host.receipts[3].expired());
+    CHECK(editor.renameNode(a, QStringLiteral("New branch")));
+    CHECK(host.receipts[3].expired());
+    editor.setSourceEditHandler({});
+    CHECK(host.receipts.back().expired() && !editor.canUndo() && !editor.canRedo());
+    CHECK(!editor.addLink(a, b, false).isEmpty()); // Ordinary policy restored.
+}
+
+static void source_reconciliation_case() {
+    RawLabelEditor editor;
+    CHECK(editor.loadJson(encoded(editorFixture())));
+    showEditor(editor);
+    SourceDocumentHost host(editor);
+    const QString a = QStringLiteral("a");
+    const auto initial = editor.toJson();
+    CHECK(editor.renameNode(a, QStringLiteral("Title")));
+    auto titles = editor.outline();
+    const auto camera = graphics(editor).transform();
+    CHECK(editor.selectNode(a));
+    shortcut(editor, Qt::Key_F2);
+    QPointer<QPlainTextEdit> input = &topicInput(editor);
+    input->selectAll(); input->insertPlainText(QStringLiteral("Draft #literal"));
+    auto caret = input->textCursor(); caret.setPosition(2); caret.setPosition(6, QTextCursor::KeepAnchor); input->setTextCursor(caret);
+    int index = 0;
+    while (titles[index].id != a) ++index;
+    titles[index].topic = QStringLiteral("1. Title");
+    // A real source normalizer joins the accepted command; the host then publishes
+    // authoritative topics and adopts the final QTextDocument undo boundary.
+    QTextCursor normalizer(host.document.findBlockByNumber(index));
+    normalizer.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+    normalizer.joinPreviousEditBlock();
+    normalizer.insertText(QString(titles[index].level, QChar('#')) + QStringLiteral(" 1. Title"));
+    normalizer.endEditBlock();
+    host.entries = titles;
+    auto receipt = host.receipts.back().lock(); CHECK(receipt);
+    receipt->after = titles; receipt->afterSteps = host.document.availableUndoSteps();
+    const int applied = host.applies;
+    CHECK(editor.synchronizeSourceTopics(titles));
+    CHECK(host.applies == applied && input && activeTopicInput(editor) == input);
+    CHECK(input->toPlainText() == QStringLiteral("Draft #literal") && editor.hasPendingEdit());
+    CHECK(input->textCursor().anchor() == 2 && input->textCursor().position() == 6);
+    CHECK(input->document()->isUndoAvailable() && graphics(editor).transform() == camera);
+    CHECK(editor.selectedNodeId() == a);
+    editor.setStyle(RawLabelConfig{}.style);
+    CHECK(input && activeTopicInput(editor) == input && editor.hasPendingEdit());
+    host.check();
+    const QByteArray normalized = editor.toJson();
+    auto invalid = titles; invalid[index].level++;
+    CHECK(!editor.synchronizeSourceTopics(invalid) && editor.toJson() == normalized);
+    invalid = titles; std::swap(invalid[0], invalid[1]);
+    CHECK(!editor.synchronizeSourceTopics(invalid) && editor.toJson() == normalized);
+    invalid = titles; invalid.removeLast();
+    CHECK(!editor.synchronizeSourceTopics(invalid) && editor.toJson() == normalized);
+    CHECK(editor.discardActiveEdit());
+    CHECK(editor.undo() && editor.toJson() == initial); host.check();
+    CHECK(editor.redo() && editor.toJson() == normalized); host.check();
+    CHECK(!editor.canRedo());
+}
+
 static void history_case() {
+    source_history_case();
+    source_reconciliation_case();
     history_commands_case();
     history_link_gestures_case();
     history_availability_case();

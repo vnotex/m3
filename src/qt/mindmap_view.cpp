@@ -983,7 +983,7 @@ void MindMapView::beginLinkTopicEdit(const QString &id, const QList<QKeySequence
     beginTopicEdit(TopicKind::Link, id, acceptShortcuts);
 }
 void MindMapView::beginTopicEdit(TopicKind kind, const QString &id, const QList<QKeySequence> &acceptShortcuts) {
-    if (readOnly || id.isEmpty() || selectedNodes.size() > 1) return;
+    if (sourceEditBusy || (sourceOutlineMode && kind == TopicKind::Link) || readOnly || id.isEmpty() || selectedNodes.size() > 1) return;
     if (topicEditor && editedKind == kind && editedId == id) { topicEditor->setFocus(); return; }
     if (!findTopicLabel(scene(), id, kind)) return;
     const QString targetId = id;
@@ -1052,6 +1052,7 @@ void MindMapView::updatePendingEdit() {
 }
 bool MindMapView::finishTopicEdit(bool commit, bool restoreFocus, bool keepEditing) {
     if (!topicEditor) return true;
+    if (sourceEditBusy) return commit && !pendingEdit && keepEditing;
     if (finishingTopicEdit && commit) return false;
     const QPointer<QPlainTextEdit> input = topicEditor;
     const QString id = editedId, draft = input->toPlainText();
@@ -1157,6 +1158,17 @@ void MindMapView::setBasicMode(bool value) {
     clearImageResize();
     clearNoteEditPress();
     updatePanCursor(viewport()->mapFromGlobal(QCursor::pos()));
+}
+void MindMapView::setSourceOutlineMode(bool value) {
+    if (sourceOutlineMode == value) return;
+    sourceOutlineMode = value;
+    ++gestureGeneration;
+    clearLinkReconnect();
+    clearLinkEndpointHandles();
+    clearLinkCreation();
+    clearNodeControls();
+    clearImageResize();
+    clearNodeDrag();
 }
 void MindMapView::updateTopicEditorGeometry() {
     if (!topicEditor || !topicLabel) return;
@@ -1716,16 +1728,26 @@ void MindMapView::prepare(NodePresentation &node) const {
                                     (node.hasNote ? nodeControlSize + nodeControlGap : 0)),
                             qMax(qreal(36), contentBottom + 8));
 }
+std::unique_ptr<PreparedScene> MindMapView::prepareScene(Presentation presentation) const {
+    auto prepared = std::make_unique<PreparedScene>();
+    for (const auto &node : presentation.nodes) {
+        prepared->nodes.insert(node.id);
+        if (node.treeRoot && !node.root) prepared->parents.insert(node.id, QString());
+    }
+    for (const auto &link : presentation.links) prepared->links.insert(link.id);
+    for (const auto &edge : presentation.treeEdges) prepared->parents.insert(edge.target, edge.source);
+    prepared->rootCenter = presentation.nodes.front().rectangle.center();
+    prepared->rootId = presentation.nodes.front().id;
+    prepared->scene = buildScene(std::move(presentation), font(), palette());
+    return prepared;
+}
 void MindMapView::install(Presentation presentation, bool resetCamera) {
-    // Build before touching the current scene, selection or active draft.
-    QHash<QString, QString> parents;
-    // Explicitly retain orphan roots with an empty parent; only the main root
-    // is absent. Gesture checks then use the current scene after synchronous edits.
-    for (const auto &node : presentation.nodes)
-        if (node.treeRoot && !node.root) parents.insert(node.id, QString());
-    for (const auto &edge : presentation.treeEdges) parents.insert(edge.target, edge.source);
-    const QPointF rootCenter = presentation.nodes.front().rectangle.center();
-    auto replacement = buildScene(std::move(presentation), font(), palette());
+    install(prepareScene(std::move(presentation)), resetCamera);
+}
+void MindMapView::install(std::unique_ptr<PreparedScene> prepared, bool resetCamera, bool preserveDraft) {
+    auto replacement = std::move(prepared->scene);
+    auto parents = std::move(prepared->parents);
+    const QPointF rootCenter = prepared->rootCenter;
     if (resetCamera) ++gestureGeneration;
     selectedNodes.clear();
     suppressNodeDoubleClick = false;
@@ -1743,11 +1765,12 @@ void MindMapView::install(Presentation presentation, bool resetCamera) {
     QGraphicsTextItem *replacementLabel = topicEditor ? findTopicLabel(replacement.get(), editedId, editedKind) : nullptr;
     const QPointF center = sceneCenter(*this, viewport()->size());
     if (topicEditor && (!finishingTopicEdit || resetCamera)) {
-        if (resetCamera || !replacementLabel || semanticTopic(replacementLabel) != originalTopic) {
+        if (resetCamera || !replacementLabel || (!preserveDraft && semanticTopic(replacementLabel) != originalTopic)) {
             QPointer<MindMapView> guard(this);
             finishTopicEdit(false);
             if (!guard) return;
         } else {
+            if (preserveDraft) originalTopic = semanticTopic(replacementLabel);
             topicLabel.clear();
             topicLabel = replacementLabel;
             topicLabelVisible = topicLabel->isVisible();
@@ -1896,7 +1919,7 @@ void MindMapView::setSelection(const QStringList &nodes, const QString &link) {
             if (l->isSelected() && l->isVisible()) selectedLinkItem = l;
         }
     }
-    if (!readOnly && selectedLinkItem) {
+    if (!readOnly && !sourceOutlineMode && selectedLinkItem) {
         for (int i = 0; i < 2; ++i) {
             linkEndpointHandles[i] = new LinkEndpointHandle(selectedLinkItem, i == 0, palette());
             scene()->addItem(linkEndpointHandles[i]);

@@ -13,6 +13,7 @@
 namespace m3::qt {
 class MindMapView;
 struct HtmlMap;
+struct PreparedScene;
 class MindMapController : public QObject {
     Q_OBJECT
 public:
@@ -26,6 +27,11 @@ public:
     bool isReadOnly() const { return readOnly; }
     void setBasicMode(bool value);
     bool isBasicMode() const { return basicMode; }
+    bool topicOnly() const { return basicMode || bool(sourceEditHandler); }
+    bool hasSourceEditHandler() const { return bool(sourceEditHandler); }
+    bool isSourceEditBusy() const { return sourceEditBusy; }
+    void setSourceEditHandler(SourceEditHandler handler, SourceEditApproval approve);
+    bool synchronizeSourceTopics(const QVector<OutlineEntry> &entries);
     QString resolveResourceUrl(const QString &value) const;
     void provideImage(const QString &url, quint64 requestId, const QImage &image);
     QImage cachedImage(const QString &url) const;
@@ -33,10 +39,13 @@ public:
     bool newDocument(const QString &topic);
     bool loadJson(const QByteArray &json);
     bool canUndo() const {
-        return !readOnly && historyCursor > 0 && (!basicMode || !history[historyCursor].changesNodeMetadata);
+        return !readOnly && !sourceEditBusy && historyCursor > 0 &&
+            (!sourceEditHandler || history[historyCursor].sourceCommand.has_value()) &&
+            (!basicMode || !history[historyCursor].changesNodeMetadata);
     }
     bool canRedo() const {
-        return !readOnly && historyCursor + 1 < history.size() &&
+        return !readOnly && !sourceEditBusy && historyCursor + 1 < history.size() &&
+            (!sourceEditHandler || history[historyCursor + 1].sourceCommand.has_value()) &&
             (!basicMode || !history[historyCursor + 1].changesNodeMetadata);
     }
     bool undo();
@@ -52,7 +61,8 @@ public:
     QString toHtml();
     bool renderMap(QPainter &painter, const QRectF &target);
     QString lastError() const { return error; }
-    QString addNode(const QString &parent, const QString &topic, int index);
+    QString addNode(const QString &parent, const QString &topic, int index,
+                    const QString &siblingId = {});
     QStringList addNodes(const QString &parent, const QByteArray &nodesJson, int index);
     bool duplicateNode(const QString &id);
     bool renameNode(const QString &id, const QString &topic);
@@ -103,6 +113,7 @@ private:
         QString link;
         // Marks the command that produced this snapshot, not its stored metadata.
         bool changesNodeMetadata = false;
+        std::optional<SourceEditCommand> sourceCommand;
     };
     QByteArray currentSnapshot;
     std::vector<HistoryState> history;
@@ -124,6 +135,11 @@ private:
     QString sectionNumberPattern;
     bool readOnly = false;
     bool basicMode = false;
+    SourceEditHandler sourceEditHandler;
+    SourceEditApproval sourceEditApproval;
+    bool sourceEditBusy = false;
+    void setSourceEditBusy(bool busy);
+    bool independentEdit();
     struct ImageResource {
         quint64 requestId = 0;
         QImage pixels;
@@ -153,16 +169,18 @@ private:
     Presentation prepare(const QByteArray &json,
                          MindMapEditor::LayoutDirection requested, QSet<QString> &collapsed,
                          bool useImageCache = true, int initialLevels = 0, HtmlMap *html = nullptr);
-    void install(Presentation presentation, bool resetCamera);
+    void install(Presentation presentation, bool resetCamera, std::unique_ptr<PreparedScene> scene = {},
+                 bool preserveDraft = false);
     bool replace(Map candidate);
     bool commitChange(Map candidate, const QString &preferredNode, const QString &preferredLink = {},
-                      bool changesNodeMetadata = false);
+                      bool changesNodeMetadata = false, const SourceEdit *sourceEdit = nullptr);
     template<typename Operation>
     bool transact(Operation &&operation,
                   const QString &preferredNode = {}, const QString &preferredLink = {},
-                  bool changesNodeMetadata = false);
+                  bool changesNodeMetadata = false, const SourceEdit *sourceEdit = nullptr);
     bool finishChange(std::optional<Presentation> prepared = {}, bool resetCamera = false, bool restoring = false,
-                      const QString &preferredNode = {}, const QString &preferredLink = {});
+                      const QString &preferredNode = {}, const QString &preferredLink = {},
+                      std::unique_ptr<PreparedScene> scene = {}, bool preserveDraft = false);
     void selection(QStringList nodes, QString link, bool ensureVisible = true);
     void restoreSelection();
 };

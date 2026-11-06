@@ -709,7 +709,7 @@ public:
     enum class Action { ToggleBold, ToggleItalic, ResetStyle, TextColor, FillColor, Note, ToggleProperties };
     void activate(Action action) {
         if (!editor || !controller || !editor->isEnabled() ||
-            (action == Action::ToggleProperties ? separated : controller->isReadOnly() || controller->isBasicMode())) return;
+            (action == Action::ToggleProperties ? separated : controller->isReadOnly() || controller->topicOnly())) return;
         const QPointer<NodePropertiesPanel> guard(this);
         refresh();
         if (!guard || boundId.isEmpty()) return;
@@ -840,7 +840,7 @@ private:
         return fillColor->isChecked() ? QStringLiteral("background") : QStringLiteral("color");
     }
     bool canEdit() const {
-        return editor && controller && editor->isEnabled() && !controller->isReadOnly() && !controller->isBasicMode() &&
+        return editor && controller && editor->isEnabled() && !controller->isReadOnly() && !controller->topicOnly() &&
             !boundId.isEmpty() && boundId == controller->selectedNodeId();
     }
     void applyStyle(const QJsonObject &style) {
@@ -1019,7 +1019,7 @@ public:
     bool canEditNode() const {
         return host->isEnabled() && !controller->isReadOnly() && !controller->selectedNodeId().isEmpty();
     }
-    bool canFormat() const { return canEditNode() && !controller->isBasicMode(); }
+    bool canFormat() const { return canEditNode() && !controller->topicOnly(); }
     FormattingBinding formattingBinding() const {
         return {formattingEpoch, controller->selectedNodeId()};
     }
@@ -1028,7 +1028,7 @@ public:
             binding.node == controller->selectedNodeId() && canEditNode();
     }
     bool validBinding(const FormattingBinding &binding) const {
-        return validNodeBinding(binding) && !controller->isBasicMode();
+        return validNodeBinding(binding) && !controller->topicOnly();
     }
     enum class NodeField { Tags, Icons, Url, Image, Note };
     void editNodeField(NodeField field, const FormattingBinding &binding,
@@ -1413,12 +1413,13 @@ public:
         const bool hasNodes = !selectedNodes.isEmpty();
         const auto root = std::find_if(nodes.begin(), nodes.end(), [](const NodeChoice &entry) { return entry.root; });
         const bool deletableNodes = hasNodes && root != nodes.end() && !selectedNodes.contains(root->id);
-        const bool writable = host->isEnabled() && !controller->isReadOnly();
-        const bool editableProperties = writable && !controller->isBasicMode();
+        const bool writable = host->isEnabled() && !controller->isReadOnly() && !controller->isSourceEditBusy();
+        const bool independent = !controller->hasSourceEditHandler();
+        const bool editableProperties = writable && !controller->topicOnly();
         const bool movable = writable && node && !node->root;
         undoAction->setEnabled(controller->canUndo());
         redoAction->setEnabled(controller->canRedo());
-        addOrphan->setEnabled(writable);
+        addOrphan->setEnabled(writable && independent);
         addChild->setEnabled(writable && node);
         addSibling->setEnabled(writable && node); addSiblingBefore->setEnabled(writable && node);
         for (auto *action : nodeNavigation) action->setEnabled(node);
@@ -1437,16 +1438,16 @@ public:
         if (!guard) return;
         copySelection->setEnabled(hasNodes || hasLink);
         const auto *mime = QApplication::clipboard()->mimeData();
-        pasteSelection->setEnabled(writable && node && mime &&
+        pasteSelection->setEnabled(writable && independent && node && mime &&
             (mime->hasFormat(nodeClipboardMimeType) ||
                 (editableProperties && host->canInsertFromMimeData(mime, MimeInsertionSource::Clipboard))));
         rootSelection->setEnabled(!nodes.empty());
         clearSelectionAction->setEnabled(hasNodes || hasLink);
-        editSelection->setEnabled(writable && (node || hasLink));
-        editLink->setEnabled(writable && hasLink);
-        deleteSelection->setEnabled(writable && (deletableNodes || hasLink));
+        editSelection->setEnabled(writable && (node || (independent && hasLink)));
+        editLink->setEnabled(writable && independent && hasLink);
+        deleteSelection->setEnabled(writable && independent && (deletableNodes || hasLink));
         move->setEnabled(movable);
-        detachNode->setEnabled(movable && !node->parent.isEmpty());
+        detachNode->setEnabled(movable && independent && !node->parent.isEmpty());
         toggleExpanded->setEnabled(host->isEnabled() && node && !node->children.isEmpty());
         toggleExpanded->setText(node && !node->expanded ? tr("Expand") : tr("Collapse"));
         const auto *parent = node ? choice(nodes, node->parent) : nullptr;
@@ -1464,16 +1465,18 @@ public:
         const auto *node = choice(nodes, id);
         if (!node) return;
         QString parentId = id;
+        QString siblingId;
         int index = -1;
         if ((operation == TopicOperation::SiblingAfter || operation == TopicOperation::SiblingBefore) && !node->parent.isEmpty()) {
             const auto *parent = choice(nodes, node->parent);
             if (!parent) return;
             parentId = parent->id;
+            siblingId = id;
             index = int(parent->children.indexOf(id)) + (operation == TopicOperation::SiblingAfter ? 1 : 0);
         }
         const auto *parent = choice(nodes, parentId);
         if (!parent || (!parent->expanded && !controller->setExpanded(parentId, true)) || !guard) return;
-        const QString created = controller->addNode(parentId, QString(), index);
+        const QString created = controller->addNode(parentId, QString(), index, siblingId);
         if (guard && !created.isEmpty() && controller->selectedNodeId() == created)
             view->beginTopicEdit(created, config.shortcuts.acceptTopic);
     }
@@ -1768,7 +1771,7 @@ public:
                     menu.addActions({addChild, addSibling, addSiblingBefore});
                     menu.addAction(tr("Duplicate"), host, [this, binding] {
                         if (validNodeBinding(binding)) controller->duplicateNode(binding.node);
-                    })->setEnabled(canEditNode());
+                    })->setEnabled(canEditNode() && !controller->hasSourceEditHandler());
                     menu.addSeparator();
                     menu.addActions({copySelection, pasteSelection});
                     menu.addSeparator();
@@ -1834,7 +1837,7 @@ public:
                     };
                     for (const auto &choice : choices) {
                         auto *action = menu.addAction(QString::fromLatin1(choice.text));
-                        action->setEnabled(!controller->isReadOnly());
+                        action->setEnabled(!controller->isReadOnly() && !controller->hasSourceEditHandler() && !controller->isSourceEditBusy());
                         action->setCheckable(true);
                         group->addAction(action);
                         action->setChecked(link.direction == choice.direction);
@@ -1904,7 +1907,7 @@ public:
             return !editor->isBasicMode() && editor->canInsertFromMimeData(source, MimeInsertionSource::Drop);
         });
         QObject::connect(view, &MindMapView::mimeDataDropped, editor, [this, editor](const QString &nodeId, const QMimeData *source) {
-            if (!editor->isEnabled() || controller->isReadOnly() || controller->isBasicMode() || nodeId.isEmpty() ||
+            if (!editor->isEnabled() || controller->isReadOnly() || controller->topicOnly() || nodeId.isEmpty() ||
                 controller->selectedNodeIds().size() > 1 ||
                 !editor->canInsertFromMimeData(source, MimeInsertionSource::Drop)) return;
             // Do not commit an unrelated inline draft: the host owns drop policy.
@@ -1963,6 +1966,7 @@ QWidget *MindMapEditor::nodePropertiesPanel() const {
     return d->properties.data();
 }
 void MindMapEditor::setSeparateNodePropertiesPanel(bool separate) {
+    if (isSourceEditBusy()) return;
     d->requestedSeparateProperties = separate;
     if (d->changingPropertiesPlacement || d->config.separateNodePropertiesPanel == separate) return;
     const QPointer<MindMapEditor> guard(this);
@@ -2000,15 +2004,18 @@ void MindMapEditor::setSeparateNodePropertiesPanel(bool separate) {
 }
 void MindMapEditor::collapseNodeProperties() { if (d->properties) d->properties->collapse(); }
 void MindMapEditor::setStyle(const EditorConfig::Style &style) {
+    if (isSourceEditBusy()) return;
     d->config.style = style;
     d->view->setStyle(style);
 }
 void MindMapEditor::setSectionNumbering(bool enabled, const QString &pattern) {
+    if (isSourceEditBusy()) return;
     d->config.autoSectionNumbering = enabled;
     d->config.sectionNumberPattern = pattern;
     d->controller->setSectionNumbering(enabled, pattern);
 }
 void MindMapEditor::setUndoLimit(int limit) {
+    if (isSourceEditBusy()) return;
     d->config.undoLimit = qMax(0, limit);
     d->controller->setUndoLimit(d->config.undoLimit);
 }
@@ -2024,6 +2031,7 @@ QStringList MindMapEditor::automaticBranchColors() {
     return colors;
 }
 void MindMapEditor::setAutoRandomBranchColor(bool enabled) {
+    if (isSourceEditBusy()) return;
     d->config.autoRandomBranchColor = enabled;
     d->controller->setAutoRandomBranchColor(enabled);
 }
@@ -2031,7 +2039,7 @@ bool MindMapEditor::canInsertFromMimeData(const QMimeData *source, MimeInsertion
     return origin == MimeInsertionSource::Drop && !droppedLocalFilePath(source).isEmpty();
 }
 void MindMapEditor::insertFromMimeData(const QString &nodeId, const QMimeData *source, MimeInsertionSource origin) {
-    if (origin != MimeInsertionSource::Drop || !isEnabled() || isReadOnly() || isBasicMode()) return;
+    if (origin != MimeInsertionSource::Drop || !isEnabled() || isReadOnly() || isBasicMode() || hasSourceEditHandler()) return;
     const QString path = droppedLocalFilePath(source);
     if (path.isEmpty()) return;
     const QJsonObject patch{{QStringLiteral("hyperLink"), QUrl::fromLocalFile(path).toString(QUrl::FullyEncoded)}};
@@ -2048,11 +2056,13 @@ void MindMapEditor::onEditNote(const QString &nodeId) {
 void MindMapEditor::onAddUrl(const QString &) {}
 void MindMapEditor::onAddImage(const QString &) {}
 bool MindMapEditor::newDocument(const QString &topic) {
+    if (isSourceEditBusy()) return false;
     const QPointer<MindMapEditor> guard(this);
     d->invalidateFormatting();
     return guard && d->controller->newDocument(topic);
 }
 bool MindMapEditor::loadJson(const QByteArray &json) {
+    if (isSourceEditBusy()) return false;
     if (std::all_of(json.cbegin(), json.cend(), [](char ch) {
             return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
         })) return newDocument();
@@ -2063,7 +2073,9 @@ bool MindMapEditor::loadJson(const QByteArray &json) {
 }
 bool MindMapEditor::commitActiveEdit(bool keepEditing) { return d->view->finishTopicEdit(true, false, keepEditing); }
 bool MindMapEditor::hasPendingEdit() const { return d->view->hasPendingEdit(); }
+bool MindMapEditor::discardActiveEdit() { return !isSourceEditBusy() && d->view->finishTopicEdit(false); }
 void MindMapEditor::setReadOnly(bool value) {
+    if (isSourceEditBusy()) return;
     const QPointer<MindMapEditor> guard(this);
     const bool changed = value != d->controller->isReadOnly();
     if (changed) d->invalidateFormatting();
@@ -2076,7 +2088,7 @@ void MindMapEditor::setReadOnly(bool value) {
 }
 bool MindMapEditor::isReadOnly() const { return d->controller->isReadOnly(); }
 void MindMapEditor::setBasicMode(bool value) {
-    if (value == d->controller->isBasicMode()) return;
+    if (isSourceEditBusy() || value == d->controller->isBasicMode()) return;
     const QPointer<MindMapEditor> guard(this);
     d->controller->setBasicMode(value);
     if (!guard) return;
@@ -2084,6 +2096,19 @@ void MindMapEditor::setBasicMode(bool value) {
     if (guard) d->updateActions();
 }
 bool MindMapEditor::isBasicMode() const { return d->controller->isBasicMode(); }
+void MindMapEditor::setSourceEditHandler(SourceEditHandler handler, SourceEditApproval approve) {
+    if (isSourceEditBusy()) return;
+    const QPointer<MindMapEditor> guard(this);
+    d->controller->setSourceEditHandler(std::move(handler), std::move(approve));
+    if (!guard) return;
+    d->invalidateFormatting();
+    if (guard) d->updateActions();
+}
+bool MindMapEditor::hasSourceEditHandler() const { return d->controller->hasSourceEditHandler(); }
+bool MindMapEditor::isSourceEditBusy() const { return d->controller->isSourceEditBusy(); }
+bool MindMapEditor::synchronizeSourceTopics(const QVector<OutlineEntry> &entries) {
+    return d->controller->synchronizeSourceTopics(entries);
+}
 bool MindMapEditor::canUndo() const { return d->controller->canUndo(); }
 bool MindMapEditor::canRedo() const { return d->controller->canRedo(); }
 bool MindMapEditor::undo() { return d->controller->undo(); }
