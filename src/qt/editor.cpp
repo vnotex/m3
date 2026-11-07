@@ -2098,6 +2098,8 @@ void MindMapEditor::setBasicMode(bool value) {
 bool MindMapEditor::isBasicMode() const { return d->controller->isBasicMode(); }
 void MindMapEditor::setSourceEditHandler(SourceEditHandler handler, SourceEditApproval approve) {
     if (isSourceEditBusy()) return;
+    d->view->cancelPendingTopicAcceptance();
+    d->view->setSourceEditPending(false);
     const QPointer<MindMapEditor> guard(this);
     d->controller->setSourceEditHandler(std::move(handler), std::move(approve));
     if (!guard) return;
@@ -2106,6 +2108,8 @@ void MindMapEditor::setSourceEditHandler(SourceEditHandler handler, SourceEditAp
 }
 bool MindMapEditor::hasSourceEditHandler() const { return d->controller->hasSourceEditHandler(); }
 bool MindMapEditor::isSourceEditBusy() const { return d->controller->isSourceEditBusy(); }
+void MindMapEditor::setSourceEditPending(bool pending) { d->view->setSourceEditPending(pending); }
+void MindMapEditor::cancelPendingTopicAcceptance() { d->view->cancelPendingTopicAcceptance(); }
 bool MindMapEditor::synchronizeSourceTopics(const QVector<OutlineEntry> &entries) {
     return d->controller->synchronizeSourceTopics(entries);
 }

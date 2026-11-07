@@ -1033,7 +1033,7 @@ void MindMapView::beginTopicEdit(TopicKind kind, const QString &id, const QList<
     for (const auto &sequence : topicAcceptShortcuts) {
         auto *accept = new QShortcut(sequence, input);
         accept->setContext(Qt::WidgetWithChildrenShortcut);
-        connect(accept, &QShortcut::activated, this, [this] { finishTopicEdit(true, true); });
+        connect(accept, &QShortcut::activated, this, &MindMapView::acceptTopicEdit);
     }
     input->show();
     input->setFocus(Qt::OtherFocusReason);
@@ -1050,10 +1050,37 @@ void MindMapView::updatePendingEdit() {
     pendingEdit = pending;
     emit pendingEditChanged(pending);
 }
+void MindMapView::acceptTopicEdit() {
+    if (sourceOutlineMode && sourceEditPending && topicEditor) {
+        topicAcceptancePending = true;
+        return;
+    }
+    cancelPendingTopicAcceptance();
+    finishTopicEdit(true, true);
+}
+void MindMapView::cancelPendingTopicAcceptance() {
+    topicAcceptancePending = false;
+    ++topicAcceptanceGeneration;
+}
+void MindMapView::setSourceEditPending(bool value) {
+    if (sourceEditPending == value) return;
+    sourceEditPending = value;
+    if (value || !topicAcceptancePending || !topicEditor) return;
+    const auto generation = topicAcceptanceGeneration;
+    const QPointer<QPlainTextEdit> input = topicEditor;
+    QTimer::singleShot(0, this, [this, input, generation] {
+        if (!input || input != topicEditor || generation != topicAcceptanceGeneration ||
+            !topicAcceptancePending || sourceEditPending || sourceEditBusy ||
+            !sourceOutlineMode || readOnly || !isEnabled()) return;
+        acceptTopicEdit();
+    });
+}
 bool MindMapView::finishTopicEdit(bool commit, bool restoreFocus, bool keepEditing) {
     if (!topicEditor) return true;
     if (sourceEditBusy) return commit && !pendingEdit && keepEditing;
     if (finishingTopicEdit && commit) return false;
+    if (commit && sourceOutlineMode && sourceEditPending && pendingEdit) return false;
+    cancelPendingTopicAcceptance();
     const QPointer<QPlainTextEdit> input = topicEditor;
     const QString id = editedId, draft = input->toPlainText();
     const TopicKind kind = editedKind;
@@ -1748,7 +1775,11 @@ void MindMapView::install(std::unique_ptr<PreparedScene> prepared, bool resetCam
     auto replacement = std::move(prepared->scene);
     auto parents = std::move(prepared->parents);
     const QPointF rootCenter = prepared->rootCenter;
-    if (resetCamera) ++gestureGeneration;
+    if (resetCamera) {
+        ++gestureGeneration;
+        cancelPendingTopicAcceptance();
+        sourceEditPending = false;
+    }
     selectedNodes.clear();
     suppressNodeDoubleClick = false;
     suppressReconnectMenu = false;

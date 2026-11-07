@@ -42,6 +42,8 @@ public:
     void setBasicMode(bool value);
     void setSourceOutlineMode(bool value);
     void setSourceEditBusy(bool value) { sourceEditBusy = value; }
+    void setSourceEditPending(bool value);
+    void cancelPendingTopicAcceptance();
     std::unique_ptr<PreparedScene> prepareScene(Presentation presentation) const;
     void install(std::unique_ptr<PreparedScene> prepared, bool resetCamera, bool preserveDraft = false);
     void prepare(NodePresentation &node) const;
@@ -158,6 +160,9 @@ private:
     TopicKind editedKind = TopicKind::Node;
     bool topicLabelVisible = false;
     bool pendingEdit = false, finishingTopicEdit = false;
+    bool sourceEditPending = false, topicAcceptancePending = false;
+    quint64 topicAcceptanceGeneration = 0;
+    void acceptTopicEdit();
     TopicCommitHandler topicCommitHandler;
     MimeDataPredicate mimeDataPredicate;
     void updatePendingEdit();

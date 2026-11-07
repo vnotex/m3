@@ -346,6 +346,17 @@ paired source callback to replay one group, then publishes. Rejection retains th
 history cursor. History trimming, replacement and handler rebinding release receipts;
 rebinding starts a new baseline without replacing the document or draft.
 
+Hosts with asynchronous source publication call `setSourceEditPending(true)` after accepting a
+command, including inside the busy callback, and clear it only after publishing their new binding
+or declaring it stale. Changed inline captures return false without invoking the handler while
+pending. Explicit topic-accept shortcuts retain one intent and dispatch through the normal handler
+on a queued turn after pending clears, preserving the same input and its latest text. Escape,
+discard, read-only, document replacement and handler rebinding cancel that intent. Topic-only
+source reconciliation preserves it. `cancelPendingTopicAcceptance()` cancels the intent without
+changing the draft; use it before close consent and keep acceptance pending through the modal
+decision so focus/capture callbacks cannot apply text the user is deciding whether to discard.
+Ordinary editors and direct command/history authorization are unchanged.
+
 `synchronizeSourceTopics(entries)` accepts authoritative source normalization only when
 all IDs, order and levels exactly match. It changes topics and the current native history
 snapshot without adding a command or invoking the source handler, preserving selection,

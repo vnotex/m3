@@ -417,6 +417,13 @@ public:
     // Hosts must veto close/replacement/conversion/locking while true. Nested commands,
     // history, policy rebinding and draft acceptance are rejected while busy.
     bool isSourceEditBusy() const;
+    // Host publication is asynchronous after an accepted source command. While pending,
+    // changed draft captures fail without invoking the handler. Explicit topic acceptance
+    // is retained and dispatched once, through the handler, after pending becomes false.
+    // May be set inside a busy source callback; never pumps events or commits synchronously.
+    void setSourceEditPending(bool pending);
+    // Cancel only deferred acceptance (for example before close consent), retaining the draft.
+    void cancelPendingTopicAcceptance();
     // Exact IDs/order/levels must match. Preserves draft/caret, selection, camera and
     // folds; updates only topics and the current history snapshot, without a command.
     bool synchronizeSourceTopics(const QVector<OutlineEntry> &entries);

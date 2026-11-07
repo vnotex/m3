@@ -11243,6 +11243,59 @@ static void basic_mode_gestures_case() {
     CHECK(editor.undo() && exported(editor) == before);
 }
 
+static void source_outline_pending_topic_case() {
+    for (int cancel = 0; cancel != 6; ++cancel) {
+        MimeEditor editor;
+        CHECK(editor.loadJson(encoded(editorFixture())));
+        showEditor(editor);
+        SourceDocumentHost host(editor);
+        host.applying = [&] { editor.setSourceEditPending(true); };
+        CHECK(editor.selectNode(QStringLiteral("a")));
+        editAction(editor, "addSibling").trigger();
+        QPointer<QPlainTextEdit> input = activeTopicInput(editor);
+        CHECK(input);
+        const auto id = editor.selectedNodeId();
+        const auto empty = host.document.toPlainText();
+        const auto applies = host.applies;
+        QSignalSpy errors(&editor, &Editor::errorOccurred);
+        QTest::keyClicks(input, "very good");
+        QTest::keyClick(input, Qt::Key_Return);
+        QTest::keyClick(input, Qt::Key_Return);
+        CHECK(editor.hasPendingEdit() && host.document.toPlainText() == empty);
+        CHECK(!editor.commitActiveEdit(true) && host.applies == applies && errors.isEmpty());
+        // Reconciliation can replace scene topics without replacing the input or intent.
+        CHECK(editor.synchronizeSourceTopics(host.entries));
+        if (cancel == 0) {
+            QTest::keyClicks(input, " indeed");
+        } else if (cancel == 1) {
+            QTest::keyClick(input, Qt::Key_Escape);
+        } else if (cancel == 2) {
+            editor.setSourceEditPending(false);
+            editor.cancelPendingTopicAcceptance();
+        } else if (cancel == 3) {
+            editor.setReadOnly(true);
+        } else if (cancel == 4) {
+            editor.setSourceEditHandler({});
+        } else {
+            CHECK(editor.loadJson(encoded(editorFixture())));
+        }
+        editor.setSourceEditPending(false);
+        pump();
+        if (cancel == 0) {
+            CHECK(host.applies == applies + 1 && errors.isEmpty() && !editor.hasPendingEdit());
+            CHECK(record(exported(editor), "nodes", id).at("topic") == "very good indeed");
+            host.check();
+        } else {
+            CHECK(host.applies == applies && host.document.toPlainText() == empty);
+            if (cancel == 2 || cancel == 4) {
+                CHECK(input && input->toPlainText() == QStringLiteral("very good"));
+                CHECK(editor.hasPendingEdit());
+                CHECK(editor.discardActiveEdit());
+            }
+        }
+    }
+}
+
 static void source_outline_policy_case() {
     MimeEditor editor;
     CHECK(editor.loadJson(encoded(editorFixture())));
@@ -11296,6 +11349,7 @@ static void source_outline_policy_case() {
 }
 
 static void basic_mode_case() {
+    source_outline_pending_topic_case();
     source_outline_policy_case();
     basic_mode_api_case();
     basic_mode_history_case();
